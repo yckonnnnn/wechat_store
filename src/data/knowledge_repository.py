@@ -304,6 +304,11 @@ class KnowledgeRepository(QObject):
                 continue
             question_lower = question.lower()
 
+            # 特殊处理：盘发只在用户明确提到"盘发"时才匹配
+            if "盘发" in question_lower:
+                if not any("盘发" in v for v in query_variants):
+                    continue
+
             for variant in query_variants:
                 if not variant:
                     continue

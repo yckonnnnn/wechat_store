@@ -212,7 +212,258 @@ class KnowledgeService(QObject):
         polite_guard_reason = ""
         normalized_query = self._normalize_for_kb(query)
 
-        detail = self.repository.find_best_match_detail(query, threshold)
+        # 特殊处理：如果用户表达"贵"的情绪，优先匹配价格贵相关的知识库
+        expensive_keywords = ["贵", "太贵", "也贵", "那么贵", "这么贵", "有点贵"]
+        if any(k in query for k in expensive_keywords):
+            # 尝试匹配价格贵相关的知识库
+            items = self.repository.get_all()
+            expensive_items = [
+                item for item in items
+                if any(tag in ["价格", "议价"] for tag in (item.tags or []))
+                and any(k in (item.question or "") for k in ["贵", "优惠", "便宜"])
+            ]
+            if expensive_items:
+                best_item = None
+                best_score = 0.0
+                for item in expensive_items:
+                    score = self._simple_overlap_score(query, item.question)
+                    if score > best_score:
+                        best_score = score
+                        best_item = item
+                if best_item and best_score >= 0.1:  # 降低阈值，因为是特殊匹配
+                    return {
+                        "matched": True,
+                        "answer": best_item.answer,
+                        "answers": list(best_item.answers or ([best_item.answer] if best_item.answer else [])),
+                        "question": best_item.question,
+                        "score": float(best_score),
+                        "mode": "expensive_priority",
+                        "intent": best_item.intent,
+                        "tags": list(best_item.tags or []),
+                        "item_id": str(best_item.id or ""),
+                        "blocked_by_polite_guard": False,
+                        "polite_guard_reason": "",
+                    }
+
+        # 特殊处理：如果用户询问"进口"，优先匹配进口相关的知识库
+        import_keywords = ["进口", "日本", "国外"]
+        if any(k in query for k in import_keywords):
+            items = self.repository.get_all()
+            import_items = [
+                item for item in items
+                if "进口" in (item.tags or []) or "进口" in (item.question or "")
+            ]
+            if import_items:
+                best_item = None
+                best_score = 0.0
+                for item in import_items:
+                    score = self._simple_overlap_score(query, item.question)
+                    if score > best_score:
+                        best_score = score
+                        best_item = item
+                if best_item and best_score >= 0.1:  # 降低阈值
+                    return {
+                        "matched": True,
+                        "answer": best_item.answer,
+                        "answers": list(best_item.answers or ([best_item.answer] if best_item.answer else [])),
+                        "question": best_item.question,
+                        "score": float(best_score),
+                        "mode": "import_priority",
+                        "intent": best_item.intent,
+                        "tags": list(best_item.tags or []),
+                        "item_id": str(best_item.id or ""),
+                        "blocked_by_polite_guard": False,
+                        "polite_guard_reason": "",
+                    }
+
+        # 特殊处理：脸型相关问题
+        face_shape_keywords = ["脸型", "脸胖", "脸大", "圆脸", "方脸", "脸比较大", "脸有点胖"]
+        if any(k in query for k in face_shape_keywords):
+            items = self.repository.get_all()
+            face_items = [
+                item for item in items
+                if "脸型" in (item.tags or []) or any(k in (item.question or "") for k in ["脸型", "脸胖", "脸大"])
+            ]
+            if face_items:
+                best_item = None
+                best_score = 0.0
+                for item in face_items:
+                    score = self._simple_overlap_score(query, item.question)
+                    if score > best_score:
+                        best_score = score
+                        best_item = item
+                if best_item and best_score >= 0.1:
+                    return {
+                        "matched": True,
+                        "answer": best_item.answer,
+                        "answers": list(best_item.answers or ([best_item.answer] if best_item.answer else [])),
+                        "question": best_item.question,
+                        "score": float(best_score),
+                        "mode": "face_shape_priority",
+                        "intent": best_item.intent,
+                        "tags": list(best_item.tags or []),
+                        "item_id": str(best_item.id or ""),
+                        "blocked_by_polite_guard": False,
+                        "polite_guard_reason": "",
+                    }
+
+        # 特殊处理：白发相关问题
+        white_hair_keywords = ["白发", "头发白", "白头发"]
+        if any(k in query for k in white_hair_keywords):
+            items = self.repository.get_all()
+            white_hair_items = [
+                item for item in items
+                if "白发" in (item.tags or []) or "白发" in (item.question or "")
+            ]
+            if white_hair_items:
+                best_item = None
+                best_score = 0.0
+                for item in white_hair_items:
+                    score = self._simple_overlap_score(query, item.question)
+                    if score > best_score:
+                        best_score = score
+                        best_item = item
+                if best_item and best_score >= 0.1:
+                    return {
+                        "matched": True,
+                        "answer": best_item.answer,
+                        "answers": list(best_item.answers or ([best_item.answer] if best_item.answer else [])),
+                        "question": best_item.question,
+                        "score": float(best_score),
+                        "mode": "white_hair_priority",
+                        "intent": best_item.intent,
+                        "tags": list(best_item.tags or []),
+                        "item_id": str(best_item.id or ""),
+                        "blocked_by_polite_guard": False,
+                        "polite_guard_reason": "",
+                    }
+
+        # 特殊处理：假发乱了/头发乱了
+        messy_hair_keywords = ["假发乱", "头发乱", "乱了"]
+        if any(k in query for k in messy_hair_keywords):
+            items = self.repository.get_all()
+            messy_items = [
+                item for item in items
+                if "售后" in (item.tags or []) or "整理" in (item.tags or []) or "假发乱" in (item.question or "")
+            ]
+            if messy_items:
+                best_item = None
+                best_score = 0.0
+                for item in messy_items:
+                    score = self._simple_overlap_score(query, item.question)
+                    if score > best_score:
+                        best_score = score
+                        best_item = item
+                if best_item and best_score >= 0.1:
+                    return {
+                        "matched": True,
+                        "answer": best_item.answer,
+                        "answers": list(best_item.answers or ([best_item.answer] if best_item.answer else [])),
+                        "question": best_item.question,
+                        "score": float(best_score),
+                        "mode": "messy_hair_priority",
+                        "intent": best_item.intent,
+                        "tags": list(best_item.tags or []),
+                        "item_id": str(best_item.id or ""),
+                        "blocked_by_polite_guard": False,
+                        "polite_guard_reason": "",
+                    }
+
+        # 特殊处理：自己洗/需要洗/不会洗
+        wash_keywords = ["自己洗", "需要洗", "要洗吗", "能洗吗", "可以洗", "不会洗", "怎么洗", "如何清洗", "不会清洗", "怎么清洗"]
+        if any(k in query for k in wash_keywords):
+            items = self.repository.get_all()
+            wash_items = [
+                item for item in items
+                if any(k in (item.question or "") for k in ["可以洗", "能洗", "清洗", "自己洗"])
+            ]
+            if wash_items:
+                best_item = None
+                best_score = 0.0
+                for item in wash_items:
+                    score = self._simple_overlap_score(query, item.question)
+                    if score > best_score:
+                        best_score = score
+                        best_item = item
+                if best_item and best_score >= 0.1:
+                    return {
+                        "matched": True,
+                        "answer": best_item.answer,
+                        "answers": list(best_item.answers or ([best_item.answer] if best_item.answer else [])),
+                        "question": best_item.question,
+                        "score": float(best_score),
+                        "mode": "wash_priority",
+                        "intent": best_item.intent,
+                        "tags": list(best_item.tags or []),
+                        "item_id": str(best_item.id or ""),
+                        "blocked_by_polite_guard": False,
+                        "polite_guard_reason": "",
+                    }
+
+        # 特殊处理：季节相关问题（夏天/冬天）
+        season_keywords = {"夏天": ["夏天", "热", "闷"], "冬天": ["冬天", "冷", "保暖"]}
+        for season, related_words in season_keywords.items():
+            if season in query:
+                items = self.repository.get_all()
+                season_items = [
+                    item for item in items
+                    if season in (item.question or "")
+                ]
+                if season_items:
+                    best_item = None
+                    best_score = 0.0
+                    for item in season_items:
+                        score = self._simple_overlap_score(query, item.question)
+                        if score > best_score:
+                            best_score = score
+                            best_item = item
+                    if best_item and best_score >= 0.1:
+                        return {
+                            "matched": True,
+                            "answer": best_item.answer,
+                            "answers": list(best_item.answers or ([best_item.answer] if best_item.answer else [])),
+                            "question": best_item.question,
+                            "score": float(best_score),
+                            "mode": "season_priority",
+                            "intent": best_item.intent,
+                            "tags": list(best_item.tags or []),
+                            "item_id": str(best_item.id or ""),
+                            "blocked_by_polite_guard": False,
+                            "polite_guard_reason": "",
+                        }
+
+        # 特殊处理：通用价格查询优先级
+        generic_price_keywords = ["假发多少钱", "假发价格", "多少钱", "价位", "价格"]
+        specific_style_keywords = ["短款", "短发", "长款", "长发", "盘发", "中长", "齐肩"]
+
+        if any(k in query for k in generic_price_keywords):
+            # 如果没有提到具体款式，优先匹配通用价格问题
+            if not any(k in query for k in specific_style_keywords):
+                items = self.repository.get_all()
+                generic_price_items = [
+                    item for item in items
+                    if item.intent == "price"
+                    and "价格多少" in (item.question or "")
+                    and not any(style in (item.question or "") for style in specific_style_keywords)
+                ]
+                if generic_price_items:
+                    best_item = generic_price_items[0]  # 直接返回第一个通用价格问题
+                    return {
+                        "matched": True,
+                        "answer": best_item.answer,
+                        "answers": list(best_item.answers or []),
+                        "question": best_item.question,
+                        "score": 0.9,  # 高分数表示优先匹配
+                        "mode": "generic_price_priority",
+                        "intent": best_item.intent,
+                        "tags": list(best_item.tags or []),
+                        "item_id": str(best_item.id or ""),
+                        "confidence": "high",  # 添加置信度
+                        "blocked_by_polite_guard": False,
+                        "polite_guard_reason": "",
+                    }
+
+        detail = self.repository.find_best_match_detail(query, threshold=0.7)  # 从0.6提高到0.7
         detail, blocked, reason = self._apply_polite_closing_guard(
             detail=detail,
             raw_query=query,
@@ -222,12 +473,20 @@ class KnowledgeService(QObject):
             blocked_by_polite_guard = True
             polite_guard_reason = reason or "polite_not_exact"
         if detail.get("matched"):
+            # 添加置信度判断
+            score = detail.get("score", 0.0)
+            if score >= 0.7:
+                detail["confidence"] = "high"
+            elif score >= 0.5:
+                detail["confidence"] = "medium"
+            else:
+                detail["confidence"] = "low"
             detail["blocked_by_polite_guard"] = False
             detail["polite_guard_reason"] = ""
             return detail
 
         if normalized_query and normalized_query != query:
-            relaxed_threshold = max(0.35, float(threshold) - 0.2)
+            relaxed_threshold = max(0.5, float(threshold) - 0.2)  # 从0.35提高到0.5
             detail = self.repository.find_best_match_detail(normalized_query, relaxed_threshold)
             detail, blocked, reason = self._apply_polite_closing_guard(
                 detail=detail,
@@ -238,6 +497,14 @@ class KnowledgeService(QObject):
                 blocked_by_polite_guard = True
                 polite_guard_reason = reason or "polite_not_exact"
             if detail.get("matched"):
+                # 添加置信度判断
+                score = detail.get("score", 0.0)
+                if score >= 0.7:
+                    detail["confidence"] = "high"
+                elif score >= 0.5:
+                    detail["confidence"] = "medium"
+                else:
+                    detail["confidence"] = "low"
                 detail["mode"] = f"normalized_{detail.get('mode', 'match')}"
                 detail["blocked_by_polite_guard"] = False
                 detail["polite_guard_reason"] = ""
@@ -337,8 +604,15 @@ class KnowledgeService(QObject):
                     best_score = score
                     best_item = item
 
-            min_score = 0.15 if intent == "general" else 0.05
+            min_score = 0.25 if intent == "general" else 0.15  # 从0.15/0.05提高到0.25/0.15
             if best_item and best_item.answer and best_score >= min_score:
+                # 添加置信度判断
+                if best_score >= 0.7:
+                    confidence = "high"
+                elif best_score >= 0.5:
+                    confidence = "medium"
+                else:
+                    confidence = "low"
                 return {
                     "matched": True,
                     "answer": best_item.answer,
@@ -349,6 +623,7 @@ class KnowledgeService(QObject):
                     "intent": intent,
                     "tags": list(best_item.tags or []),
                     "item_id": str(best_item.id or ""),
+                    "confidence": confidence,
                     "blocked_by_polite_guard": False,
                     "polite_guard_reason": "",
                 }

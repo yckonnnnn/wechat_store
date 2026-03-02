@@ -547,6 +547,12 @@ class CustomerServiceAgent:
         }
 
     def _detect_intent(self, text: str) -> str:
+        # 特殊处理：如果同时包含"不在上海"和售后关键词，优先识别为售后问题而不是地址问题
+        aftercare_keywords = ("清洗", "售后", "保养", "打理", "维护", "怎么洗", "自己洗", "不会洗")
+        neg_shanghai_keywords = ("不在上海", "不是上海", "不去上海")
+        if any(k in (text or "") for k in neg_shanghai_keywords) and any(k in (text or "") for k in aftercare_keywords):
+            return "general"  # 让它走通用流程，匹配清洗相关的知识库
+
         if self.knowledge_service.is_address_query(text):
             return "address"
         if self.knowledge_service.is_purchase_intent(text):
@@ -698,6 +704,21 @@ class CustomerServiceAgent:
             session_state["last_geo_pending"] = False
             session_state["geo_followup_round"] = 0
             session_state["geo_choice_offered"] = False
+
+            # 如果已经发送过联系方式图片，只用固定话术提醒
+            if self._is_contact_image_sent_for_current_geo(session_state):
+                return AgentDecision(
+                    reply_text="姐姐，请往上滑看图中画框框的地方找我～♥️",
+                    intent="purchase" if intent == "purchase" else "address",
+                    route_reason="out_of_coverage",
+                    reply_goal="推进购买意图",
+                    media_plan="none",
+                    reply_source="rule",
+                    rule_id="ADDR_OUT_OF_COVERAGE_REMIND_ONLY",
+                    rule_applied=True,
+                    geo_context_source=geo_context.get("source", ""),
+                )
+
             return AgentDecision(
                 reply_text=self._render_template("non_coverage_contact", region=region),
                 intent="purchase" if intent == "purchase" else "address",
@@ -870,6 +891,42 @@ class CustomerServiceAgent:
             rule_applied=True,
         )
 
+    def _is_follow_up_question(self, text: str, conversation_history: List[Dict[str, str]]) -> bool:
+        """检测是否为追问，根据用户选择的策略"""
+        text_stripped = text.strip()
+
+        # 场景1：简短回复（<10字符）
+        if len(text_stripped) < 10:
+            return True
+
+        # 场景2：包含追问关键词
+        follow_up_keywords = ["怎么", "如何", "为什么", "那", "呢", "吗", "太", "很", "什么"]
+        if any(k in text for k in follow_up_keywords) and len(text_stripped) < 20:
+            return True
+
+        # 场景3：与上一轮对话高度相关（关键词重叠>30%）
+        if conversation_history and len(conversation_history) >= 2:
+            last_user_msg = conversation_history[-2].get("content", "")
+            last_assistant_msg = conversation_history[-1].get("content", "")
+
+            # 提取关键词（去除标点和常见词）
+            def extract_keywords(s):
+                import re
+                s = re.sub(r'[，。！？、,.!?~\s]+', '', s)
+                # 去除常见词
+                common_words = set("的了吗呢啊哦嗯姐姐我们您")
+                return set(c for c in s if c not in common_words)
+
+            user_words = extract_keywords(text_stripped)
+            last_words = extract_keywords(last_user_msg + last_assistant_msg)
+
+            if user_words and last_words:
+                overlap = len(user_words & last_words) / len(user_words)
+                if overlap > 0.3:
+                    return True
+
+        return False
+
     def _decide_general_reply(
         self,
         latest_user_text: str,
@@ -911,6 +968,16 @@ class CustomerServiceAgent:
                 rule_applied=True,
             )
 
+        # 追问检测：优先走 LLM
+        if self._is_follow_up_question(latest_user_text, conversation_history):
+            return self._decide_llm_reply(
+                latest_user_text=latest_user_text,
+                intent=intent,
+                route_reason=route_reason,
+                conversation_history=conversation_history,
+                rule_id="LLM_FOLLOW_UP",
+            )
+
         # 规则外：先知识库，未命中再 LLM
         if self.use_knowledge_first:
             kb_detail = self.knowledge_service.find_answer_detail(
@@ -920,6 +987,23 @@ class CustomerServiceAgent:
             kb_blocked_by_polite_guard = bool(kb_detail.get("blocked_by_polite_guard", False))
             kb_polite_guard_reason = str(kb_detail.get("polite_guard_reason", "") or "")
             if kb_detail.get("matched"):
+                # 场景4：低置信度（0.5-0.7）走 LLM
+                confidence = kb_detail.get("confidence", "high")
+                if confidence in ["low", "medium"]:
+                    # 使用知识库答案作为参考，但让 LLM 结合上下文重新生成
+                    return self._decide_llm_reply(
+                        latest_user_text=latest_user_text,
+                        intent=intent,
+                        route_reason=route_reason,
+                        conversation_history=conversation_history,
+                        kb_match_score=kb_detail.get("score", 0.0),
+                        kb_match_question=kb_detail.get("question", ""),
+                        kb_match_mode=kb_detail.get("mode", ""),
+                        kb_item_id=kb_detail.get("item_id", ""),
+                        rule_id="LLM_LOW_CONFIDENCE_KB",
+                    )
+
+                # 高置信度（>=0.7），返回知识库答案
                 kb_contact_trigger_type = self._resolve_kb_contact_trigger_type(
                     latest_user_text=latest_user_text,
                     kb_detail=kb_detail,

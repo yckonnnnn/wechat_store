@@ -1,23 +1,19 @@
 {
   "version": 4,
-  "updated_at": "2026-02-28T22:32:31.412544",
+  "updated_at": "2026-03-02T13:53:53.849383",
   "sessions": {
     "user_8a2aa6665c": {
       "session_id": "user_8a2aa6665c",
       "user_hash": "8a2aa6665c",
       "session_fingerprint": "name:Zack",
       "first_seen_at": "2026-02-28T21:52:48.554409",
-      "updated_at": "2026-02-28T21:57:44.659950",
+      "updated_at": "2026-03-02T13:52:00.586878",
       "address_prompt_count": 0,
-      "sent_address_stores": [
-        "sh_renmin"
-      ],
-      "address_image_sent_count": 1,
-      "address_image_last_sent_at_by_store": {
-        "sh_renmin": "2026-02-28T21:53:16.661854"
-      },
-      "contact_image_sent_count": 2,
-      "contact_image_last_sent_at": "2026-02-28T21:57:44.659943",
+      "sent_address_stores": [],
+      "address_image_sent_count": 0,
+      "address_image_last_sent_at_by_store": {},
+      "contact_image_sent_count": 0,
+      "contact_image_last_sent_at": "",
       "contact_warmup": false,
       "geo_followup_round": 0,
       "geo_choice_offered": false,
@@ -28,13 +24,13 @@
       "last_geo_updated_at": "2026-02-28T21:53:28.561898",
       "strong_intent_after_both_count": 1,
       "purchase_both_first_hint_sent": true,
-      "session_video_armed": true,
-      "session_video_sent": true,
-      "session_post_contact_reply_count": 16,
+      "session_video_armed": false,
+      "session_video_sent": false,
+      "session_post_contact_reply_count": 0,
       "last_route_reason": "unknown",
-      "last_intent": "purchase",
+      "last_intent": "general",
       "last_reply_goal": "解答",
-      "session_user_message_count_after_contact": 17,
+      "session_user_message_count_after_contact": 0,
       "knowledge_reply_count": 10
     },
     "user_c57902b32b": {
@@ -73,7 +69,7 @@
     "8a2aa6665c": {
       "user_hash": "8a2aa6665c",
       "first_seen_at": "2026-02-28T21:52:48.555693",
-      "updated_at": "2026-02-28T21:57:44.659953",
+      "updated_at": "2026-03-02T13:52:03.573639",
       "video_armed": false,
       "video_sent": false,
       "post_contact_reply_count": 0,
@@ -98,7 +94,8 @@
         "不能呢姐姐定制需要710天制作周期着急的话我帮您优先安排",
         "姐姐不需要剃掉只需要剪短不露出来就可以了",
         "有的我们是科技记忆发免打理更省心",
-        "姐姐马老师是需要提前预约的建议您先预约时间"
+        "姐姐马老师是需要提前预约的建议您先预约时间",
+        "姐姐抱歉系统现在有点忙您稍后再发我马上跟进您哦"
       ]
     },
     "c57902b32b": {
