@@ -1,0 +1,51 @@
+{
+  "version": 4,
+  "updated_at": "2026-03-02T17:34:21.948994",
+  "sessions": {
+    "debug_route_1": {
+      "session_id": "debug_route_1",
+      "user_hash": "e4774cdda0",
+      "session_fingerprint": "",
+      "first_seen_at": "2026-03-02T17:34:21.942185",
+      "updated_at": "2026-03-02T17:34:21.948280",
+      "address_prompt_count": 0,
+      "sent_address_stores": [],
+      "address_image_sent_count": 0,
+      "address_image_last_sent_at_by_store": {},
+      "contact_image_sent_count": 0,
+      "contact_image_last_sent_at": "",
+      "contact_warmup": false,
+      "geo_followup_round": 0,
+      "geo_choice_offered": false,
+      "last_geo_pending": false,
+      "last_detected_region": "",
+      "last_target_store": "sh_wujiaochang",
+      "last_geo_route_reason": "sh_district_map:五角场",
+      "last_geo_updated_at": "2026-03-02T17:34:21.943737",
+      "strong_intent_after_both_count": 0,
+      "purchase_both_first_hint_sent": false,
+      "session_video_armed": false,
+      "session_video_sent": false,
+      "session_post_contact_reply_count": 0,
+      "last_route_reason": "unknown",
+      "last_intent": "general",
+      "last_reply_goal": "解答",
+      "session_user_message_count_after_contact": 0,
+      "knowledge_reply_count": 0
+    }
+  },
+  "users": {
+    "e4774cdda0": {
+      "user_hash": "e4774cdda0",
+      "first_seen_at": "2026-03-02T17:34:21.942342",
+      "updated_at": "2026-03-02T17:34:21.948910",
+      "video_armed": false,
+      "video_sent": false,
+      "post_contact_reply_count": 0,
+      "recent_reply_hashes": [
+        "姐姐推荐您去上海五角场门店我给您发一张位置图您跟着图中圈圈的位置会更直观",
+        "姐姐我给您确认下门店地址哈"
+      ]
+    }
+  }
+}

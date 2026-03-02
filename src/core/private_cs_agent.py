@@ -1864,7 +1864,19 @@ class CustomerServiceAgent:
         text = str(template or "").format_map(_SafeDict(kwargs))
         text = " ".join(text.split())
         if not text:
-            return self._render_template("general_empty") if key != "general_empty" else "姐姐我在呢，关于假发有什么问题您都可以问我🌹"
+            # 随机选择emoji
+            emoji = random.choice(REPLY_EMOJI_POOL)
+            return self._render_template("general_empty") if key != "general_empty" else f"姐姐我在呢，关于假发有什么问题您都可以问我{emoji}"
+        # 替换模板中的固定emoji为随机emoji
+        text = self._randomize_template_emoji(text)
+        return text
+
+    def _randomize_template_emoji(self, text: str) -> str:
+        """将模板中的固定emoji替换为随机emoji"""
+        # 替换🌹为随机emoji
+        if "🌹" in text:
+            emoji = random.choice(REPLY_EMOJI_POOL)
+            text = text.replace("🌹", emoji)
         return text
 
 

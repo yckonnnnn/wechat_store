@@ -1,0 +1,53 @@
+{
+  "version": 4,
+  "updated_at": "2026-03-02T17:37:29.936567",
+  "sessions": {
+    "sim_session": {
+      "session_id": "sim_session",
+      "user_hash": "de81f6891f",
+      "session_fingerprint": "",
+      "first_seen_at": "2026-03-02T17:37:03.198151",
+      "updated_at": "2026-03-02T17:37:29.935268",
+      "address_prompt_count": 0,
+      "sent_address_stores": [],
+      "address_image_sent_count": 0,
+      "address_image_last_sent_at_by_store": {},
+      "contact_image_sent_count": 0,
+      "contact_image_last_sent_at": "",
+      "contact_warmup": false,
+      "geo_followup_round": 0,
+      "geo_choice_offered": false,
+      "last_geo_pending": false,
+      "last_detected_region": "",
+      "last_target_store": "",
+      "last_geo_route_reason": "unknown",
+      "last_geo_updated_at": "",
+      "strong_intent_after_both_count": 0,
+      "purchase_both_first_hint_sent": false,
+      "session_video_armed": false,
+      "session_video_sent": false,
+      "session_post_contact_reply_count": 0,
+      "last_route_reason": "unknown",
+      "last_intent": "general",
+      "last_reply_goal": "解答",
+      "session_user_message_count_after_contact": 0,
+      "knowledge_reply_count": 0
+    }
+  },
+  "users": {
+    "de81f6891f": {
+      "user_hash": "de81f6891f",
+      "first_seen_at": "2026-03-02T17:37:03.198171",
+      "updated_at": "2026-03-02T17:37:29.936518",
+      "video_armed": false,
+      "video_sent": false,
+      "post_contact_reply_count": 0,
+      "recent_reply_hashes": [
+        "有的各门店附近都有停车场您到店前我帮您确认具体位置",
+        "一般2次就能完成加急当天也能安排哦",
+        "正常定制710天完成上海北京附近更快哦",
+        "可以加急最快当天完成定制哦"
+      ]
+    }
+  }
+}
