@@ -65,6 +65,8 @@ SHIPPING_BLOCK_KEYWORDS = (
 )
 SHIPPING_BLOCK_REPLACEMENT = "姐姐我们是到店定制哦"
 DEFAULT_REPLY_EMOJI = "🌹"
+# 适合中老年客户的emoji表情池
+REPLY_EMOJI_POOL = ["🌹", "💗", "😘", "🥰", "🌷", "❤️", "😊", "💕", "🌸", "💐", "🌺", "😄"]
 ENTERPRISE_GUARD_DOC_PATH = Path("docs") / "llm_enterprise_knowledge_guard_v1.md"
 CONTACT_IMAGE_MAX_SEND = 3
 CONTACT_TRIGGER_KEYWORDS = (
@@ -547,11 +549,22 @@ class CustomerServiceAgent:
         }
 
     def _detect_intent(self, text: str) -> str:
-        # 特殊处理：如果同时包含"不在上海"和售后关键词，优先识别为售后问题而不是地址问题
-        aftercare_keywords = ("清洗", "售后", "保养", "打理", "维护", "怎么洗", "自己洗", "不会洗")
-        neg_shanghai_keywords = ("不在上海", "不是上海", "不去上海")
-        if any(k in (text or "") for k in neg_shanghai_keywords) and any(k in (text or "") for k in aftercare_keywords):
+        # 特殊处理1：如果包含售后关键词（清洗、保养等），优先识别为售后问题
+        aftercare_keywords = ("清洗", "售后", "保养", "打理", "维护", "怎么洗", "如何洗", "自己洗", "不会洗", "洗发", "护理")
+        if any(k in (text or "") for k in aftercare_keywords):
             return "general"  # 让它走通用流程，匹配清洗相关的知识库
+
+        # 特殊处理2：如果包含"不在XX地"+"到店"等模糊问题，走LLM
+        # 考虑各种表达：不在上海、不在北京、在异地、外地、不在本地等
+        remote_location_keywords = ("不在上海", "不是上海", "不去上海", "不在北京", "不是北京", "不去北京",
+                                   "在异地", "在外地", "不在本地", "外地的", "异地的", "没办法到店", "无法到店", "不能到店")
+        ambiguous_keywords = ("怎么办", "如何", "怎么做", "怎么弄")
+        if any(k in (text or "") for k in remote_location_keywords) and any(k in (text or "") for k in ambiguous_keywords):
+            # 如果同时包含售后关键词，优先走售后
+            if any(k in (text or "") for k in aftercare_keywords):
+                return "general"
+            # 否则也走general，让系统根据上下文判断
+            return "general"
 
         if self.knowledge_service.is_address_query(text):
             return "address"
@@ -568,6 +581,11 @@ class CustomerServiceAgent:
         route: Dict[str, Any],
         session_state: Dict[str, Any],
     ) -> bool:
+        # 如果包含售后关键词，不走规则决策，让它走知识库或LLM
+        aftercare_keywords = ("清洗", "售后", "保养", "打理", "维护", "怎么洗", "如何洗", "自己洗", "不会洗", "洗发", "护理")
+        if any(k in (text or "") for k in aftercare_keywords):
+            return False
+
         route_type = route.get("route_type", "unknown")
         if route_type in ("coverage", "non_coverage", "need_district"):
             return True
@@ -1787,7 +1805,9 @@ class CustomerServiceAgent:
         value = value.rstrip("，,；; ")
         if not re.search(r"[。！？!?]$", value):
             value = f"{value}。"
-        return f"{value}{DEFAULT_REPLY_EMOJI}"
+        # 随机选择emoji
+        emoji = random.choice(REPLY_EMOJI_POOL)
+        return f"{value}{emoji}"
 
     def _strip_inline_emoji_symbols(self, text: str) -> str:
         cleaned = re.sub(

@@ -1,2 +1,0 @@
-{"timestamp": "2026-03-02T15:31:33.567895", "session_id": "debug_after_key", "user_id_hash": "4350abe9bf", "event_type": "user_message", "reply_source": "", "rule_id": "", "model_name": "", "payload": {"text": "你们怎么帮我清洗假发？"}}
-{"timestamp": "2026-03-02T15:31:33.572850", "session_id": "debug_after_key", "user_id_hash": "4350abe9bf", "event_type": "assistant_reply", "reply_source": "fallback", "rule_id": "LLM_FALLBACK", "model_name": "ChatGPT", "payload": {"text": "姐姐明白，我先把关键点给您讲清楚呀🌹", "round_media_sent_types": []}}
