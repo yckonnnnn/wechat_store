@@ -41,6 +41,10 @@ icon/
 
 # 文档文件
 *.md
+# 例外文件
+!常见问题测试1.md
+!常见问题测试2.md
+!待处理问题记录.md
 
 # 配置文件（包含API密钥）
 config/model_settings.json
