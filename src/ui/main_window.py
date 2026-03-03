@@ -30,6 +30,7 @@ from ..services.llm_service import LLMService
 from ..utils.constants import MAIN_STYLE_SHEET, WECHAT_STORE_URL
 from .agent_status_tab import AgentStatusTab
 from .browser_tab import BrowserTab
+from .crm_manager_tab import CRMManagerTab
 from .image_management_tab import ImageManagementTab
 from .knowledge_tab import KnowledgeTab
 from .left_panel import LeftPanel
@@ -107,6 +108,7 @@ class MainWindow(QWidget):
             ("model", "模型配置"),
             ("images", "图片与视频管理"),
             ("agent", "Agent策略/状态"),
+            ("crm", "客户信息管理"),
         ]
         self.nav_buttons = {}
         for index, (key, label) in enumerate(nav_items):
@@ -142,6 +144,9 @@ class MainWindow(QWidget):
 
         self.agent_tab = AgentStatusTab()
         self.stack.addWidget(self.agent_tab)
+
+        self.crm_tab = CRMManagerTab()
+        self.stack.addWidget(self.crm_tab)
 
         content_layout.addWidget(self.stack, 1)
         main_layout.addWidget(content, 1)
@@ -179,6 +184,7 @@ class MainWindow(QWidget):
         self.image_management_tab.log_message.connect(self._on_log_message)
         self.image_management_tab.categories_updated.connect(lambda _cats: self.message_processor.reload_media_config())
         self.image_management_tab.categories_updated.connect(lambda _cats: self._refresh_agent_tab_status())
+        self.crm_tab.log_message.connect(self._on_log_message)
 
         self.agent_tab.reload_prompt_clicked.connect(self._on_reload_agent_prompt)
         self.agent_tab.reload_media_clicked.connect(self._on_reload_agent_media)

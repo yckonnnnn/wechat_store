@@ -1,6 +1,6 @@
 {
   "version": 4,
-  "updated_at": "2026-03-03T11:24:15.140452",
+  "updated_at": "2026-03-03T13:15:14.203493",
   "sessions": {
     "user_8a2aa6665c": {
       "session_id": "user_8a2aa6665c",
@@ -120,6 +120,37 @@
       "session_fingerprint": "name:梅语",
       "first_seen_at": "2026-03-03T10:49:44.788260",
       "updated_at": "2026-03-03T10:49:45.925778",
+      "address_prompt_count": 0,
+      "sent_address_stores": [],
+      "address_image_sent_count": 0,
+      "address_image_last_sent_at_by_store": {},
+      "contact_image_sent_count": 0,
+      "contact_image_last_sent_at": "",
+      "contact_warmup": false,
+      "geo_followup_round": 0,
+      "geo_choice_offered": false,
+      "last_geo_pending": false,
+      "last_detected_region": "",
+      "last_target_store": "",
+      "last_geo_route_reason": "unknown",
+      "last_geo_updated_at": "",
+      "strong_intent_after_both_count": 0,
+      "purchase_both_first_hint_sent": false,
+      "session_video_armed": false,
+      "session_video_sent": false,
+      "session_post_contact_reply_count": 0,
+      "last_route_reason": "unknown",
+      "last_intent": "general",
+      "last_reply_goal": "解答",
+      "session_user_message_count_after_contact": 0,
+      "knowledge_reply_count": 0
+    },
+    "user_f4279bcac8": {
+      "session_id": "user_f4279bcac8",
+      "user_hash": "f4279bcac8",
+      "session_fingerprint": "name:胃不疼",
+      "first_seen_at": "2026-03-03T13:12:29.211229",
+      "updated_at": "2026-03-03T13:15:11.322205",
       "address_prompt_count": 0,
       "sent_address_stores": [],
       "address_image_sent_count": 0,
@@ -278,6 +309,20 @@
       "post_contact_reply_count": 0,
       "recent_reply_hashes": [
         "价格根据定制方案在30006000元区间具体看您的头围脸型和需求哦"
+      ]
+    },
+    "f4279bcac8": {
+      "user_hash": "f4279bcac8",
+      "first_seen_at": "2026-03-03T13:12:29.213634",
+      "updated_at": "2026-03-03T13:15:14.203468",
+      "video_armed": false,
+      "video_sent": false,
+      "post_contact_reply_count": 0,
+      "recent_reply_hashes": [
+        "好的我马上帮您转接马老师",
+        "马老师目前主要负责短视频拍摄暂时不接待到店哦",
+        "姐姐我们先在这里沟通就好我先帮您把需求和方案梳理清楚呀",
+        "好的呢咱们先在这儿聊清楚您的需求我帮您匹配合适方案"
       ]
     }
   }
