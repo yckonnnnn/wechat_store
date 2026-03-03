@@ -1,9 +1,10 @@
 # 打包文件和目录
 build/
 dist/
-*.spec
+# *.spec 文件保留，Windows 打包需要
+!*.spec
 
-# Python缓存文件
+# Python 缓存文件
 __pycache__/
 *.py[cod]
 *$py.class
@@ -15,7 +16,7 @@ __pycache__/
 venv/
 env/
 
-# IDE文件
+# IDE 文件
 .vscode/
 .idea/
 *.swp
@@ -34,7 +35,10 @@ Thumbs.db
 *.temp
 
 # 打包脚本
-build_mac.sh
+# build_mac.sh 保留，macOS 打包需要
+!build_mac.sh
+# build.bat 保留，Windows 打包需要
+!build.bat
 
 # 图标文件（如果很大）
 icon/
@@ -42,9 +46,13 @@ icon/
 # 文档文件
 *.md
 # 例外文件
-!常见问题测试1.md
-!常见问题测试2.md
+!常见问题测试 1.md
+!常见问题测试 2.md
 !待处理问题记录.md
+!使用说明_Windows.md
+!README.md
+!CLAUDE.md
+!Windows 打包发布指南.md
 
-# 配置文件（包含API密钥）
+# 配置文件（包含 API 密钥）
 config/model_settings.json
