@@ -290,6 +290,12 @@ QPushButton#Secondary {
     font-weight: 600;
 }
 QPushButton#Secondary:hover { background: #e2e8f0; }
+QPushButton#Secondary:checked {
+    background: #2563eb;
+    color: #ffffff;
+    border: 1px solid #1d4ed8;
+}
+QPushButton#Secondary:checked:hover { background: #1d4ed8; }
 QPushButton#Ghost {
     background: transparent;
     color: #94a3b8;

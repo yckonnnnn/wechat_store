@@ -11,7 +11,7 @@ from datetime import datetime
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QMessageBox, QFileDialog,
-    QAbstractItemView, QProgressBar, QFrame, QTabBar, QInputDialog
+    QAbstractItemView, QProgressBar, QFrame, QTabBar, QInputDialog, QButtonGroup
 )
 from PySide6.QtCore import Qt, Signal, QThread, QSize
 from PySide6.QtGui import QPixmap, QIcon
@@ -113,6 +113,10 @@ class ImageManagementTab(QWidget):
         self.current_filter = self.ALL_TAB_NAME
         self.current_city_filter = ""
         self.visible_image_count = 0
+        self.page_size = 20
+        self.current_page = 1
+        self.filtered_media_paths = []
+        self.total_filtered_count = 0
         
         # 确保图片目录存在
         self.image_dir.mkdir(parents=True, exist_ok=True)
@@ -289,6 +293,11 @@ class ImageManagementTab(QWidget):
         self.city_bj_btn.clicked.connect(lambda: self._on_city_filter_click("北京"))
         layout.addWidget(self.city_bj_btn)
 
+        self.city_btn_group = QButtonGroup(self)
+        self.city_btn_group.setExclusive(True)
+        self.city_btn_group.addButton(self.city_sh_btn)
+        self.city_btn_group.addButton(self.city_bj_btn)
+
         layout.addStretch()
         wrap.setVisible(False)
         return wrap
@@ -306,6 +315,33 @@ class ImageManagementTab(QWidget):
         self.image_list.itemSelectionChanged.connect(self._on_selection_changed)
         self.image_list.itemDoubleClicked.connect(self._on_item_double_clicked)
         layout.addWidget(self.image_list)
+
+        self.pagination_wrap = QWidget()
+        pagination_layout = QHBoxLayout(self.pagination_wrap)
+        pagination_layout.setContentsMargins(0, 0, 0, 0)
+        pagination_layout.setSpacing(8)
+        pagination_layout.addStretch()
+
+        self.prev_page_btn = QPushButton("上一页")
+        self.prev_page_btn.setObjectName("Secondary")
+        self.prev_page_btn.setCursor(Qt.PointingHandCursor)
+        self.prev_page_btn.clicked.connect(self._prev_page)
+        pagination_layout.addWidget(self.prev_page_btn)
+
+        self.page_buttons_layout = QHBoxLayout()
+        self.page_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        self.page_buttons_layout.setSpacing(6)
+        pagination_layout.addLayout(self.page_buttons_layout)
+
+        self.next_page_btn = QPushButton("下一页")
+        self.next_page_btn.setObjectName("Secondary")
+        self.next_page_btn.setCursor(Qt.PointingHandCursor)
+        self.next_page_btn.clicked.connect(self._next_page)
+        pagination_layout.addWidget(self.next_page_btn)
+
+        pagination_layout.addStretch()
+        self.pagination_wrap.setVisible(False)
+        layout.addWidget(self.pagination_wrap)
         
         return group
     
@@ -391,6 +427,9 @@ class ImageManagementTab(QWidget):
             return
         self.current_filter = self.category_tabs.tabText(index)
         self._update_city_filter_visibility()
+        if self.current_filter == "店铺地址":
+            self._ensure_default_city_selection()
+        self.current_page = 1
         self._load_images()
 
     def _update_city_filter_visibility(self):
@@ -398,22 +437,35 @@ class ImageManagementTab(QWidget):
             return
         show = self.current_filter == "店铺地址"
         self.city_filter_wrap.setVisible(show)
-        if not show:
+        if show:
+            self._ensure_default_city_selection()
+        else:
             self.current_city_filter = ""
             if hasattr(self, "city_sh_btn"):
                 self.city_sh_btn.setChecked(False)
             if hasattr(self, "city_bj_btn"):
                 self.city_bj_btn.setChecked(False)
 
+    def _ensure_default_city_selection(self):
+        if self.current_filter != "店铺地址":
+            return
+        if self.current_city_filter not in ("上海", "北京"):
+            self.current_city_filter = "上海"
+        if hasattr(self, "city_sh_btn"):
+            self.city_sh_btn.setChecked(self.current_city_filter == "上海")
+        if hasattr(self, "city_bj_btn"):
+            self.city_bj_btn.setChecked(self.current_city_filter == "北京")
+
     def _on_city_filter_click(self, city: str):
+        if city not in ("上海", "北京"):
+            return
         if self.current_city_filter == city:
-            self.current_city_filter = ""
-            self.city_sh_btn.setChecked(False)
-            self.city_bj_btn.setChecked(False)
-        else:
-            self.current_city_filter = city
-            self.city_sh_btn.setChecked(city == "上海")
-            self.city_bj_btn.setChecked(city == "北京")
+            self._ensure_default_city_selection()
+            return
+        self.current_city_filter = city
+        self.city_sh_btn.setChecked(city == "上海")
+        self.city_bj_btn.setChecked(city == "北京")
+        self.current_page = 1
         self._load_images()
 
     def _add_category_tab(self):
@@ -485,14 +537,18 @@ class ImageManagementTab(QWidget):
     
     def _load_images(self):
         """加载图片和视频"""
+        self._stop_image_worker()
         self.status_label.setText("正在加载素材...")
-        self.progress_bar.setVisible(True)
+        self.progress_bar.setVisible(False)
         self.progress_bar.setValue(0)
         self.visible_image_count = 0
         
         # 清空当前列表
         self.image_list.clear()
         self.current_images.clear()
+        self.selected_images.clear()
+        self.filtered_media_paths = []
+        self.total_filtered_count = 0
         
         # 获取媒体文件
         media_paths = []
@@ -501,19 +557,125 @@ class ImageManagementTab(QWidget):
             media_paths.extend(self.image_dir.glob(f"*{ext}"))
             media_paths.extend(self.image_dir.glob(f"*{ext.upper()}"))
         
-        self.current_images = [str(path) for path in media_paths]
+        self.current_images = sorted({str(path) for path in media_paths}, key=lambda p: Path(p).name.lower())
         
         if not self.current_images:
             self.status_label.setText("没有找到素材文件")
             self.progress_bar.setVisible(False)
+            self.current_page = 1
+            self._render_pagination()
             return
-        
-        # 使用工作线程加载素材
-        self.image_worker = ImageLoadWorker(self.current_images, self.IMAGE_EXTENSIONS)
+
+        self.filtered_media_paths = self._apply_filters(self.current_images)
+        self.total_filtered_count = len(self.filtered_media_paths)
+        if self.total_filtered_count == 0:
+            self.current_page = 1
+            self._render_pagination()
+            self._update_status_label()
+            return
+
+        self.current_page = max(1, min(self.current_page, self._get_total_pages()))
+        self._render_pagination()
+        self._load_current_page_media()
+
+    def _stop_image_worker(self):
+        if self.image_worker is None:
+            return
+        if self.image_worker.isRunning():
+            self.image_worker.stop()
+            self.image_worker.wait()
+        self.image_worker = None
+
+    def _apply_filters(self, media_paths):
+        filtered = []
+        for path in media_paths:
+            filename = Path(path).name
+            if self._should_show_image(filename):
+                filtered.append(path)
+        return filtered
+
+    def _get_page_slice(self, media_paths, page, page_size):
+        start = max(0, (page - 1) * page_size)
+        end = start + page_size
+        return media_paths[start:end]
+
+    def _get_total_pages(self):
+        if self.total_filtered_count <= 0:
+            return 1
+        return (self.total_filtered_count + self.page_size - 1) // self.page_size
+
+    def _load_current_page_media(self):
+        self._stop_image_worker()
+        self.image_list.clear()
+        self.selected_images.clear()
+        self.visible_image_count = 0
+
+        page_paths = self._get_page_slice(self.filtered_media_paths, self.current_page, self.page_size)
+        if not page_paths:
+            self.progress_bar.setVisible(False)
+            self._update_status_label()
+            self._render_pagination()
+            return
+
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.status_label.setText(f"加载中... 0/{len(page_paths)}")
+
+        self.image_worker = ImageLoadWorker(page_paths, self.IMAGE_EXTENSIONS)
         self.image_worker.image_loaded.connect(self._on_image_loaded)
         self.image_worker.progress_updated.connect(self._on_progress_updated)
         self.image_worker.finished.connect(self._on_load_finished)
         self.image_worker.start()
+
+    def _clear_layout_widgets(self, layout):
+        while layout.count() > 0:
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _render_pagination(self):
+        if not hasattr(self, "pagination_wrap"):
+            return
+        self._clear_layout_widgets(self.page_buttons_layout)
+
+        has_items = self.total_filtered_count > 0
+        self.pagination_wrap.setVisible(has_items)
+        self.prev_page_btn.setEnabled(has_items and self.current_page > 1)
+        self.next_page_btn.setEnabled(has_items and self.current_page < self._get_total_pages())
+        if not has_items:
+            return
+
+        total_pages = self._get_total_pages()
+        for page in range(1, total_pages + 1):
+            btn = QPushButton(str(page))
+            btn.setObjectName("Secondary")
+            btn.setCheckable(True)
+            btn.setChecked(page == self.current_page)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda _checked=False, p=page: self._go_to_page(p))
+            self.page_buttons_layout.addWidget(btn)
+
+    def _go_to_page(self, page: int):
+        target = max(1, min(page, self._get_total_pages()))
+        if target == self.current_page:
+            return
+        self.current_page = target
+        self._render_pagination()
+        self._load_current_page_media()
+
+    def _prev_page(self):
+        self._go_to_page(self.current_page - 1)
+
+    def _next_page(self):
+        self._go_to_page(self.current_page + 1)
+
+    def _update_status_label(self):
+        total_pages = self._get_total_pages()
+        self.status_label.setText(
+            f"当前Tab[{self.current_filter}] 第{self.current_page}/{total_pages}页 显示 {self.visible_image_count} 个素材"
+            f"（筛选后共 {self.total_filtered_count} 个，库内共 {len(self.current_images)} 个）"
+        )
     
     def _should_show_image(self, filename):
         """根据当前筛选判断是否显示图片"""
@@ -527,6 +689,8 @@ class ImageManagementTab(QWidget):
     
     def _on_image_loaded(self, path: str, pixmap: QPixmap):
         """图片加载完成"""
+        if self.sender() is not self.image_worker:
+            return
         filename = Path(path).name
         
         # 应用筛选
@@ -562,18 +726,41 @@ class ImageManagementTab(QWidget):
     
     def _on_progress_updated(self, current: int, total: int):
         """更新进度"""
+        if self.sender() is not self.image_worker:
+            return
+        if total <= 0:
+            self.progress_bar.setValue(0)
+            return
         progress = int((current / total) * 100)
         self.progress_bar.setValue(progress)
         self.status_label.setText(f"加载中... {current}/{total}")
     
     def _on_load_finished(self):
         """加载完成"""
+        if self.sender() is not self.image_worker:
+            return
         self.progress_bar.setVisible(False)
-        self.status_label.setText(f"当前Tab[{self.current_filter}] 显示 {self.visible_image_count} 个素材（库内共 {len(self.current_images)} 个）")
-        self.log_message.emit(f"✅ 素材加载完成，当前Tab[{self.current_filter}] {self.visible_image_count} 个")
+        self._update_status_label()
+        self._render_pagination()
+        self.log_message.emit(
+            f"✅ 素材加载完成，当前Tab[{self.current_filter}] 第{self.current_page}/{self._get_total_pages()}页 "
+            f"{self.visible_image_count} 个（筛选后共 {self.total_filtered_count} 个）"
+        )
+        self.image_worker = None
+
+    def _validate_city_selection_for_store_upload(self) -> bool:
+        if self.current_filter != "店铺地址":
+            return True
+        self._ensure_default_city_selection()
+        if self.current_city_filter in ("上海", "北京"):
+            return True
+        QMessageBox.warning(self, "警告", "店铺地址素材请先选择城市（上海或北京）")
+        return False
     
     def _upload_images(self):
         """上传图片"""
+        if not self._validate_city_selection_for_store_upload():
+            return
         file_dialog = QFileDialog()
         file_dialog.setFileMode(QFileDialog.ExistingFiles)
         file_dialog.setNameFilter("图片文件 (*.jpg *.jpeg *.png *.gif *.bmp *.webp *.tiff)")
@@ -610,12 +797,15 @@ class ImageManagementTab(QWidget):
             if copied_count > 0:
                 self._save_categories()
                 self.log_message.emit(f"✅ 成功上传 {copied_count} 张图片")
+                self.current_page = 1
                 self._load_images()
             else:
                 self.log_message.emit("❌ 没有成功上传任何图片")
 
     def _upload_videos(self):
         """上传视频"""
+        if not self._validate_city_selection_for_store_upload():
+            return
         file_dialog = QFileDialog()
         file_dialog.setFileMode(QFileDialog.ExistingFiles)
         file_dialog.setNameFilter("视频文件 (*.mp4 *.mov *.m4v *.avi *.mkv *.wmv *.flv *.webm)")
@@ -650,6 +840,7 @@ class ImageManagementTab(QWidget):
             if copied_count > 0:
                 self._save_categories()
                 self.log_message.emit(f"✅ 成功上传 {copied_count} 个视频")
+                self.current_page = 1
                 self._load_images()
             else:
                 self.log_message.emit("❌ 没有成功上传任何视频")
