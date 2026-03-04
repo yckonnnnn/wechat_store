@@ -160,7 +160,7 @@ class LLMService(QObject):
         super().__init__()
         self.config_manager = config_manager
         self._workers: Dict[str, LLMWorker] = {}
-        self._system_prompt = "你是专业私域客服助手，请根据规则给出简洁、自然、可执行回复。"
+        self._system_prompt = "你是专业假发客服助手，请根据规则给出简洁、自然、可执行回复。"
 
     def generate_reply(
         self,
@@ -277,7 +277,7 @@ class LLMService(QObject):
                 model_name=model_name,
                 config=config,
                 messages=[{"role": "user", "content": "ping"}],
-                system_prompt="你是一个助手",
+                system_prompt="你是一个专业的假发客服",
                 max_tokens=1,
             )
             worker._call_api()

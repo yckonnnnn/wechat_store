@@ -363,6 +363,7 @@ class CustomerServiceAgent:
         if appointment_kb_decision and appointment_kb_decision.reply_source == "knowledge":
             decision = appointment_kb_decision
         elif self._should_apply_rule_decision(text=text, intent=intent, route=route, session_state=session_state):
+            print(f"[DEBUG] 走规则决策: intent={intent}, route_reason={route.get('reason', 'unknown')}, target_store={route.get('target_store', 'unknown')}")
             decision = self._decide_rule_reply(
                 text=text,
                 intent=intent,
@@ -373,6 +374,7 @@ class CustomerServiceAgent:
                 is_first_turn_global=is_first_turn_global,
             )
         else:
+            print(f"[DEBUG] 不走规则决策，走知识库或LLM: intent={intent}, route_reason={route.get('reason', 'unknown')}")
             decision = appointment_kb_decision or self._decide_general_reply(
                 latest_user_text=text,
                 intent=intent,
@@ -586,7 +588,25 @@ class CustomerServiceAgent:
         if any(k in (text or "") for k in aftercare_keywords):
             return False
 
+        # 优先检查：如果会触发地址图片发送，且该门店已经发送过，则不走规则决策
         route_type = route.get("route_type", "unknown")
+        target_store = route.get("target_store", "unknown")
+
+        # 判断是否会触发地址图片发送
+        will_send_address_image = (
+            route_type in ("coverage", "non_coverage", "need_district") or
+            intent == "address"
+        )
+
+        if will_send_address_image and target_store != "unknown":
+            sent_stores = set(session_state.get("sent_address_stores", []) or [])
+            print(f"[DEBUG] 地址路由检查: target_store={target_store}, sent_stores={sent_stores}, route_type={route_type}, intent={intent}")
+            if target_store in sent_stores:
+                # 已经发送过该门店的地址图片，不走地址路由，让 LLM 处理
+                print(f"[DEBUG] 该门店已发送过地址图片，跳过地址路由")
+                return False
+
+        # 原有的规则决策逻辑
         if route_type in ("coverage", "non_coverage", "need_district"):
             return True
         if intent in ("address", "purchase"):
@@ -1745,7 +1765,7 @@ class CustomerServiceAgent:
             "你是艾耐儿假发客服马老师的小助手。\n"
             "你只负责补充规则外的一般问答，不做任何地址/媒体/流程决策。\n"
             "语气自然、亲切、像真人客服。\n"
-            "硬规则：结论先行；尽量1句话完成回复，且必须是完整句；末尾只保留1个emoji表情。\n"
+            "硬规则：结论先行；尽量1句话完成回复，不拖拉，不啰嗦，且必须是完整句；末尾只保留1个emoji表情。\n"
             "超出知识库可常规发挥，但必须围绕企业知识口径；禁止编造活动承诺、联系方式或超出事实的信息。\n"
             "若信息不确定，给稳妥结论并引导用户补充。\n\n"
             f"【企业知识约束】\n{enterprise_guard}\n\n"
