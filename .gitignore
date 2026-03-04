@@ -41,7 +41,7 @@ Thumbs.db
 !build.bat
 
 # 图标文件（如果很大）
-icon/
+# icon/
 
 # 文档文件
 *.md
