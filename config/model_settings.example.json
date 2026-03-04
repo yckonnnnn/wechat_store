@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "updated_at": "",
+  "current_model": "DeepSeek",
+  "models": {
+    "ChatGPT": {
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "",
+      "model": "gpt-4o-mini"
+    },
+    "Gemini": {
+      "base_url": "https://generativelanguage.googleapis.com",
+      "api_key": "",
+      "model": "gemini-1.5-flash"
+    },
+    "阿里千问": {
+      "base_url": "https://dashscope.aliyuncs.com",
+      "api_key": "",
+      "model": "qwen-plus"
+    },
+    "DeepSeek": {
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key": "",
+      "model": "deepseek-v3.2"
+    },
+    "豆包": {
+      "base_url": "",
+      "api_key": "",
+      "model": ""
+    },
+    "kimi": {
+      "base_url": "https://api.moonshot.cn/v1",
+      "api_key": "",
+      "model": "moonshot-v1-8k"
+    }
+  }
+}

@@ -27,7 +27,12 @@ from ..data.memory_store import MemoryStore
 from ..services.browser_service import BrowserService
 from ..services.knowledge_service import KnowledgeService
 from ..services.llm_service import LLMService
-from ..utils.constants import MAIN_STYLE_SHEET, WECHAT_STORE_URL
+from ..utils.constants import (
+    MAIN_STYLE_SHEET,
+    WECHAT_STORE_URL,
+    USER_DATA_DIR,
+    AGENT_MEMORY_FILE,
+)
 from .agent_status_tab import AgentStatusTab
 from .browser_tab import BrowserTab
 from .crm_manager_tab import CRMManagerTab
@@ -63,7 +68,9 @@ class MainWindow(QWidget):
         self.llm_service = LLMService(self.config_manager)
         self.session_manager = SessionManager()
 
-        self.memory_store = MemoryStore(Path("config") / "agent_memory.json")
+        # 使用用户数据目录存储记忆文件
+        USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        self.memory_store = MemoryStore(AGENT_MEMORY_FILE)
         self.agent = CustomerServiceAgent(
             knowledge_service=self.knowledge_service,
             llm_service=self.llm_service,
@@ -267,6 +274,8 @@ class MainWindow(QWidget):
         if self.message_processor and self.message_processor.is_running():
             self.message_processor.stop()
 
+        # 关闭前把“模型配置”页里尚未点保存的输入框内容同步到配置对象
+        self.model_config_tab.sync_inputs_to_config()
         self.llm_service.cleanup()
         self.memory_store.save()
         self.config_manager.save()

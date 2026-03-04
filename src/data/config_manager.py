@@ -110,12 +110,12 @@ class ConfigManager(QObject):
             if self.config_file:
                 self.config_file.parent.mkdir(parents=True, exist_ok=True)
                 
-                # 先重新加载文件中的配置，避免覆盖用户手动添加的配置
+                # 先读取现有文件，保留未知字段（如未来扩展字段）
                 if self.config_file.exists():
                     with open(self.config_file, 'r', encoding='utf-8') as f:
                         file_config = json.load(f)
-                        # 合并：保留文件中的用户手动配置，更新其他配置
-                        self._settings = self._merge_preserve_keys(file_config, self._settings, preserve_keys=['api_key', 'base_url', 'model'])
+                        # 合并规则：以内存中的当前配置为准，文件中的未知字段保留
+                        self._settings = self._deep_merge_prefer_override(file_config, self._settings)
                 
                 self._settings["updated_at"] = datetime.now().isoformat()
                 with open(self.config_file, 'w', encoding='utf-8') as f:
@@ -125,21 +125,17 @@ class ConfigManager(QObject):
             print(f"[ConfigManager] 保存配置失败: {e}")
             return False
     
-    def _merge_preserve_keys(self, base: dict, override: dict, preserve_keys: list) -> dict:
-        """合并配置，保留 base 中指定 key 的非空值
-        
-        Args:
-            base: 基础配置（文件中的配置）
-            override: 覆盖配置（内存中的配置）
-            preserve_keys: 需要保留的 key 列表（如 'api_key'）
+    def _deep_merge_prefer_override(self, base: dict, override: dict) -> dict:
+        """深度合并两个字典，优先使用 override 的值。
+
+        用于 save() 场景：保留文件中未被当前内存配置覆盖的字段，
+        但不回滚用户刚在界面里修改过的字段（如 model/base_url/api_key）。
         """
-        result = override.copy()
-        for key, value in base.items():
-            if isinstance(value, dict) and key in result and isinstance(result[key], dict):
-                # 递归合并字典
-                result[key] = self._merge_preserve_keys(value, result[key], preserve_keys)
-            elif key in preserve_keys and value:
-                # 如果是需要保留的 key 且 base 中有非空值，使用 base 的值
+        result = base.copy()
+        for key, value in override.items():
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                result[key] = self._deep_merge_prefer_override(result[key], value)
+            else:
                 result[key] = value
         return result
 

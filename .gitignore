@@ -56,3 +56,9 @@ icon/
 
 # 配置文件（包含 API 密钥）
 config/model_settings.json
+config/agent_memory.json
+
+# 环境变量文件
+.env
+.env.local
+.env.*.local

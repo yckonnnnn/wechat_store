@@ -3,6 +3,8 @@
 包含系统配置、默认值、样式表等常量
 """
 
+import os
+import platform
 from pathlib import Path
 
 # 项目路径
@@ -10,10 +12,39 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_DIR = PROJECT_ROOT / "config"
 DATA_DIR = PROJECT_ROOT / "data"
 
-# 配置文件路径
-MODEL_SETTINGS_FILE = CONFIG_DIR / "model_settings.json"
-KNOWLEDGE_BASE_FILE = CONFIG_DIR / "knowledge_base.json"
+# 用户数据目录（跨平台支持）
+# Windows: %APPDATA%/Annel AI 客服
+# macOS: ~/Library/Application Support/Annel AI 客服
+# Linux: ~/.local/share/Annel AI 客服
+def get_user_data_dir():
+    """获取用户数据目录"""
+    system = platform.system()
+    app_name = "Annel AI 客服"
+
+    if system == "Windows":
+        base = Path(os.environ.get('APPDATA', ''))
+        if not base.exists():
+            base = Path.home() / 'AppData' / 'Roaming'
+        return base / app_name
+    elif system == "Darwin":  # macOS
+        return Path.home() / 'Library' / 'Application Support' / app_name
+    else:  # Linux
+        base = Path(os.environ.get('XDG_DATA_HOME', ''))
+        if not base.exists():
+            base = Path.home() / '.local' / 'share'
+        return base / app_name
+
+USER_DATA_DIR = get_user_data_dir()
+
+# 配置文件路径（优先级：用户数据目录 > 项目目录）
+# 运行时配置存储在用户数据目录，业务配置使用项目目录
+MODEL_SETTINGS_FILE = USER_DATA_DIR / "model_settings.json"
+AGENT_MEMORY_FILE = USER_DATA_DIR / "agent_memory.json"
+KNOWLEDGE_BASE_FILE = PROJECT_ROOT / "config" / "knowledge_base.json"
 ENV_FILE = PROJECT_ROOT / ".env"
+
+# 示例配置文件路径（用于首次运行提示）
+MODEL_SETTINGS_EXAMPLE = PROJECT_ROOT / "config" / "model_settings.example.json"
 
 # 默认模型配置
 DEFAULT_MODEL_SETTINGS = {
