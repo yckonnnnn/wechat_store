@@ -58,6 +58,7 @@ class KnowledgeService(QObject):
     SHANGHAI_DISTRICT_STORE_MAP = {
         "闵行": "sh_xuhui",
         "长宁": "sh_jingan",
+        "静安寺": "sh_jingan",
         "虹口": "sh_hongkou",
         "杨浦": "sh_wujiaochang",
         "五角场": "sh_wujiaochang",
@@ -66,8 +67,10 @@ class KnowledgeService(QObject):
         "人民广场": "sh_renmin",
         "人广": "sh_renmin",
         "徐汇": "sh_xuhui",
+        "徐家汇": "sh_xuhui",
         "静安": "sh_jingan",
         "浦东": "sh_renmin",
+        "浦东新区": "sh_renmin",
         "青浦": "sh_renmin",
         "金山": "sh_renmin",
         "崇明": "sh_renmin",
@@ -109,6 +112,18 @@ class KnowledgeService(QObject):
         "我想问", "麻烦问下", "麻烦问一下"
     )
     POLITE_CLOSING_REQUIRED_TAGS = ("礼貌", "结束语")
+    REGION_ROUTE_PROVINCE_KEY_MAP = {
+        "河北": "河北",
+        "河北省": "河北",
+        "天津": "天津",
+        "天津市": "天津",
+        "内蒙古": "内蒙古",
+        "内蒙古自治区": "内蒙古",
+        "江苏": "江苏",
+        "江苏省": "江苏",
+        "浙江": "浙江",
+        "浙江省": "浙江",
+    }
 
     def __init__(self, repository: KnowledgeRepository, address_config_path: Optional[Path] = None):
         super().__init__()
@@ -806,6 +821,9 @@ class KnowledgeService(QObject):
         # 其他明确地区（如新疆/大连）-> 非覆盖地区固定话术
         detected_region = self._extract_region_mention(text)
         if detected_region:
+            routed = self._build_coverage_route_by_detected_region(detected_region)
+            if routed:
+                return routed
             return {
                 "city": "unknown",
                 "target_store": "unknown",
@@ -836,6 +854,44 @@ class KnowledgeService(QObject):
             "store_name": detail.get("store_name", ""),
             "detected_region": "",
         }
+
+    def _build_coverage_route_by_detected_region(self, detected_region: str) -> Optional[Dict[str, object]]:
+        region_key = self._normalize_region_key(detected_region)
+        if region_key in ("河北", "天津", "内蒙古"):
+            return self._build_route("beijing_chaoyang", "north_fallback_beijing")
+        if region_key in ("江苏", "浙江"):
+            return self._build_route("sh_renmin", "jiangzhe_to_sh_renmin")
+        return None
+
+    def _normalize_region_key(self, region: str) -> str:
+        raw = str(region or "").strip()
+        if not raw:
+            return ""
+        mapped = self.REGION_ROUTE_PROVINCE_KEY_MAP.get(raw)
+        if mapped:
+            return mapped
+        suffixes = (
+            "特别行政区",
+            "维吾尔自治区",
+            "壮族自治区",
+            "回族自治区",
+            "自治区",
+            "自治州",
+            "地区",
+            "省",
+            "市",
+            "区",
+            "县",
+            "州",
+            "盟",
+            "旗",
+        )
+        for suffix in suffixes:
+            if raw.endswith(suffix):
+                trimmed = raw[: -len(suffix)].strip()
+                if trimmed:
+                    return self.REGION_ROUTE_PROVINCE_KEY_MAP.get(trimmed, trimmed)
+        return raw
 
     def get_store_display(self, target_store: str) -> dict:
         detail = self.STORE_DETAILS.get(target_store, {})

@@ -184,6 +184,13 @@ class RuleEngineTestCase(unittest.TestCase):
 
             sh_route = service.resolve_store_recommendation("我在上海徐汇")
             self.assertEqual(sh_route.get("target_store"), "sh_xuhui")
+            sh_landmark_route = service.resolve_store_recommendation("我在上海徐家汇")
+            self.assertEqual(sh_landmark_route.get("target_store"), "sh_xuhui")
+            self.assertEqual(sh_landmark_route.get("reason"), "sh_district_map:徐家汇")
+
+            shijiazhuang_route = service.resolve_store_recommendation("石家庄有吗")
+            self.assertEqual(shijiazhuang_route.get("target_store"), "beijing_chaoyang")
+            self.assertEqual(shijiazhuang_route.get("reason"), "north_fallback_beijing")
 
             non_cov_route = service.resolve_store_recommendation("我在黑龙江")
             self.assertEqual(non_cov_route.get("reason"), "out_of_coverage")
@@ -257,6 +264,22 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d.rule_id, "ADDR_ASK_DISTRICT_R1")
             self.assertEqual(d.media_plan, "none")
             self.assertNotIn("门店地址：", d.reply_text)
+
+    def test_address_query_shanghai_landmark_routes_store(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+
+            d = agent.decide("chat_detail_sh_landmark", "用户地址地标", "上海徐家汇", [])
+            self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
+            self.assertEqual(d.route_reason, "sh_district_map:徐家汇")
+
+    def test_address_query_city_only_routes_north_fallback(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+
+            d = agent.decide("chat_detail_city_only", "用户地址城市", "石家庄有吗", [])
+            self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
+            self.assertEqual(d.route_reason, "north_fallback_beijing")
 
     def test_address_query_cityless_asks_region(self):
         with tempfile.TemporaryDirectory() as td:
