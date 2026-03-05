@@ -246,6 +246,7 @@ class CustomerServiceAgent:
             return
 
         images_data = data.get("images", {}) or {}
+        store_targets = data.get("store_targets", {}) or {}
 
         for raw_name in images_data.get("联系方式", []):
             filename = Path(raw_name).name
@@ -281,18 +282,14 @@ class CustomerServiceAgent:
                 continue
 
             full = str(path.resolve())
-            if "北京" in filename:
-                self._address_index["beijing_chaoyang"].append(full)
-            elif "徐汇" in filename:
-                self._address_index["sh_xuhui"].append(full)
-            elif "静安" in filename:
-                self._address_index["sh_jingan"].append(full)
-            elif "虹口" in filename:
-                self._address_index["sh_hongkou"].append(full)
-            elif "五角场" in filename or "杨浦" in filename:
-                self._address_index["sh_wujiaochang"].append(full)
-            elif "人广" in filename or "人民广场" in filename or "黄浦" in filename or "黄埔" in filename:
-                self._address_index["sh_renmin"].append(full)
+            target_store = str(store_targets.get(filename, "") or "").strip()
+            if target_store in self._address_index:
+                self._address_index[target_store].append(full)
+                continue
+
+            inferred_store = self._infer_store_from_name(filename)
+            if inferred_store in self._address_index:
+                self._address_index[inferred_store].append(full)
             else:
                 self._address_index["sh_renmin"].append(full)
 
@@ -1685,19 +1682,23 @@ class CustomerServiceAgent:
 
     def _infer_store_from_image_path(self, media_path: str) -> str:
         name = Path(str(media_path or "")).name
-        if not name:
+        return self._infer_store_from_name(name)
+
+    def _infer_store_from_name(self, name: str) -> str:
+        raw = str(name or "")
+        if not raw:
             return ""
-        if "北京" in name:
+        if "北京" in raw:
             return "beijing_chaoyang"
-        if "徐汇" in name:
+        if "徐汇" in raw or "徐家汇" in raw:
             return "sh_xuhui"
-        if "静安" in name:
+        if "静安" in raw:
             return "sh_jingan"
-        if "虹口" in name:
+        if "虹口" in raw:
             return "sh_hongkou"
-        if "五角场" in name or "杨浦" in name:
+        if "五角场" in raw or "杨浦" in raw:
             return "sh_wujiaochang"
-        if any(k in name for k in ("人广", "人民广场", "黄浦", "黄埔")):
+        if any(k in raw for k in ("人广", "人民广场", "黄浦", "黄埔")):
             return "sh_renmin"
         return ""
 

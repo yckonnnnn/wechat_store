@@ -99,6 +99,22 @@ class ImageManagementTab(QWidget):
     ALL_TAB_NAME = "全部"
     IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff'}
     VIDEO_EXTENSIONS = {'.mp4', '.mov', '.m4v', '.avi', '.mkv', '.wmv', '.flv', '.webm'}
+    SHANGHAI_STORE_SUBTABS = [
+        ("静安", "sh_jingan"),
+        ("人广", "sh_renmin"),
+        ("五角场", "sh_wujiaochang"),
+        ("虹口", "sh_hongkou"),
+        ("徐汇", "sh_xuhui"),
+    ]
+    STORE_TARGET_LABELS = {
+        "beijing_chaoyang": "北京朝阳",
+        "sh_jingan": "上海静安",
+        "sh_renmin": "上海人广",
+        "sh_wujiaochang": "上海五角场",
+        "sh_hongkou": "上海虹口",
+        "sh_xuhui": "上海徐汇",
+    }
+    VALID_STORE_TARGETS = set(STORE_TARGET_LABELS.keys())
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -110,8 +126,10 @@ class ImageManagementTab(QWidget):
         self.categories = ["联系方式", "店铺地址"]
         self.image_categories = {}  # {filename: category}
         self.image_cities = {}  # {filename: city}
+        self.image_store_targets = {}  # {filename: target_store}
         self.current_filter = self.ALL_TAB_NAME
         self.current_city_filter = ""
+        self.current_shanghai_store_target = self.SHANGHAI_STORE_SUBTABS[0][1]
         self.visible_image_count = 0
         self.page_size = 20
         self.current_page = 1
@@ -145,6 +163,11 @@ class ImageManagementTab(QWidget):
         self.city_filter_wrap = self._create_city_filter_bar()
         layout.addWidget(self.city_filter_wrap)
         self._update_city_filter_visibility()
+
+        # 上海门店子Tab（仅店铺地址 + 上海显示）
+        self.shanghai_store_filter_wrap = self._create_shanghai_store_filter_bar()
+        layout.addWidget(self.shanghai_store_filter_wrap)
+        self._update_shanghai_store_filter_visibility()
         
         # 图片列表面板
         image_panel = self._create_image_panel()
@@ -301,6 +324,51 @@ class ImageManagementTab(QWidget):
         layout.addStretch()
         wrap.setVisible(False)
         return wrap
+
+    def _create_shanghai_store_filter_bar(self):
+        """创建上海门店分组子Tab栏（店铺地址 + 上海专用）"""
+        wrap = QWidget()
+        layout = QHBoxLayout(wrap)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        sub_label = QLabel("分组:")
+        sub_label.setObjectName("MutedText")
+        layout.addWidget(sub_label)
+
+        self.shanghai_store_tabs = QTabBar()
+        self.shanghai_store_tabs.setExpanding(False)
+        self.shanghai_store_tabs.setMovable(False)
+        self.shanghai_store_tabs.setElideMode(Qt.ElideRight)
+        self.shanghai_store_tabs.currentChanged.connect(self._on_shanghai_store_tab_changed)
+        self.shanghai_store_tabs.setStyleSheet("""
+            QTabBar::tab {
+                background: #f8fafc;
+                border: 1px solid #e2e8f0;
+                border-radius: 8px;
+                padding: 6px 12px;
+                color: #334155;
+                margin-right: 6px;
+            }
+            QTabBar::tab:selected {
+                background: #0ea5e9;
+                border-color: #0284c7;
+                color: #ffffff;
+                font-weight: 600;
+            }
+            QTabBar::tab:hover:!selected {
+                background: #eef2ff;
+            }
+        """)
+        for label, target in self.SHANGHAI_STORE_SUBTABS:
+            index = self.shanghai_store_tabs.addTab(label)
+            self.shanghai_store_tabs.setTabData(index, target)
+        layout.addWidget(self.shanghai_store_tabs)
+
+        layout.addStretch()
+        wrap.setVisible(False)
+        self._ensure_default_shanghai_store_selection()
+        return wrap
     
     def _create_image_panel(self):
         """创建图片列表面板"""
@@ -348,12 +416,21 @@ class ImageManagementTab(QWidget):
     def _load_categories(self):
         """加载分类配置"""
         try:
+            needs_save = False
+            unresolved_store_targets = []
             if self.categories_file.exists():
                 with open(self.categories_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     self.categories = data.get("categories", ["联系方式", "店铺地址"])
                     images_data = data.get("images", {})
                     self.image_cities = data.get("cities", {}) or {}
+                    raw_store_targets = data.get("store_targets", {}) or {}
+                    self.image_store_targets = {}
+                    for raw_name, target in raw_store_targets.items():
+                        filename = Path(str(raw_name)).name
+                        target_str = str(target or "").strip()
+                        if filename and target_str in self.VALID_STORE_TARGETS:
+                            self.image_store_targets[filename] = target_str
                     for category in images_data.keys():
                         if category not in self.categories:
                             self.categories.append(category)
@@ -362,16 +439,30 @@ class ImageManagementTab(QWidget):
                     for category, filenames in images_data.items():
                         for filename in filenames:
                             self.image_categories[filename] = category
+
+                    changed, unresolved_store_targets = self._migrate_store_targets_for_address_images(images_data)
+                    if changed or int(data.get("version", 1) or 1) < 2:
+                        needs_save = True
             else:
                 self.categories = ["联系方式", "店铺地址"]
                 self.image_categories = {}
                 self.image_cities = {}
+                self.image_store_targets = {}
             self.categories = [c.strip() for c in self.categories if c and c.strip()]
             if not self.categories:
                 self.categories = ["联系方式", "店铺地址"]
+
+            if unresolved_store_targets:
+                preview = "、".join(unresolved_store_targets[:8])
+                more = "" if len(unresolved_store_targets) <= 8 else f" 等{len(unresolved_store_targets)}个"
+                self.log_message.emit(
+                    f"⚠️ 店铺地址素材有未识别分组，请检查文件名或手动重传到目标分组：{preview}{more}"
+                )
+            if needs_save:
+                self._save_categories()
         except Exception as e:
             self.log_message.emit(f"❌ 加载分类配置失败: {str(e)}")
-    
+
     def _save_categories(self):
         """保存分类配置"""
         try:
@@ -380,13 +471,22 @@ class ImageManagementTab(QWidget):
             for filename, category in self.image_categories.items():
                 if category in images_data:
                     images_data[category].append(filename)
+
+            store_targets_data = {}
+            for filename, category in self.image_categories.items():
+                if category != "店铺地址":
+                    continue
+                target = self.image_store_targets.get(filename, "")
+                if target in self.VALID_STORE_TARGETS:
+                    store_targets_data[filename] = target
             
             data = {
-                "version": 1,
+                "version": 2,
                 "updated_at": datetime.now().isoformat(),
                 "categories": self.categories,
                 "images": images_data,
-                "cities": self.image_cities
+                "cities": self.image_cities,
+                "store_targets": store_targets_data,
             }
             
             self.categories_file.parent.mkdir(parents=True, exist_ok=True)
@@ -427,6 +527,7 @@ class ImageManagementTab(QWidget):
             return
         self.current_filter = self.category_tabs.tabText(index)
         self._update_city_filter_visibility()
+        self._update_shanghai_store_filter_visibility()
         if self.current_filter == "店铺地址":
             self._ensure_default_city_selection()
         self.current_page = 1
@@ -445,12 +546,15 @@ class ImageManagementTab(QWidget):
                 self.city_sh_btn.setChecked(False)
             if hasattr(self, "city_bj_btn"):
                 self.city_bj_btn.setChecked(False)
+        self._update_shanghai_store_filter_visibility()
 
     def _ensure_default_city_selection(self):
         if self.current_filter != "店铺地址":
             return
         if self.current_city_filter not in ("上海", "北京"):
             self.current_city_filter = "上海"
+        if self.current_city_filter == "上海":
+            self._ensure_default_shanghai_store_selection()
         if hasattr(self, "city_sh_btn"):
             self.city_sh_btn.setChecked(self.current_city_filter == "上海")
         if hasattr(self, "city_bj_btn"):
@@ -465,6 +569,43 @@ class ImageManagementTab(QWidget):
         self.current_city_filter = city
         self.city_sh_btn.setChecked(city == "上海")
         self.city_bj_btn.setChecked(city == "北京")
+        self._update_shanghai_store_filter_visibility()
+        self.current_page = 1
+        self._load_images()
+
+    def _update_shanghai_store_filter_visibility(self):
+        if not hasattr(self, "shanghai_store_filter_wrap"):
+            return
+        show = self.current_filter == "店铺地址" and self.current_city_filter == "上海"
+        self.shanghai_store_filter_wrap.setVisible(show)
+        if show:
+            self._ensure_default_shanghai_store_selection()
+
+    def _ensure_default_shanghai_store_selection(self):
+        if self.current_shanghai_store_target not in {t for _l, t in self.SHANGHAI_STORE_SUBTABS}:
+            self.current_shanghai_store_target = self.SHANGHAI_STORE_SUBTABS[0][1]
+        if not hasattr(self, "shanghai_store_tabs"):
+            return
+        self.shanghai_store_tabs.blockSignals(True)
+        target_index = 0
+        for i in range(self.shanghai_store_tabs.count()):
+            tab_target = self.shanghai_store_tabs.tabData(i)
+            if tab_target == self.current_shanghai_store_target:
+                target_index = i
+                break
+        self.shanghai_store_tabs.setCurrentIndex(target_index)
+        self.shanghai_store_tabs.blockSignals(False)
+
+    def _on_shanghai_store_tab_changed(self, index: int):
+        if index < 0:
+            return
+        tab_target = self.shanghai_store_tabs.tabData(index)
+        target = str(tab_target or "").strip()
+        if target not in self.VALID_STORE_TARGETS:
+            return
+        if self.current_shanghai_store_target == target:
+            return
+        self.current_shanghai_store_target = target
         self.current_page = 1
         self._load_images()
 
@@ -530,6 +671,7 @@ class ImageManagementTab(QWidget):
             if category == category_name:
                 self.image_categories.pop(filename, None)
                 self.image_cities.pop(filename, None)
+                self.image_store_targets.pop(filename, None)
         self._save_categories()
         self._refresh_category_tabs(select_category=self.ALL_TAB_NAME)
         self._load_images()
@@ -684,7 +826,15 @@ class ImageManagementTab(QWidget):
         if self.image_categories.get(filename) != self.current_filter:
             return False
         if self.current_filter == "店铺地址" and self.current_city_filter:
-            return self.image_cities.get(filename, "") == self.current_city_filter
+            if self.image_cities.get(filename, "") != self.current_city_filter:
+                return False
+            if self.current_city_filter == "上海":
+                return self._matches_shanghai_store_target(
+                    filename=filename,
+                    target_store=self.current_shanghai_store_target,
+                    store_targets=self.image_store_targets,
+                )
+            return True
         return True
     
     def _on_image_loaded(self, path: str, pixmap: QPixmap):
@@ -714,12 +864,18 @@ class ImageManagementTab(QWidget):
         city = self.image_cities.get(filename, "")
         if city:
             display_text += f" ({city})"
+        store_target = self.image_store_targets.get(filename, "")
+        store_label = self.STORE_TARGET_LABELS.get(store_target, "")
+        if store_label:
+            display_text += f" <{store_label}>"
         
         item.setText(display_text)
         item.setData(Qt.UserRole, path)
         tooltip = f"{filename}\n分类: {category if category else '未分类'}"
         if city:
             tooltip += f"\n城市: {city}"
+        if store_target:
+            tooltip += f"\n门店分组: {store_label or store_target} ({store_target})"
         item.setToolTip(tooltip)
         self.image_list.addItem(item)
         self.visible_image_count += 1
@@ -789,6 +945,16 @@ class ImageManagementTab(QWidget):
                         self.image_categories[dst_path.name] = self.current_filter
                         if self.current_filter == "店铺地址" and self.current_city_filter:
                             self.image_cities[dst_path.name] = self.current_city_filter
+                            target = self.resolve_store_target_for_store_address(
+                                city=self.current_city_filter,
+                                shanghai_target=self.current_shanghai_store_target,
+                            )
+                            if target:
+                                self.image_store_targets[dst_path.name] = target
+                            else:
+                                self.image_store_targets.pop(dst_path.name, None)
+                        else:
+                            self.image_store_targets.pop(dst_path.name, None)
                     copied_count += 1
                     
                 except Exception as e:
@@ -833,6 +999,16 @@ class ImageManagementTab(QWidget):
                         self.image_categories[dst_path.name] = self.current_filter
                         if self.current_filter == "店铺地址" and self.current_city_filter:
                             self.image_cities[dst_path.name] = self.current_city_filter
+                            target = self.resolve_store_target_for_store_address(
+                                city=self.current_city_filter,
+                                shanghai_target=self.current_shanghai_store_target,
+                            )
+                            if target:
+                                self.image_store_targets[dst_path.name] = target
+                            else:
+                                self.image_store_targets.pop(dst_path.name, None)
+                        else:
+                            self.image_store_targets.pop(dst_path.name, None)
                     copied_count += 1
                 except Exception as e:
                     self.log_message.emit(f"❌ 复制视频失败: {src_path.name} - {str(e)}")
@@ -877,6 +1053,7 @@ class ImageManagementTab(QWidget):
                     os.remove(image_path)
                     self.image_categories.pop(filename, None)
                     self.image_cities.pop(filename, None)
+                    self.image_store_targets.pop(filename, None)
                     deleted_count += 1
                 except Exception as e:
                     self.log_message.emit(f"❌ 删除失败: {image_path} - {str(e)}")
@@ -923,3 +1100,70 @@ class ImageManagementTab(QWidget):
             return f"{size_bytes / (1024 * 1024):.1f} MB"
         else:
             return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
+
+    @classmethod
+    def infer_store_target_from_filename(cls, filename: str) -> str:
+        name = str(filename or "")
+        if "北京" in name:
+            return "beijing_chaoyang"
+        if "徐汇" in name or "徐家汇" in name:
+            return "sh_xuhui"
+        if "静安" in name:
+            return "sh_jingan"
+        if "虹口" in name:
+            return "sh_hongkou"
+        if "五角场" in name or "杨浦" in name:
+            return "sh_wujiaochang"
+        if any(k in name for k in ("人广", "人民广场", "黄浦", "黄埔")):
+            return "sh_renmin"
+        return ""
+
+    @classmethod
+    def resolve_store_target_for_store_address(cls, city: str, shanghai_target: str) -> str:
+        city_value = str(city or "").strip()
+        if city_value == "北京":
+            return "beijing_chaoyang"
+        if city_value == "上海" and shanghai_target in cls.VALID_STORE_TARGETS:
+            return shanghai_target
+        return ""
+
+    @staticmethod
+    def _matches_shanghai_store_target(filename: str, target_store: str, store_targets: dict) -> bool:
+        if not target_store:
+            return True
+        return str((store_targets or {}).get(filename, "") or "") == target_store
+
+    @classmethod
+    def migrate_store_targets_for_filenames(cls, filenames: list, existing_targets: dict):
+        updated = {}
+        for raw_name, target in (existing_targets or {}).items():
+            filename = Path(str(raw_name)).name
+            target_value = str(target or "").strip()
+            if filename and target_value in cls.VALID_STORE_TARGETS:
+                updated[filename] = target_value
+
+        unresolved = []
+        changed = len(updated) != len(existing_targets or {})
+        for raw_name in (filenames or []):
+            filename = Path(str(raw_name)).name
+            if not filename:
+                continue
+            target_value = updated.get(filename, "")
+            if target_value in cls.VALID_STORE_TARGETS:
+                continue
+            inferred = cls.infer_store_target_from_filename(filename)
+            if inferred:
+                updated[filename] = inferred
+                changed = True
+            else:
+                unresolved.append(filename)
+        return updated, unresolved, changed
+
+    def _migrate_store_targets_for_address_images(self, images_data: dict):
+        address_filenames = list((images_data or {}).get("店铺地址", []) or [])
+        migrated, unresolved, changed = self.migrate_store_targets_for_filenames(
+            filenames=address_filenames,
+            existing_targets=self.image_store_targets,
+        )
+        self.image_store_targets = migrated
+        return changed, unresolved

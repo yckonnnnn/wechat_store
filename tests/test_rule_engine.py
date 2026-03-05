@@ -31,14 +31,23 @@ class DummyLLMService:
 
 
 class RuleEngineTestCase(unittest.TestCase):
-    def _build_agent(self, temp_dir: Path, whitelist_sessions=None):
+    def _build_agent(
+        self,
+        temp_dir: Path,
+        whitelist_sessions=None,
+        address_image_files=None,
+        store_targets=None,
+    ):
         whitelist_sessions = whitelist_sessions or []
+        address_image_files = address_image_files or ["北京地址.jpg"]
+        store_targets = store_targets or {}
 
         images_dir = temp_dir / "images"
         images_dir.mkdir(parents=True, exist_ok=True)
         (images_dir / "contact.jpg").write_text("x", encoding="utf-8")
-        (images_dir / "北京地址.jpg").write_text("x", encoding="utf-8")
         (images_dir / "video.mp4").write_text("x", encoding="utf-8")
+        for address_name in address_image_files:
+            (images_dir / address_name).write_text("x", encoding="utf-8")
 
         image_categories_path = temp_dir / "image_categories.json"
         image_categories_path.write_text(
@@ -48,9 +57,10 @@ class RuleEngineTestCase(unittest.TestCase):
                     "categories": ["联系方式", "店铺地址", "视频素材"],
                     "images": {
                         "联系方式": ["contact.jpg"],
-                        "店铺地址": ["北京地址.jpg"],
+                        "店铺地址": list(address_image_files),
                         "视频素材": ["video.mp4"],
                     },
+                    "store_targets": dict(store_targets),
                 },
                 ensure_ascii=False,
             ),
@@ -272,6 +282,99 @@ class RuleEngineTestCase(unittest.TestCase):
             d = agent.decide("chat_detail_sh_landmark", "用户地址地标", "上海徐家汇", [])
             self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
             self.assertEqual(d.route_reason, "sh_district_map:徐家汇")
+
+    def test_address_index_prefers_store_targets_metadata_even_without_district_filename(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            address_name = "门店图A.jpg"
+            agent, _, _, _ = self._build_agent(
+                temp_dir,
+                address_image_files=[address_name],
+                store_targets={address_name: "sh_xuhui"},
+            )
+            user_name = "用户元数据"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_store_targets_meta",
+                user_id_hash=user_hash,
+                ts="2026-02-27T09:35:00",
+            )
+
+            d = agent.decide("chat_store_targets_meta", user_name, "我在上海徐汇", [])
+            self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
+            self.assertEqual(d.media_plan, "address_image")
+            self.assertTrue(d.media_items)
+            self.assertEqual(d.media_items[0].get("target_store"), "sh_xuhui")
+            self.assertEqual(Path(d.media_items[0].get("path", "")).name, address_name)
+
+    def test_address_index_fallback_to_filename_when_store_targets_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            address_name = "徐汇兜底图.jpg"
+            agent, _, _, _ = self._build_agent(
+                temp_dir,
+                address_image_files=[address_name],
+                store_targets={},
+            )
+            user_name = "用户文件名兜底"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_store_targets_fallback",
+                user_id_hash=user_hash,
+                ts="2026-02-27T09:36:00",
+            )
+
+            d = agent.decide("chat_store_targets_fallback", user_name, "上海徐汇", [])
+            self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
+            self.assertEqual(d.media_plan, "address_image")
+            self.assertTrue(d.media_items)
+            self.assertEqual(d.media_items[0].get("target_store"), "sh_xuhui")
+            self.assertEqual(Path(d.media_items[0].get("path", "")).name, address_name)
+
+    def test_shanghai_store_routes_media_target_consistent(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            store_to_file = {
+                "sh_jingan": "A.jpg",
+                "sh_renmin": "B.jpg",
+                "sh_wujiaochang": "C.jpg",
+                "sh_hongkou": "D.jpg",
+                "sh_xuhui": "E.jpg",
+            }
+            file_to_store = {name: store for store, name in store_to_file.items()}
+            agent, _, _, _ = self._build_agent(
+                temp_dir,
+                address_image_files=list(file_to_store.keys()),
+                store_targets=file_to_store,
+            )
+            user_name = "用户上海五区"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_shanghai_routes_consistent",
+                user_id_hash=user_hash,
+                ts="2026-02-27T09:37:00",
+            )
+
+            cases = [
+                ("我在上海静安", "sh_jingan"),
+                ("我在上海人广", "sh_renmin"),
+                ("我在上海五角场", "sh_wujiaochang"),
+                ("我在上海虹口", "sh_hongkou"),
+                ("我在上海徐汇", "sh_xuhui"),
+            ]
+            for idx, (query, expected_store) in enumerate(cases):
+                d = agent.decide(f"chat_shanghai_route_{idx}", user_name, query, [])
+                self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
+                self.assertEqual(d.media_plan, "address_image")
+                self.assertTrue(d.media_items)
+                self.assertEqual(d.media_items[0].get("target_store"), expected_store)
+                self.assertEqual(Path(d.media_items[0].get("path", "")).name, store_to_file[expected_store])
 
     def test_address_query_city_only_routes_north_fallback(self):
         with tempfile.TemporaryDirectory() as td:

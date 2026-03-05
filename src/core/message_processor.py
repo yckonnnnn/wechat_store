@@ -237,6 +237,8 @@ class MessageProcessor(QObject):
             f"🤖 Agent决策: source={decision.reply_source}, intent={decision.intent}, "
             f"route={decision.route_reason}, media={decision.media_plan}, rule={decision.rule_id or '-'}"
         )
+        if decision.media_skip_reason == "first_turn_global_no_media":
+            self.log_message.emit("ℹ️ 首轮媒体保护生效：本轮只发送文本，后续轮次满足条件会自动发图")
         self._append_training_event(
             session_id=session_id,
             user_id_hash=user_hash,
