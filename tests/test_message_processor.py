@@ -265,6 +265,26 @@ class DummyBrowserDuplicateOnImage(QObject):
         callback(True, {"ok": True})
 
 
+class DummyBrowserUnreadClick(QObject):
+    page_loaded = Signal(bool)
+    url_changed = Signal(str)
+
+    def find_and_click_first_unread(self, callback):
+        callback(True, {"found": True, "clicked": True, "badgeText": "1"})
+
+    def find_and_click_unread_by_usernames(self, user_names, callback):
+        del user_names, callback
+
+    def grab_chat_data(self, callback):
+        del callback
+
+    def send_message(self, text, callback):
+        del text, callback
+
+    def send_image(self, media_path, callback):
+        del media_path, callback
+
+
 class DummyBrowserDelayedTextThenImage(QObject):
     page_loaded = Signal(bool)
     url_changed = Signal(str)
@@ -393,7 +413,6 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             }
 
             processor._on_chat_data(True, payload, auto_reply=True)
-            processor._send_pending_decision()
 
             session_id = processor._build_session_id("日志用户", "", "fp_log")
             log_path = processor.conversation_logger._session_file(session_id, user_name="日志用户")
@@ -483,7 +502,6 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             }
 
             processor._on_chat_data(True, payload, auto_reply=True)
-            processor._send_pending_decision()
 
             self.assertEqual(browser.image_send_calls, 2)
             session_id = processor._build_session_id("重试用户", "", "fp_retry")
@@ -516,7 +534,6 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             }
 
             processor._on_chat_data(True, payload, auto_reply=True)
-            processor._send_pending_decision()
 
             self.assertEqual(browser.image_send_calls, 3)
             session_id = processor._build_session_id("补偿用户", "", "fp_comp")
@@ -607,7 +624,6 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             }
 
             processor._on_chat_data(True, payload, auto_reply=True)
-            processor._send_pending_decision()
 
             self.assertGreaterEqual(browser.clear_calls, 1)
             self.assertEqual(browser.sent_messages.count("姐姐我马上帮您安排～🌹"), 1)
@@ -635,7 +651,6 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             }
 
             processor._on_chat_data(True, payload, auto_reply=True)
-            processor._send_pending_decision()
 
             loop = QEventLoop()
             QTimer.singleShot(1400, loop.quit)
@@ -644,6 +659,30 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             self.assertEqual(browser.sent_messages.count("姐姐我马上帮您安排～🌹"), 1)
             self.assertEqual(browser.image_send_calls, 1)
             self.assertGreaterEqual(browser.clear_calls, 1)
+
+    def test_click_unread_waits_three_seconds_before_grabbing_chat(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserUnreadClick()
+            sessions = SessionManager()
+            agent = DummyAgentFlow(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            scheduled = []
+            original_single_shot = QTimer.singleShot
+
+            def fake_single_shot(delay_ms, callback):
+                scheduled.append(delay_ms)
+                del callback
+
+            QTimer.singleShot = staticmethod(fake_single_shot)
+            try:
+                processor._check_unread_and_enter()
+            finally:
+                QTimer.singleShot = original_single_shot
+
+            self.assertIn(3000, scheduled)
 
 
 if __name__ == "__main__":

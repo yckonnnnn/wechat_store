@@ -21,6 +21,7 @@ from ..services.conversation_logger import ConversationLogger
 class MessageProcessor(QObject):
     """消息编排器"""
 
+    _GRAB_CHAT_AFTER_CLICK_DELAY_MS = 3000
     _MEDIA_SEND_AFTER_TEXT_DELAY_MS = 900
 
     status_changed = Signal(str)
@@ -223,7 +224,9 @@ class MessageProcessor(QObject):
             payload = self._parse_js_payload(result)
             if payload.get("found") and payload.get("clicked"):
                 self._emit_log(f"🔔 发现未读({payload.get('badgeText', 'dot')})，已点击进入")
-                QTimer.singleShot(1000, self._grab_and_reply_active_chat)
+                delay_ms = int(getattr(self, "_GRAB_CHAT_AFTER_CLICK_DELAY_MS", 3000) or 0)
+                self._emit_log(f"⏳ 预留{max(0, delay_ms) / 1000:.0f}秒人工介入时间，再抓取聊天记录")
+                QTimer.singleShot(delay_ms, self._grab_and_reply_active_chat)
                 return
 
             self._reset_cycle()
@@ -405,8 +408,8 @@ class MessageProcessor(QObject):
             "decision": decision,
         }
 
-        self._emit_log("⏳ 等待3秒后发送回复...")
-        QTimer.singleShot(3000, self._send_pending_decision)
+        self._emit_log("✉️ 开始发送回复")
+        self._send_pending_decision()
 
     def _send_pending_decision(self):
         payload = self._pending_send
