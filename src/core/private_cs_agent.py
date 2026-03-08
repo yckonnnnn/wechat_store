@@ -357,7 +357,21 @@ class CustomerServiceAgent:
 
         text = (latest_user_text or "").strip()
         route = self.knowledge_service.resolve_store_recommendation(text)
+        if bool(session_state.get("last_geo_pending", False)) and self._is_remote_geo_followup_reply(text):
+            route = {
+                "city": "unknown",
+                "target_store": "unknown",
+                "reason": "out_of_coverage",
+                "route_type": "non_coverage",
+                "store_address": None,
+                "detected_region": "外地",
+            }
         intent = self._detect_intent(text)
+        address_text_after_image_decision = self._build_address_text_after_image_decision(
+            route=route,
+            intent=intent,
+            session_state=session_state,
+        )
         appointment_kb_decision: Optional[AgentDecision] = None
         if self._looks_like_appointment_query(text):
             appointment_kb_decision = self._decide_general_reply(
@@ -370,7 +384,9 @@ class CustomerServiceAgent:
                 user_id_hash=user_hash,
             )
 
-        if appointment_kb_decision and appointment_kb_decision.reply_source == "knowledge":
+        if address_text_after_image_decision is not None:
+            decision = address_text_after_image_decision
+        elif appointment_kb_decision and appointment_kb_decision.reply_source == "knowledge":
             decision = appointment_kb_decision
         elif self._should_apply_rule_decision(text=text, intent=intent, route=route, session_state=session_state):
             print(f"[DEBUG] 走规则决策: intent={intent}, route_reason={route.get('reason', 'unknown')}, target_store={route.get('target_store', 'unknown')}")
@@ -451,6 +467,11 @@ class CustomerServiceAgent:
         target_store = route.get("target_store", "unknown")
         detected_region = route.get("detected_region", "") or ""
         next_knowledge_reply_count = knowledge_reply_count + (1 if decision.reply_source == "knowledge" else 0)
+        next_address_text_reply_count_by_store = dict(session_state.get("address_text_reply_count_by_store", {}) or {})
+        if decision.rule_id == "ADDR_TEXT_AFTER_IMAGE":
+            decision_store = str(route.get("target_store", "") or "")
+            if decision_store and decision_store != "unknown":
+                next_address_text_reply_count_by_store[decision_store] = int(next_address_text_reply_count_by_store.get(decision_store, 0) or 0) + 1
         self.memory_store.update_session_state(
             session_id,
             {
@@ -462,6 +483,7 @@ class CustomerServiceAgent:
                 "last_geo_route_reason": route.get("reason", "unknown") if (target_store != "unknown" or detected_region) else session_state.get("last_geo_route_reason", "unknown"),
                 "last_geo_updated_at": now if (target_store != "unknown" or detected_region) else session_state.get("last_geo_updated_at", ""),
                 "knowledge_reply_count": next_knowledge_reply_count,
+                "address_text_reply_count_by_store": next_address_text_reply_count_by_store,
             },
             user_hash=user_hash,
         )
@@ -734,7 +756,7 @@ class CustomerServiceAgent:
             sent_stores = set(session_state.get("sent_address_stores", []) or [])
             print(f"[DEBUG] 地址路由检查: target_store={target_store}, sent_stores={sent_stores}, route_type={route_type}, intent={intent}")
             if target_store in sent_stores:
-                # 已经发送过该门店的地址图片，不走地址路由，让 LLM 处理
+                # 已经发送过该门店的地址图片，后续由固定文字地址或 LLM 处理
                 print(f"[DEBUG] 该门店已发送过地址图片，跳过地址路由")
                 return False
 
@@ -761,6 +783,49 @@ class CustomerServiceAgent:
             "河北", "石家庄", "天津", "内蒙古", "江苏", "浙江", "苏州", "杭州", "东北", "省", "市", "区", "县", "州", "盟", "旗"
         )
         return any(token in normalized for token in geo_tokens)
+
+    def _is_remote_geo_followup_reply(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(text or ""))
+        if not normalized:
+            return False
+        return "外地" in normalized
+
+    def _build_address_text_after_image_decision(
+        self,
+        route: Dict[str, Any],
+        intent: str,
+        session_state: Dict[str, Any],
+    ) -> Optional[AgentDecision]:
+        target_store = str(route.get("target_store", "") or "")
+        if not target_store or target_store == "unknown":
+            return None
+        if intent != "address":
+            return None
+
+        sent_stores = set(session_state.get("sent_address_stores", []) or [])
+        if target_store not in sent_stores:
+            return None
+
+        text_reply_count_by_store = dict(session_state.get("address_text_reply_count_by_store", {}) or {})
+        if int(text_reply_count_by_store.get(target_store, 0) or 0) >= 1:
+            return None
+
+        store = self.knowledge_service.get_store_display(target_store)
+        store_name = str(store.get("store_name", "") or "门店")
+        store_address = str(store.get("store_address", "") or "")
+        if not store_address:
+            return None
+
+        return AgentDecision(
+            reply_text=f"姐姐，{store_name}具体位置是：{store_address}。",
+            intent="address",
+            route_reason=str(route.get("reason", "unknown") or "unknown"),
+            reply_goal="解答",
+            media_plan="none",
+            reply_source="rule",
+            rule_id="ADDR_TEXT_AFTER_IMAGE",
+            rule_applied=True,
+        )
 
     def _resolve_geo_context(self, route: Dict[str, Any], session_state: Dict[str, Any]) -> Dict[str, Any]:
         target_store = route.get("target_store", "unknown")
@@ -1989,9 +2054,9 @@ class CustomerServiceAgent:
         return (
             "你是艾耐儿假发客服马老师的小助手。\n"
             "你只负责补充规则外的一般问答，不做任何地址/媒体/流程决策。\n"
-            "语气自然、亲切、像真人客服。\n"
+            "语气自然、亲切、有耐心，接地气，拟人化口语，像真人客服。\n"
             "硬规则：结论先行；尽量1句话完成回复，不拖拉，不啰嗦，且必须是完整句；末尾只保留1个emoji表情。\n"
-            "超出知识库可常规发挥，但必须围绕企业知识口径；禁止编造活动承诺、联系方式或超出事实的信息。\n"
+            "超出知识库可常规发挥，但必须围绕企业知识口径；禁止编造活动承诺、禁止要求对方发图、联系方式或超出事实的信息。\n"
             "若信息不确定，给稳妥结论并引导用户补充。\n\n"
             f"【企业知识约束】\n{enterprise_guard}\n\n"
             f"【知识库参考】\n{kb_block}\n\n"

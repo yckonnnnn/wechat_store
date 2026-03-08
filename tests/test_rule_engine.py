@@ -266,6 +266,61 @@ class RuleEngineTestCase(unittest.TestCase):
             d4 = agent.decide(session_id, user_name, "我想买", [])
             self.assertEqual(d4.rule_id, "ADDR_ASK_REGION_R1_RESET")
 
+    def test_geo_followup_reply_with_waidi_routes_contact_image(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+            session_id = "chat_waidi"
+            user_name = "用户外地"
+
+            d1 = agent.decide(session_id, user_name, "具体位置", [])
+            self.assertEqual(d1.rule_id, "ADDR_ASK_REGION_R1")
+
+            d2 = agent.decide(session_id, user_name, "我在外地呢", [])
+            self.assertEqual(d2.rule_id, "ADDR_OUT_OF_COVERAGE")
+            self.assertEqual(d2.route_reason, "out_of_coverage")
+            self.assertEqual(d2.media_plan, "contact_image")
+            self.assertTrue(d2.media_items)
+
+    def test_address_after_image_uses_text_once_then_falls_back_to_llm(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, _, llm = self._build_agent(temp_dir)
+            session_id = "chat_addr_repeat"
+            user_name = "用户重复地址"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_addr_repeat",
+                user_id_hash=user_hash,
+                ts="2026-02-27T09:35:00",
+            )
+
+            d1 = agent.decide(session_id, user_name, "北京店具体位置", [])
+            self.assertEqual(d1.rule_id, "ADDR_STORE_RECOMMEND")
+            self.assertEqual(d1.media_plan, "address_image")
+            self.assertTrue(d1.media_items)
+            agent.mark_media_sent(session_id, user_name, d1.media_items[0], success=True)
+            self._append_media_success_log(
+                conversations_dir=conversations_dir,
+                session_id=session_id,
+                media_type="address_image",
+                media_path=d1.media_items[0]["path"],
+                ts="2026-02-27T10:00:00",
+                user_id_hash=user_hash,
+            )
+
+            d2 = agent.decide(session_id, user_name, "北京店具体位置", [])
+            self.assertEqual(d2.rule_id, "ADDR_TEXT_AFTER_IMAGE")
+            self.assertEqual(d2.reply_source, "rule")
+            self.assertEqual(d2.media_plan, "none")
+            self.assertIn("朝阳区建外SOHO东区", d2.reply_text)
+
+            llm.reply_text = "姐姐，北京店就在朝阳，您导航过去就行🌹"
+            d3 = agent.decide(session_id, user_name, "北京店具体位置", [])
+            self.assertEqual(d3.reply_source, "llm")
+            self.assertEqual(d3.rule_id, "LLM_FOLLOW_UP")
+
     def test_address_query_shanghai_asks_district(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, _, _ = self._build_agent(Path(td))
@@ -1011,6 +1066,41 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d.rule_id, "KB_MATCH")
             self.assertEqual(d.media_plan, "none")
             self.assertFalse(d.media_items)
+
+    def test_llm_price_reply_is_overridden_by_fixed_range(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+            llm.reply_text = "姐姐这个价格要看情况，我也说不准呢🌹"
+
+            d = agent._decide_llm_reply(
+                latest_user_text="你们价格多少？",
+                intent="general",
+                route_reason="unknown",
+                conversation_history=[],
+                rule_id="LLM_GENERAL",
+            )
+
+            self.assertEqual(llm.calls, 1)
+            self.assertEqual(d.reply_source, "llm")
+            self.assertIn("3000到6000", d.reply_text)
+
+    def test_llm_address_reply_is_overridden_by_canonical_store_address(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+            llm.reply_text = "姐姐在南京西路附近，您导航一下就好🌹"
+
+            d = agent._decide_llm_reply(
+                latest_user_text="静安店地址在哪里？",
+                intent="general",
+                route_reason="unknown",
+                conversation_history=[],
+                rule_id="LLM_GENERAL",
+            )
+
+            self.assertEqual(llm.calls, 1)
+            self.assertEqual(d.reply_source, "llm")
+            self.assertIn("静安区愚园路172号环球世界大厦A座", d.reply_text)
+            self.assertNotIn("南京西路", d.reply_text)
 
     def test_video_session_once_with_log_driven_state(self):
         with tempfile.TemporaryDirectory() as td:
