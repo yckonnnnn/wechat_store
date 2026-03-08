@@ -85,6 +85,11 @@ class MemoryStore:
             "session_video_armed": False,
             "session_video_sent": False,
             "session_post_contact_reply_count": 0,
+            "pending_required_media": [],
+            "pending_required_media_updated_at": "",
+            "last_required_media_failure_code": "",
+            "last_required_media_failure_detail": "",
+            "required_media_retry_budget": {},
             "last_route_reason": "unknown",
             "last_intent": "general",
             "last_reply_goal": "解答",
@@ -213,6 +218,11 @@ class MemoryStore:
         state.setdefault("session_video_armed", False)
         state.setdefault("session_video_sent", False)
         state.setdefault("session_post_contact_reply_count", 0)
+        state.setdefault("pending_required_media", [])
+        state.setdefault("pending_required_media_updated_at", "")
+        state.setdefault("last_required_media_failure_code", "")
+        state.setdefault("last_required_media_failure_detail", "")
+        state.setdefault("required_media_retry_budget", {})
         state.setdefault("last_route_reason", "unknown")
         state.setdefault("last_intent", "general")
         state.setdefault("last_reply_goal", "解答")
@@ -220,6 +230,10 @@ class MemoryStore:
             state["sent_address_stores"] = []
         if not isinstance(state.get("address_image_last_sent_at_by_store"), dict):
             state["address_image_last_sent_at_by_store"] = {}
+        if not isinstance(state.get("pending_required_media"), list):
+            state["pending_required_media"] = []
+        if not isinstance(state.get("required_media_retry_budget"), dict):
+            state["required_media_retry_budget"] = {}
 
     def _fill_user_defaults(self, state: Dict[str, Any], user_hash: str) -> None:
         now = datetime.now().isoformat()

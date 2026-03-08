@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
@@ -41,6 +42,12 @@ class DummyAgent:
 
     def reload_prompt_docs(self):
         return True
+
+    def build_post_text_media_queue(self, session_id: str, user_name: str, planned_media_items, extra_media_items=None):
+        del session_id, user_name
+        queue = list(planned_media_items or [])
+        queue.extend(list(extra_media_items or []))
+        return queue
 
 
 class DummyBrowserFlow(QObject):
@@ -152,12 +159,64 @@ class DummyAgentFlow:
         del session_id, user_name, reply_text
         return None
 
+    def build_post_text_media_queue(self, session_id: str, user_name: str, planned_media_items, extra_media_items=None):
+        del session_id, user_name
+        queue = list(planned_media_items or [])
+        queue.extend(list(extra_media_items or []))
+        return queue
+
     def mark_media_sent(self, session_id: str, user_name: str, media_item, success: bool):
         del session_id, user_name, media_item, success
         return None
 
+    def enqueue_media_compensation(self, session_id: str, user_name: str, media_item, failure_code: str = "", failure_detail: str = ""):
+        del session_id, user_name, failure_code, failure_detail
+        queued = dict(media_item)
+        queued["pending_media_id"] = "contact_image"
+        return queued
+
+
+class DummyBrowserFlowCompensation(QObject):
+    page_loaded = Signal(bool)
+    url_changed = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.image_send_calls = 0
+
+    def find_and_click_first_unread(self, callback):
+        del callback
+
+    def grab_chat_data(self, callback):
+        del callback
+
+    def send_message(self, text, callback):
+        del text
+        callback(True, {"ok": True})
+
+    def send_image(self, media_path, callback):
+        del media_path
+        self.image_send_calls += 1
+        callback(
+            False,
+            {
+                "error": "点击图片按钮失败",
+                "step": "native_click_image_button",
+                "failure_code": "native_click_image_button_failed",
+            },
+        )
+
 
 class MessageProcessorSessionIdTestCase(unittest.TestCase):
+    def test_conversation_logger_uses_user_name_and_date_filename(self):
+        with tempfile.TemporaryDirectory() as td:
+            logger = ConversationLogger(Path(td) / "conversations")
+            log_path = logger._session_file("user_abc123", user_name=' 张 三 /:*? ')
+            self.assertEqual(log_path.name, f"张_三_{datetime.now().strftime('%Y-%m-%d')}.jsonl")
+
+            fallback_path = logger._session_file("user_abc123")
+            self.assertEqual(fallback_path.name, "user_abc123.jsonl")
+
     def test_fallback_session_id_splits_by_fingerprint(self):
         with tempfile.TemporaryDirectory() as td:
             memory_store = MemoryStore(Path(td) / "memory.json")
@@ -228,7 +287,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             processor._send_pending_decision()
 
             session_id = processor._build_session_id("日志用户", "", "fp_log")
-            log_path = processor.conversation_logger._session_file(session_id)
+            log_path = processor.conversation_logger._session_file(session_id, user_name="日志用户")
             lines = [json.loads(x) for x in log_path.read_text(encoding="utf-8").splitlines() if x.strip()]
 
             decision_events = [x for x in lines if x.get("event_type") == "decision_snapshot"]
@@ -318,12 +377,43 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
 
             self.assertEqual(browser.image_send_calls, 2)
             session_id = processor._build_session_id("重试用户", "", "fp_retry")
-            log_path = processor.conversation_logger._session_file(session_id)
+            log_path = processor.conversation_logger._session_file(session_id, user_name="重试用户")
             lines = [json.loads(x) for x in log_path.read_text(encoding="utf-8").splitlines() if x.strip()]
             media_result_events = [x for x in lines if x.get("event_type") == "media_result"]
             self.assertGreaterEqual(len(media_result_events), 2)
             self.assertTrue(any(bool(e.get("payload", {}).get("retry_scheduled")) for e in media_result_events))
             self.assertTrue(any(bool(e.get("payload", {}).get("success")) for e in media_result_events))
+
+    def test_enqueue_compensation_after_three_required_media_failures(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserFlowCompensation()
+            sessions = SessionManager()
+            agent = DummyAgentFlow(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            payload = {
+                "user_name": "补偿用户",
+                "chat_session_key": "",
+                "chat_session_method": "fallback",
+                "chat_session_fingerprint": "fp_comp",
+                "messages": [
+                    {"text": "历史客服", "is_user": False},
+                    {"text": "怎么预约？", "is_user": True},
+                ],
+            }
+
+            processor._on_chat_data(True, payload, auto_reply=True)
+            processor._send_pending_decision()
+
+            self.assertEqual(browser.image_send_calls, 3)
+            session_id = processor._build_session_id("补偿用户", "", "fp_comp")
+            log_path = processor.conversation_logger._session_file(session_id, user_name="补偿用户")
+            lines = [json.loads(x) for x in log_path.read_text(encoding="utf-8").splitlines() if x.strip()]
+            self.assertTrue(any(x.get("event_type") == "contact_image_send_pending_compensation" for x in lines))
+            result_payloads = [x.get("payload", {}) for x in lines if x.get("event_type") == "media_result"]
+            self.assertTrue(any(bool(p.get("compensation_enqueued")) for p in result_payloads))
 
 
 if __name__ == "__main__":

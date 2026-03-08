@@ -25,12 +25,14 @@ class ConversationLogger:
         user_id_hash: str,
         event_type: str,
         payload: Dict[str, Any],
+        user_name: str = "",
         reply_source: str = "",
         rule_id: str = "",
         model_name: str = "",
     ) -> None:
         try:
-            path = self._session_file(session_id)
+            effective_user_name = user_name or str((payload or {}).get("user_name", "") or "")
+            path = self._session_file(session_id=session_id, user_name=effective_user_name)
             record = {
                 "timestamp": datetime.now().isoformat(),
                 "session_id": session_id,
@@ -47,7 +49,24 @@ class ConversationLogger:
             # 日志沉淀不影响主链路
             return
 
-    def _session_file(self, session_id: str) -> Path:
-        safe = re.sub(r"[^0-9A-Za-z_\-]", "_", session_id or "unknown")
-        return self.root_dir / f"{safe}.jsonl"
+    def _session_file(self, session_id: str, user_name: str = "", dt: datetime | None = None) -> Path:
+        safe_session = re.sub(r"[^0-9A-Za-z_\-]", "_", session_id or "unknown")
+        display_name = self._sanitize_user_name(user_name)
+        if not display_name:
+            return self.root_dir / f"{safe_session}.jsonl"
+        current_dt = dt or datetime.now()
+        return self.root_dir / f"{display_name}_{current_dt.strftime('%Y-%m-%d')}.jsonl"
 
+    def build_log_filename(self, user_name: str, dt: datetime | None = None) -> str:
+        display_name = self._sanitize_user_name(user_name) or "未知用户"
+        current_dt = dt or datetime.now()
+        return f"{display_name}_{current_dt.strftime('%Y-%m-%d')}.jsonl"
+
+    def _sanitize_user_name(self, user_name: str) -> str:
+        text = str(user_name or "").strip()
+        if not text:
+            return ""
+        text = re.sub(r'[\\/:*?"<>|]+', "_", text)
+        text = re.sub(r"\s+", "_", text)
+        text = re.sub(r"_+", "_", text).strip("._")
+        return text or "未知用户"

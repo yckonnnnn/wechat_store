@@ -283,17 +283,28 @@ class LeftPanel(QFrame):
         """更新会话数"""
         self.session_number.setText(str(count))
 
-    def append_log(self, message: str):
+    def append_log(self, message):
         """添加日志"""
         import html
         from datetime import datetime
+        if isinstance(message, dict):
+            text = str(message.get("text", "") or "")
+            explicit_color = str(message.get("color", "") or "")
+            level = str(message.get("level", "") or "")
+        else:
+            text = str(message or "")
+            explicit_color = ""
+            level = ""
         timestamp = datetime.now().strftime("%H:%M:%S")
-        raw = f"[{timestamp}] {message}"
+        raw = f"[{timestamp}] {text}"
         safe = html.escape(raw)
 
-        # 颜色分级：成功/完成为绿色，其他为蓝色
-        is_success = any(k in message for k in ["✅", "完成", "成功", "就绪"])
-        color = "#22c55e" if is_success else "#60a5fa"
+        if explicit_color:
+            color = explicit_color
+        else:
+            is_success = level == "success" or any(k in text for k in ["✅", "完成", "成功", "就绪"])
+            is_error = level == "error" or any(k in text for k in ["❌", "失败", "错误"])
+            color = "#22c55e" if is_success else "#f97316" if is_error else "#60a5fa"
         self.log_view.append(f'<span style="color:{color};">{safe}</span>')
         # Build-in auto scroll usually works, but can force it:
         self.log_view.verticalScrollBar().setValue(

@@ -1292,7 +1292,7 @@ class BrowserService(QObject):
         """发送图片并验证是否真正出现在会话中。"""
         if not image_path or not Path(image_path).exists():
             if callback:
-                callback(False, {"error": "图片路径不存在"})
+                callback(False, {"error": "图片路径不存在", "failure_code": "missing_media_path"})
             return
 
         # 预设文件选择（CustomWebEnginePage 支持）
@@ -1315,6 +1315,23 @@ class BrowserService(QObject):
         }
         max_verify_attempts = 20
         max_enter_attempts = 2
+
+        def build_failure_payload(message: str, step: str, **extra: Any) -> Dict[str, Any]:
+            mapping = {
+                "locate_image_button": "locate_image_button_failed",
+                "native_click_image_button": "native_click_image_button_failed",
+                "confirm_click": "confirm_click_failed",
+                "confirm_click_after_enter": "confirm_click_after_enter_failed",
+                "verify_timeout": "verify_timeout",
+                "verified_soft_timeout": "verified_soft_timeout",
+            }
+            payload: Dict[str, Any] = {
+                "error": message,
+                "step": step,
+                "failure_code": mapping.get(step, step or "unknown_media_failure"),
+            }
+            payload.update(extra)
+            return payload
 
         def finish(success: bool, payload: Dict[str, Any]):
             if state["done"]:
@@ -1363,11 +1380,11 @@ class BrowserService(QObject):
                 if not clicked_confirm:
                     finish(
                         False,
-                        {
-                            "error": f"弹窗内发送按钮点击失败: {confirm_err}",
-                            "step": "confirm_click_after_enter",
-                            "triggerMethod": state["trigger_method"],
-                        },
+                        build_failure_payload(
+                            f"弹窗内发送按钮点击失败: {confirm_err}",
+                            "confirm_click_after_enter",
+                            triggerMethod=state["trigger_method"],
+                        ),
                     )
                     return
 
@@ -1384,11 +1401,11 @@ class BrowserService(QObject):
             if not clicked:
                 finish(
                     False,
-                    {
-                        "error": f"点击图片按钮失败: {click_err}",
-                        "step": "native_click_image_button",
-                        "triggerMethod": state.get("trigger_method", "unknown"),
-                    },
+                    build_failure_payload(
+                        f"点击图片按钮失败: {click_err}",
+                        "native_click_image_button",
+                        triggerMethod=state.get("trigger_method", "unknown"),
+                    ),
                 )
                 return
             # 让文件选择与弹层渲染完成后再确认发送（此前 1000ms 容易错过确认窗口）。
@@ -1440,11 +1457,11 @@ class BrowserService(QObject):
                             if not clicked:
                                 finish(
                                     False,
-                                    {
-                                        "error": f"点击媒体发送按钮失败: {click_err}",
-                                        "step": "confirm_click",
-                                        "triggerMethod": state.get("trigger_method", "unknown"),
-                                    },
+                                    build_failure_payload(
+                                        f"点击媒体发送按钮失败: {click_err}",
+                                        "confirm_click",
+                                        triggerMethod=state.get("trigger_method", "unknown"),
+                                    ),
                                 )
                                 return
                             # 部分页面确认后仍要求回车，再补一次 Enter 提高稳定性。
@@ -1453,12 +1470,12 @@ class BrowserService(QObject):
                         if state["verify_attempt"] >= max_verify_attempts:
                             finish(
                                 False,
-                                {
-                                    "error": "图片疑似仅被选择，未确认发送",
-                                    "step": "verify_timeout",
-                                    "triggerMethod": state.get("trigger_method", "unknown"),
-                                    "signature": signature,
-                                },
+                                build_failure_payload(
+                                    "图片疑似仅被选择，未确认发送",
+                                    "verify_timeout",
+                                    triggerMethod=state.get("trigger_method", "unknown"),
+                                    signature=signature,
+                                ),
                             )
                             return
                         QTimer.singleShot(600, poll_delivery)
@@ -1482,7 +1499,7 @@ class BrowserService(QObject):
                         QTimer.singleShot(280, trigger_pick_and_confirm)
                         return
 
-                    # 兜底：如果已进入过发送确认流程但签名未变化，按弱确认处理为成功，避免误判漏发。
+                    # 如果确认后签名未变化，交给上层补偿，不在浏览器层判定为成功。
                     if (
                         state.get("confirm_clicked", False)
                         and state.get("saw_pending_or_dialog", False)
@@ -1491,31 +1508,31 @@ class BrowserService(QObject):
                         and state.get("dialog_closed", False)
                     ):
                         finish(
-                            True,
-                            {
-                                "success": True,
-                                "step": "verified_soft_timeout",
-                                "warning": "signature_not_changed_after_confirm",
-                                "triggerMethod": state.get("trigger_method", "unknown"),
-                                "verifyAttempts": state["verify_attempt"],
-                                "sendMethod": "native_click_enter_with_delivery_check",
-                                "signature": signature,
-                            },
+                            False,
+                            build_failure_payload(
+                                "确认发送后签名未变化，转入补偿队列",
+                                "verified_soft_timeout",
+                                detail="signature_not_changed_after_confirm",
+                                triggerMethod=state.get("trigger_method", "unknown"),
+                                verifyAttempts=state["verify_attempt"],
+                                sendMethod="native_click_enter_with_delivery_check",
+                                signature=signature,
+                            ),
                         )
                         return
 
                     finish(
                         False,
-                        {
-                            "error": "图片未检测到实际发送结果",
-                            "step": "verify_timeout",
-                            "triggerMethod": state.get("trigger_method", "unknown"),
-                            "verifyAttempts": state["verify_attempt"],
-                            "enterAttempts": state.get("enter_attempt", 0),
-                            "confirmClicked": bool(state.get("confirm_clicked", False)),
-                            "sawPendingOrDialog": bool(state.get("saw_pending_or_dialog", False)),
-                            "signature": signature,
-                        },
+                        build_failure_payload(
+                            "图片未检测到实际发送结果",
+                            "verify_timeout",
+                            triggerMethod=state.get("trigger_method", "unknown"),
+                            verifyAttempts=state["verify_attempt"],
+                            enterAttempts=state.get("enter_attempt", 0),
+                            confirmClicked=bool(state.get("confirm_clicked", False)),
+                            sawPendingOrDialog=bool(state.get("saw_pending_or_dialog", False)),
+                            signature=signature,
+                        ),
                     )
                     return
 
@@ -1526,28 +1543,41 @@ class BrowserService(QObject):
         # Step 1: 获取图片按钮的位置
         get_position_script = r"""
         (function() {
-            var imgDiv = document.querySelector('div[title="图片"]');
-            if (imgDiv) {
-                var rect = imgDiv.getBoundingClientRect();
+            function isVisible(el) {
+                if (!el) return false;
+                var style = window.getComputedStyle(el);
+                if (!style) return false;
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                var rect = el.getBoundingClientRect();
+                if (!rect || rect.width < 5 || rect.height < 5) return false;
+                return true;
+            }
+            var selectors = [
+                ['div[title="图片"]', 'div_title'],
+                ['button[title="图片"]', 'button_title'],
+                ['[aria-label="图片"]', 'aria_label'],
+                ['[data-testid="chat-image-button"]', 'testid'],
+                ['#file1', 'file1_input'],
+                ['input[type="file"]', 'file_input']
+            ];
+            for (var i = 0; i < selectors.length; i++) {
+                var entry = selectors[i];
+                var node = document.querySelector(entry[0]);
+                if (!node) continue;
+                var target = node;
+                if (node.tagName === 'INPUT' && node.parentElement) {
+                    target = node.parentElement;
+                }
+                if (!isVisible(target)) continue;
+                var rect = target.getBoundingClientRect();
                 return JSON.stringify({
                     found: true,
                     x: rect.left + rect.width / 2,
                     y: rect.top + rect.height / 2,
-                    method: 'div_title'
+                    method: entry[1],
+                    selector: entry[0]
                 });
             }
-
-            var fileInput = document.getElementById('file1');
-            if (fileInput && fileInput.parentElement) {
-                var rect2 = fileInput.parentElement.getBoundingClientRect();
-                return JSON.stringify({
-                    found: true,
-                    x: rect2.left + rect2.width / 2,
-                    y: rect2.top + rect2.height / 2,
-                    method: 'file1_parent'
-                });
-            }
-
             return JSON.stringify({ found: false, error: '未找到图片按钮' });
         })()
         """
@@ -1557,10 +1587,10 @@ class BrowserService(QObject):
             if not pos_data.get("found"):
                 finish(
                     False,
-                    {
-                        "error": pos_data.get("error", "获取按钮位置失败"),
-                        "step": "locate_image_button",
-                    },
+                    build_failure_payload(
+                        pos_data.get("error", "获取按钮位置失败"),
+                        "locate_image_button",
+                    ),
                 )
                 return
 

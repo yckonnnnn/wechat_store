@@ -181,7 +181,7 @@ class MainWindow(QWidget):
         self.browser_service.page_loaded.connect(self._on_page_loaded)
 
         self.message_processor.status_changed.connect(self._on_status_changed)
-        self.message_processor.log_message.connect(self._on_log_message)
+        self.message_processor.log_event.connect(self._on_log_event)
         self.message_processor.reply_sent.connect(self._on_reply_sent)
         self.message_processor.error_occurred.connect(self._on_error)
         self.message_processor.decision_ready.connect(self.agent_tab.append_decision)
@@ -240,6 +240,11 @@ class MainWindow(QWidget):
 
     def _on_log_message(self, message: str):
         self.left_panel.append_log(message)
+        stats = self.session_manager.get_stats()
+        self.left_panel.update_session_count(stats.get("total_sessions", 0))
+
+    def _on_log_event(self, payload: dict):
+        self.left_panel.append_log(payload)
         stats = self.session_manager.get_stats()
         self.left_panel.update_session_count(stats.get("total_sessions", 0))
 

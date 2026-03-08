@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import json
 import random
 import re
@@ -95,6 +96,7 @@ APPOINTMENT_PRIORITY_KEYWORDS = (
     "需要预约",
     "要预约",
 )
+REQUIRED_MEDIA_TYPES = ("address_image", "contact_image")
 
 
 DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
@@ -490,6 +492,38 @@ class CustomerServiceAgent:
         self.memory_store.save()
         return None
 
+    def build_post_text_media_queue(
+        self,
+        session_id: str,
+        user_name: str,
+        planned_media_items: List[Dict[str, Any]],
+        extra_media_items: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[Dict[str, Any]]:
+        user_hash = self._hash_user(user_name or session_id)
+        session_state = self.memory_store.get_session_state(session_id, user_hash=user_hash)
+        pending_items = self._sanitize_pending_required_media(
+            session_state.get("pending_required_media", []),
+            latest_planned=planned_media_items,
+        )
+        queue: List[Dict[str, Any]] = []
+        queue.extend(pending_items)
+
+        for item in planned_media_items or []:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type", "") or "")
+            if item_type == "address_image":
+                queue = [x for x in queue if not (str(x.get("type", "")) == "address_image" and x.get("target_store") == item.get("target_store"))]
+            elif item_type == "contact_image":
+                queue = [x for x in queue if str(x.get("type", "")) != "contact_image"]
+            queue.append(dict(item))
+
+        for item in extra_media_items or []:
+            if isinstance(item, dict):
+                queue.append(dict(item))
+
+        return queue
+
     def mark_media_sent(self, session_id: str, user_name: str, media_item: Dict[str, Any], success: bool) -> None:
         """媒体发送回执"""
         if not success or not media_item:
@@ -524,8 +558,74 @@ class CustomerServiceAgent:
             session_state["contact_warmup"] = False
             session_state["last_geo_pending"] = False
 
+        if media_type in REQUIRED_MEDIA_TYPES:
+            self._remove_pending_required_media(session_state, media_item)
+            budget = session_state.get("required_media_retry_budget", {}) or {}
+            budget.pop(self._pending_media_key(media_item), None)
+            session_state["required_media_retry_budget"] = budget
+
         self.memory_store.update_session_state(session_id, session_state, user_hash=user_hash)
         self.memory_store.update_user_state(user_hash, user_state)
+        self.memory_store.save()
+
+    def enqueue_media_compensation(
+        self,
+        session_id: str,
+        user_name: str,
+        media_item: Dict[str, Any],
+        failure_code: str = "",
+        failure_detail: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        if not media_item:
+            return None
+        media_type = str(media_item.get("type", "") or "")
+        if media_type not in REQUIRED_MEDIA_TYPES:
+            return None
+
+        user_hash = self._hash_user(user_name or session_id)
+        session_state = self.memory_store.get_session_state(session_id, user_hash=user_hash)
+        pending_items = self._sanitize_pending_required_media(session_state.get("pending_required_media", []))
+        clean_item = dict(media_item)
+        pending_id = self._pending_media_key(clean_item)
+        clean_item["pending_media_id"] = pending_id
+        clean_item["pending_required"] = True
+        clean_item["queued_at"] = datetime.now().isoformat()
+
+        if media_type == "contact_image":
+            pending_items = [x for x in pending_items if str(x.get("type", "")) != "contact_image"]
+        elif media_type == "address_image":
+            target_store = str(clean_item.get("target_store", "") or "")
+            pending_items = [
+                x for x in pending_items
+                if not (str(x.get("type", "")) == "address_image" and str(x.get("target_store", "") or "") == target_store)
+            ]
+        pending_items.append(clean_item)
+
+        budget = session_state.get("required_media_retry_budget", {}) or {}
+        budget[pending_id] = int(budget.get(pending_id, 0) or 0) + 1
+
+        self.memory_store.update_session_state(
+            session_id,
+            {
+                "pending_required_media": pending_items,
+                "pending_required_media_updated_at": datetime.now().isoformat(),
+                "last_required_media_failure_code": str(failure_code or ""),
+                "last_required_media_failure_detail": str(failure_detail or ""),
+                "required_media_retry_budget": budget,
+            },
+            user_hash=user_hash,
+        )
+        self.memory_store.save()
+        return clean_item
+
+    def clear_media_compensation(self, session_id: str, user_name: str, media_item: Dict[str, Any]) -> None:
+        user_hash = self._hash_user(user_name or session_id)
+        session_state = self.memory_store.get_session_state(session_id, user_hash=user_hash)
+        self._remove_pending_required_media(session_state, media_item)
+        budget = session_state.get("required_media_retry_budget", {}) or {}
+        budget.pop(self._pending_media_key(media_item), None)
+        session_state["required_media_retry_budget"] = budget
+        self.memory_store.update_session_state(session_id, session_state, user_hash=user_hash)
         self.memory_store.save()
 
     def set_options(self, use_knowledge_first: bool, knowledge_threshold: float) -> None:
@@ -1465,6 +1565,58 @@ class CustomerServiceAgent:
         session_state["session_post_contact_reply_count"] = int(session_video.get("assistant_reply_count_after_contact", 0) or 0)
         session_state["session_user_message_count_after_contact"] = int(session_video.get("user_message_count_after_contact", 0) or 0)
 
+    def _sanitize_pending_required_media(
+        self,
+        items: Any,
+        latest_planned: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[Dict[str, Any]]:
+        sanitized: List[Dict[str, Any]] = []
+        latest_address_targets = {
+            str(item.get("target_store", "") or "")
+            for item in (latest_planned or [])
+            if isinstance(item, dict) and str(item.get("type", "")) == "address_image"
+        }
+        for raw in items or []:
+            if not isinstance(raw, dict):
+                continue
+            media_type = str(raw.get("type", "") or "")
+            if media_type not in REQUIRED_MEDIA_TYPES:
+                continue
+            item = copy.deepcopy(raw)
+            if media_type == "address_image":
+                target_store = str(item.get("target_store", "") or "")
+                if latest_address_targets and target_store and target_store not in latest_address_targets:
+                    continue
+            item["pending_media_id"] = self._pending_media_key(item)
+            item["pending_required"] = True
+            sanitized.append(item)
+        return sanitized
+
+    def _remove_pending_required_media(self, session_state: Dict[str, Any], media_item: Dict[str, Any]) -> None:
+        media_type = str((media_item or {}).get("type", "") or "")
+        media_key = self._pending_media_key(media_item)
+        pending_items = []
+        for item in session_state.get("pending_required_media", []) or []:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type", "") or "")
+            if item_type != media_type:
+                pending_items.append(item)
+                continue
+            if self._pending_media_key(item) == media_key:
+                continue
+            pending_items.append(item)
+        session_state["pending_required_media"] = pending_items
+        session_state["pending_required_media_updated_at"] = datetime.now().isoformat()
+
+    def _pending_media_key(self, media_item: Dict[str, Any]) -> str:
+        media_type = str((media_item or {}).get("type", "") or "")
+        if media_type == "address_image":
+            return f"address_image:{str((media_item or {}).get('target_store', '') or '')}"
+        if media_type == "contact_image":
+            return "contact_image"
+        return f"{media_type}:{str((media_item or {}).get('path', '') or '')}"
+
     def summarize_user_media_from_logs(self, user_id_hash: str) -> Dict[str, Any]:
         summary = {
             "address_image_sent_count": 0,
@@ -1556,13 +1708,8 @@ class CustomerServiceAgent:
             "assistant_reply_count_after_contact": 0,
             "user_message_count_after_contact": 0,
         }
-        log_path = self._session_log_file(session_id)
-        if not log_path.exists():
-            return summary
-
-        try:
-            lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-        except Exception:
+        lines = self._read_session_log_records(session_id)
+        if not lines:
             return summary
 
         latest_contact_idx = -1
@@ -1606,6 +1753,24 @@ class CustomerServiceAgent:
         summary["assistant_reply_count_after_contact"] = reply_count
         summary["user_message_count_after_contact"] = user_count
         return summary
+
+    def _read_session_log_records(self, session_id: str) -> List[Dict[str, Any]]:
+        records: List[Dict[str, Any]] = []
+        for log_path in self._session_log_candidates(session_id):
+            try:
+                for raw_line in log_path.read_text(encoding="utf-8").splitlines():
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    record = json.loads(line)
+                    if not isinstance(record, dict):
+                        continue
+                    if str(record.get("session_id", "") or "") != session_id:
+                        continue
+                    records.append(record)
+            except Exception:
+                continue
+        return records
 
     def _scan_session_media_records(self, log_path: Path, user_id_hash: str) -> List[Dict[str, Any]]:
         records: List[Dict[str, Any]] = []
@@ -1677,8 +1842,36 @@ class CustomerServiceAgent:
         return records
 
     def _session_log_file(self, session_id: str) -> Path:
+        candidates = self._session_log_candidates(session_id)
+        if candidates:
+            return candidates[0]
         safe = re.sub(r"[^0-9A-Za-z_\-]", "_", session_id or "unknown")
         return self.conversation_log_dir / f"{safe}.jsonl"
+
+    def _session_log_candidates(self, session_id: str) -> List[Path]:
+        safe = re.sub(r"[^0-9A-Za-z_\-]", "_", session_id or "unknown")
+        legacy_path = self.conversation_log_dir / f"{safe}.jsonl"
+        results: List[Path] = []
+        if legacy_path.exists():
+            results.append(legacy_path)
+
+        for log_path in sorted(self.conversation_log_dir.glob("*.jsonl")):
+            if log_path == legacy_path:
+                continue
+            try:
+                for raw_line in log_path.read_text(encoding="utf-8").splitlines():
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    record = json.loads(line)
+                    if not isinstance(record, dict):
+                        continue
+                    if str(record.get("session_id", "") or "") == session_id:
+                        results.append(log_path)
+                        break
+            except Exception:
+                continue
+        return results
 
     def _infer_store_from_image_path(self, media_path: str) -> str:
         name = Path(str(media_path or "")).name
