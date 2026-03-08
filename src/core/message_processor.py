@@ -21,6 +21,8 @@ from ..services.conversation_logger import ConversationLogger
 class MessageProcessor(QObject):
     """消息编排器"""
 
+    _MEDIA_SEND_AFTER_TEXT_DELAY_MS = 900
+
     status_changed = Signal(str)
     log_message = Signal(str)
     log_event = Signal(dict)
@@ -37,12 +39,17 @@ class MessageProcessor(QObject):
         self.conversation_logger = ConversationLogger(Path("data") / "conversations")
 
         self._running = False
+        self._ai_enabled = False
+        self._remote_control_enabled = True
+        self._remote_control_users: set[str] = set()
+        self._poll_interval_ms = 4000
         self._page_ready = False
         self._poll_inflight = False
         self._processing_reply = False
 
         self._last_processed_marker = ""
         self._pending_send: Optional[Dict[str, Any]] = None
+        self._active_session_context: Optional[Dict[str, str]] = None
 
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_cycle)
@@ -61,30 +68,79 @@ class MessageProcessor(QObject):
         self.log_event.emit(payload)
 
     def start(self, interval_ms: int = 4000):
-        if self._running:
-            return
+        self._poll_interval_ms = max(1000, int(interval_ms or self._poll_interval_ms or 4000))
         if not self._page_ready:
             self._emit_log("⚠️ 页面未就绪，等待加载完成")
             return
 
+        if self._running and self._ai_enabled:
+            return
+
         self._running = True
-        self._poll_timer.start(interval_ms)
+        self._ai_enabled = True
+        self._poll_timer.start(self._poll_interval_ms)
         self.status_changed.emit("running")
         self._emit_log("🚀 AI客服已启动")
 
     def stop(self):
         if not self._running:
             return
+        self._ai_enabled = False
+        if not self._poll_timer.isActive():
+            self._poll_timer.start(self._poll_interval_ms)
+        self._poll_inflight = False
+        self._processing_reply = False
+        self._pending_send = None
+        self._active_session_context = None
+        self.status_changed.emit("paused_remote")
+        self._emit_log("🛑 AI客服已暂停，远程监听中")
+
+    def shutdown(self):
         self._running = False
+        self._ai_enabled = False
         self._poll_timer.stop()
         self._poll_inflight = False
         self._processing_reply = False
         self._pending_send = None
+        self._active_session_context = None
         self.status_changed.emit("stopped")
         self._emit_log("🛑 AI客服已停止")
 
     def is_running(self) -> bool:
         return self._running
+
+    def is_ai_enabled(self) -> bool:
+        return self._running and self._ai_enabled
+
+    def set_remote_control_users(self, names: List[str]):
+        normalized = {str(x).strip() for x in (names or []) if str(x).strip()}
+        self._remote_control_users = normalized
+        self._emit_log(f"🔐 已更新远程控制白名单: {', '.join(sorted(normalized)) if normalized else '未配置'}")
+
+    def pause_ai_for_remote_control(self):
+        if not self._running:
+            self._running = True
+        self._ai_enabled = False
+        if self._page_ready and not self._poll_timer.isActive():
+            self._poll_timer.start(self._poll_interval_ms)
+        self.status_changed.emit("paused_remote")
+
+    def resume_ai_from_remote_control(self):
+        if not self._page_ready:
+            self._emit_log("⚠️ 页面未就绪，无法恢复 AI")
+            return
+        self._running = True
+        self._ai_enabled = True
+        if not self._poll_timer.isActive():
+            self._poll_timer.start(self._poll_interval_ms)
+        self.status_changed.emit("running")
+
+    def get_runtime_status(self) -> Dict[str, Any]:
+        return {
+            "runtime_status": "running" if self.is_ai_enabled() else "paused_remote" if self._running else "stopped",
+            "remote_control_enabled": bool(self._remote_control_enabled),
+            "remote_control_user_count": len(self._remote_control_users),
+        }
 
     def force_check(self):
         if not self._poll_inflight:
@@ -124,7 +180,38 @@ class MessageProcessor(QObject):
         if not self._running or not self._page_ready or self._poll_inflight or self._processing_reply:
             return
         self._poll_inflight = True
+        if not self._ai_enabled:
+            self._check_remote_control_unread()
+            return
         self._check_unread_and_enter()
+
+    def _check_remote_control_unread(self):
+        if not self._remote_control_enabled:
+            self._reset_cycle()
+            return
+
+        def on_result(success, result):
+            if not success:
+                self._emit_log("⚠️ 远程控制监听失败")
+                self._reset_cycle()
+                return
+
+            payload = self._parse_js_payload(result)
+            if payload.get("found") and payload.get("clicked"):
+                matched_name = str(payload.get("matchedName", "") or "")
+                self._emit_log(f"🛰️ 发现远程控制消息，来自: {matched_name or '白名单用户'}")
+                QTimer.singleShot(600, self._grab_remote_control_chat)
+                return
+
+            self._reset_cycle()
+
+        self.browser.find_and_click_unread_by_usernames(sorted(self._remote_control_users), on_result)
+
+    def _grab_remote_control_chat(self):
+        if not self._running:
+            self._reset_cycle()
+            return
+        self.browser.grab_chat_data(lambda success, result: self._on_chat_data(success, result, auto_reply=True))
 
     def _check_unread_and_enter(self):
         def on_result(success, result):
@@ -199,6 +286,12 @@ class MessageProcessor(QObject):
         )
         user_hash = self._build_user_hash(user_name=user_name, session_id=session_id)
         is_first_turn_global = self._detect_user_first_turn_global(user_hash=user_hash)
+        self._mark_active_session(
+            session_id=session_id,
+            user_name=user_name,
+            stage="chat_locked",
+            detail=f"latest={latest_user_message[:40]}",
+        )
         if chat_session_fingerprint:
             self.agent.memory_store.update_session_state(
                 session_id=session_id,
@@ -221,6 +314,17 @@ class MessageProcessor(QObject):
                 "is_first_turn_global": bool(is_first_turn_global),
             },
         )
+
+        remote_command = self._normalize_remote_control_command(latest_user_message)
+        if self._is_remote_control_user(user_name) and remote_command:
+            self._handle_remote_control_command(
+                session_id=session_id,
+                user_name=user_name,
+                user_hash=user_hash,
+                command=remote_command,
+            )
+            self._last_processed_marker = marker
+            return
 
         history = self._convert_history(messages)
         decision = self.agent.decide(
@@ -249,8 +353,6 @@ class MessageProcessor(QObject):
             f"🤖 Agent决策: source={decision.reply_source}, intent={decision.intent}, "
             f"route={decision.route_reason}, media={decision.media_plan}, rule={decision.rule_id or '-'}"
         )
-        if decision.media_skip_reason == "first_turn_global_no_media":
-            self._emit_log("ℹ️ 首轮媒体保护生效：本轮只发送文本，后续轮次满足条件会自动发图")
         self._append_training_event(
             session_id=session_id,
             user_id_hash=user_hash,
@@ -315,6 +417,12 @@ class MessageProcessor(QObject):
         session_id = payload["session_id"]
         user_name = payload["user_name"]
         decision: AgentDecision = payload["decision"]
+        self._mark_active_session(
+            session_id=session_id,
+            user_name=user_name,
+            stage="send_pending",
+            detail=f"media={decision.media_plan or 'none'}",
+        )
 
         def on_text_sent(success, result):
             if not success:
@@ -338,6 +446,28 @@ class MessageProcessor(QObject):
             )
 
             media_summary = {"sent_types": [], "failed_types": [], "sent_details": [], "failed_details": []}
+            if media_queue:
+                self._mark_active_session(
+                    session_id=session_id,
+                    user_name=user_name,
+                    stage="text_sent_wait_media",
+                    detail=f"queued_media={len(media_queue)}",
+                )
+                delay_ms = int(getattr(self, "_MEDIA_SEND_AFTER_TEXT_DELAY_MS", 900) or 0)
+                send_media = lambda: self._send_media_queue(
+                        session_id,
+                        user_name,
+                        media_queue,
+                        decision=decision,
+                        media_summary=media_summary,
+                    )
+                if delay_ms <= 0:
+                    send_media()
+                    return
+
+                QTimer.singleShot(delay_ms, send_media)
+                return
+
             self._send_media_queue(session_id, user_name, media_queue, decision=decision, media_summary=media_summary)
 
         self.browser.send_message(decision.reply_text, on_text_sent)
@@ -410,6 +540,12 @@ class MessageProcessor(QObject):
             )
             return
 
+        self._mark_active_session(
+            session_id=session_id,
+            user_name=user_name,
+            stage="sending_media",
+            detail=f"type={media_type}",
+        )
         self._emit_media_ui_log(media_type, f"准备发送媒体: type={media_type}", level="info")
         self._append_media_delivery_event(
             session_id=session_id,
@@ -663,7 +799,24 @@ class MessageProcessor(QObject):
                     media_summary=media_summary,
                 )
 
-        self.browser.send_image(media_path, on_media_sent)
+        def send_image_after_clear():
+            self.browser.send_image(media_path, on_media_sent)
+
+        clear_input = getattr(self.browser, "clear_message_input", None)
+        if callable(clear_input):
+            def on_input_cleared(success, result):
+                if not success:
+                    self._emit_media_ui_log(
+                        media_type,
+                        "发送媒体前清空输入框失败，继续尝试发图",
+                        level="warning",
+                    )
+                send_image_after_clear()
+
+            clear_input(on_input_cleared)
+            return
+
+        send_image_after_clear()
 
     def _should_retry_media_send(self, media_type: str, result: Any, retry_count: int) -> bool:
         if media_type not in ("contact_image", "address_image"):
@@ -693,9 +846,11 @@ class MessageProcessor(QObject):
         self.browser.grab_chat_data(on_data)
 
     def _reset_cycle(self):
+        self._emit_active_session_release()
         self._poll_inflight = False
         self._processing_reply = False
         self._pending_send = None
+        self._active_session_context = None
 
     def _parse_js_payload(self, payload: Any) -> Dict[str, Any]:
         if isinstance(payload, dict):
@@ -731,6 +886,40 @@ class MessageProcessor(QObject):
             role = "user" if msg.get("is_user") else "assistant"
             history.append({"role": role, "content": text})
         return history
+
+    def _mark_active_session(self, session_id: str, user_name: str, stage: str, detail: str = "") -> None:
+        stage_text = str(stage or "").strip() or "unknown"
+        context = {
+            "session_id": str(session_id or ""),
+            "user_name": str(user_name or ""),
+            "stage": stage_text,
+            "detail": str(detail or ""),
+        }
+        self._active_session_context = context
+
+        stage_labels = {
+            "chat_locked": "锁定当前会话",
+            "send_pending": "进入发送阶段",
+            "text_sent_wait_media": "文本已发，等待媒体",
+            "sending_media": "正在发送媒体",
+        }
+        label = stage_labels.get(stage_text, stage_text)
+        suffix = f"，{context['detail']}" if context["detail"] else ""
+        self._emit_log(
+            f"🔒 会话处理锁: {label}，用户={context['user_name'] or '-'}，session={context['session_id'] or '-'}{suffix}"
+        )
+
+    def _emit_active_session_release(self) -> None:
+        context = self._active_session_context or {}
+        session_id = str(context.get("session_id", "") or "")
+        user_name = str(context.get("user_name", "") or "")
+        stage = str(context.get("stage", "") or "")
+        if not session_id and not user_name:
+            return
+        detail = f"，last_stage={stage}" if stage else ""
+        self._emit_log(
+            f"🔓 会话处理完成: 用户={user_name or '-'}，session={session_id or '-'}{detail}，准备轮询下一个未读"
+        )
 
     def _hash_id(self, text: str) -> str:
         return hashlib.md5((text or "").encode("utf-8", errors="ignore")).hexdigest()[:10]
@@ -789,6 +978,69 @@ class MessageProcessor(QObject):
             rule_id=rule_id,
             model_name=model_name,
         )
+
+    def _normalize_remote_control_command(self, text: str) -> str:
+        normalized = str(text or "").strip().lower()
+        return normalized if normalized in {"start", "stop"} else ""
+
+    def _is_remote_control_user(self, user_name: str) -> bool:
+        return str(user_name or "").strip() in self._remote_control_users
+
+    def _handle_remote_control_command(self, session_id: str, user_name: str, user_hash: str, command: str) -> None:
+        applied = False
+        if command == "stop":
+            applied = self.is_ai_enabled()
+            self.pause_ai_for_remote_control()
+            reply_text = "姐姐你好，已经关闭❤️"
+            event_type = "remote_control_stop_applied" if applied else "remote_control_stop_noop"
+            self._emit_log(f"🛰️ 远程 stop 命中: {user_name}")
+        else:
+            applied = not self.is_ai_enabled()
+            self.resume_ai_from_remote_control()
+            reply_text = "姐姐你好，已经启动🏃"
+            event_type = "remote_control_start_applied" if applied else "remote_control_start_noop"
+            self._emit_log(f"🛰️ 远程 start 命中: {user_name}")
+
+        self._append_training_event(
+            session_id=session_id,
+            user_id_hash=user_hash,
+            event_type=event_type,
+            user_name=user_name,
+            payload={
+                "command": command,
+                "applied": bool(applied),
+                "user_name": user_name,
+                "runtime_status": self.get_runtime_status().get("runtime_status", ""),
+            },
+        )
+
+        def on_sent(success, result):
+            if success:
+                self.sessions.add_message(session_id, reply_text, is_user=False)
+                self.sessions.record_reply(session_id)
+                self.reply_sent.emit(session_id, reply_text)
+                self._append_training_event(
+                    session_id=session_id,
+                    user_id_hash=user_hash,
+                    event_type="assistant_reply",
+                    user_name=user_name,
+                    reply_source="remote_control",
+                    rule_id=event_type,
+                    payload={
+                        "text": reply_text,
+                        "intent": "remote_control",
+                        "route_reason": "remote_control",
+                        "round_media_sent": False,
+                        "round_media_sent_types": [],
+                        "round_media_failed_types": [],
+                        "round_media_sent_details": [],
+                    },
+                )
+            else:
+                self._emit_log("❌ 远程控制反馈发送失败")
+            self._reset_cycle()
+
+        self.browser.send_message(reply_text, on_sent)
 
     def _log_chat_history(self, user_name: str, messages: List[Dict[str, Any]]):
         self._emit_log(f"📋 聊天记录: {user_name}，共 {len(messages)} 条")

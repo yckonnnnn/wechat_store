@@ -41,6 +41,7 @@ USER_DATA_DIR = get_user_data_dir()
 MODEL_SETTINGS_FILE = USER_DATA_DIR / "model_settings.json"
 AGENT_MEMORY_FILE = USER_DATA_DIR / "agent_memory.json"
 KNOWLEDGE_BASE_FILE = PROJECT_ROOT / "config" / "knowledge_base.json"
+REMOTE_CONTROL_FILE = PROJECT_ROOT / "config" / "remote_control.json"
 ENV_FILE = PROJECT_ROOT / ".env"
 
 # 示例配置文件路径（用于首次运行提示）

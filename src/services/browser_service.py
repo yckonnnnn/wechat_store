@@ -857,6 +857,116 @@ class BrowserService(QObject):
         """;
         self.run_javascript(script, callback)
 
+    def find_and_click_unread_by_usernames(self, user_names: list[str], callback: Callable):
+        normalized = [str(x).strip() for x in (user_names or []) if str(x).strip()]
+        if not normalized:
+            callback(True, {"found": False, "clicked": False, "reason": "empty_remote_whitelist"})
+            return
+        names_json = json.dumps(normalized, ensure_ascii=False)
+        script = f"""
+        (function() {{
+            var allowedNames = {names_json};
+            function safeText(el) {{ return (el && (el.textContent || el.innerText) || "").trim(); }}
+            function isVisible(el) {{
+                if (!el) return false;
+                var style = window.getComputedStyle(el);
+                if (!style) return false;
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                var rect = el.getBoundingClientRect();
+                if (!rect || rect.width < 3 || rect.height < 3) return false;
+                return true;
+            }}
+            function parseCssColorToRgb(colorStr) {{
+                if (!colorStr) return null;
+                colorStr = String(colorStr).trim();
+                var m = colorStr.match(/^rgba?\\((\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)(?:\\s*,\\s*([0-9.]+))?\\)$/i);
+                if (!m) return null;
+                return {{ r: parseInt(m[1], 10), g: parseInt(m[2], 10), b: parseInt(m[3], 10), a: (m[4] === undefined ? 1 : parseFloat(m[4])) }};
+            }}
+            function isRedColor(rgb) {{
+                if (!rgb) return false;
+                if (rgb.a !== undefined && rgb.a === 0) return false;
+                return (rgb.r > 180 && rgb.g < 140 && rgb.b < 140);
+            }}
+            function findRedStyleInfo(el) {{
+                var cur = el;
+                for (var i = 0; i < 4 && cur; i++) {{
+                    var st = window.getComputedStyle(cur);
+                    if (st) {{
+                        var bgRgb = parseCssColorToRgb(st.backgroundColor || '');
+                        var bcRgb = parseCssColorToRgb(st.borderColor || '');
+                        if (bgRgb && isRedColor(bgRgb)) return true;
+                        if (bcRgb && isRedColor(bcRgb)) return true;
+                    }}
+                    cur = cur.parentElement;
+                }}
+                return false;
+            }}
+            function findClickableAncestor(el) {{
+                var cur = el;
+                for (var i = 0; i < 12 && cur; i++) {{
+                    var tag = (cur.tagName || '').toUpperCase();
+                    var role = (cur.getAttribute && cur.getAttribute('role')) ? cur.getAttribute('role') : '';
+                    if (tag === 'LI' || role === 'listitem') return cur;
+                    try {{
+                        var did = cur.getAttribute && (cur.getAttribute('data-id') || cur.getAttribute('data-session-id') || cur.getAttribute('data-chat-id'));
+                        if (did) return cur;
+                    }} catch (e) {{}}
+                    cur = cur.parentElement;
+                }}
+                return null;
+            }}
+            var allNodes = Array.from(document.querySelectorAll('span,div,i,em,strong,sup,b'));
+            var candidates = [];
+            for (var idx = 0; idx < allNodes.length; idx++) {{
+                var n = allNodes[idx];
+                if (!isVisible(n) || !findRedStyleInfo(n)) continue;
+                var sessionEl = findClickableAncestor(n);
+                if (!sessionEl || !isVisible(sessionEl)) continue;
+                var text = safeText(sessionEl);
+                if (!text) continue;
+                var matchedName = '';
+                for (var j = 0; j < allowedNames.length; j++) {{
+                    if (text.indexOf(allowedNames[j]) !== -1) {{
+                        matchedName = allowedNames[j];
+                        break;
+                    }}
+                }}
+                if (!matchedName) continue;
+                var rect = sessionEl.getBoundingClientRect();
+                candidates.push({{
+                    matchedName: matchedName,
+                    top: rect.top,
+                    element: sessionEl
+                }});
+            }}
+            if (!candidates.length) {{
+                return JSON.stringify({{ found: false, clicked: false, reason: 'no_remote_unread' }});
+            }}
+            candidates.sort(function(a, b) {{ return a.top - b.top; }});
+            var target = candidates[0].element;
+            try {{ target.scrollIntoView({{ block: 'center', inline: 'nearest' }}); }} catch (e) {{}}
+            var clicked = false;
+            try {{ target.click(); clicked = true; }} catch (e1) {{}}
+            if (!clicked) {{
+                try {{
+                    var rect = target.getBoundingClientRect();
+                    var centerX = rect.left + rect.width / 2;
+                    var centerY = rect.top + rect.height / 2;
+                    var clickEvt = new MouseEvent('click', {{ bubbles: true, cancelable: true, clientX: centerX, clientY: centerY }});
+                    target.dispatchEvent(clickEvt);
+                    clicked = true;
+                }} catch (e2) {{}}
+            }}
+            return JSON.stringify({{
+                found: true,
+                clicked: clicked,
+                matchedName: candidates[0].matchedName
+            }});
+        }})()
+        """
+        self.run_javascript(script, callback)
+
     def enter_session(self, element_info: dict, callback: Callable = None):
         """点击进入会话
 
@@ -1282,6 +1392,87 @@ class BrowserService(QObject):
                 composer_editable: composer.isContentEditable || false
             }});
         }})()
+        """
+        if callback:
+            self.run_javascript(script, callback)
+        else:
+            self.page.runJavaScript(script)
+
+    def clear_message_input(self, callback: Callable = None):
+        """清空聊天输入框，避免媒体确认阶段误把上一条文本再次发出。"""
+        script = r"""
+        (function() {
+            function isVisible(el) {
+                if (!el) return false;
+                var style = window.getComputedStyle(el);
+                if (!style) return false;
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                var rect = el.getBoundingClientRect();
+                if (!rect || rect.width < 5 || rect.height < 5) return false;
+                return true;
+            }
+
+            function findComposer() {
+                var inputTextarea = document.getElementById('input-textarea');
+                if (inputTextarea && isVisible(inputTextarea)) return inputTextarea;
+
+                var textAreaClass = document.querySelector('.text-area');
+                if (textAreaClass && isVisible(textAreaClass)) return textAreaClass;
+
+                var roleBox = document.querySelector('[role="textbox"]');
+                if (roleBox && isVisible(roleBox)) return roleBox;
+
+                var textareas = Array.from(document.querySelectorAll('textarea')).filter(isVisible);
+                if (textareas.length) return textareas[0];
+
+                var inputs = Array.from(document.querySelectorAll('input[type="text"], input:not([type])'))
+                    .filter(function(el) { return isVisible(el) && !el.disabled && !el.readOnly; });
+                if (inputs.length) return inputs[0];
+
+                var ceList = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(isVisible);
+                if (ceList.length) return ceList[0];
+
+                return null;
+            }
+
+            function clearComposerValue(el) {
+                if (!el) return false;
+                try {
+                    el.focus();
+                    if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
+                        var proto = Object.getPrototypeOf(el);
+                        var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                        if (desc && desc.set) {
+                            desc.set.call(el, '');
+                        } else {
+                            el.value = '';
+                        }
+                    } else if (el.isContentEditable) {
+                        el.innerText = '';
+                        el.textContent = '';
+                    } else {
+                        el.value = '';
+                    }
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                } catch (e) {
+                    return false;
+                }
+            }
+
+            var composer = findComposer();
+            if (!composer) {
+                return JSON.stringify({ success: false, error: '未找到输入框' });
+            }
+
+            var cleared = clearComposerValue(composer);
+            return JSON.stringify({
+                success: cleared,
+                composer_tag: composer.tagName,
+                composer_editable: composer.isContentEditable || false
+            });
+        })()
         """
         if callback:
             self.run_javascript(script, callback)

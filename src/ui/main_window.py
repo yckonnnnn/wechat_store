@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+from datetime import datetime
 
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -32,6 +34,7 @@ from ..utils.constants import (
     WECHAT_STORE_URL,
     USER_DATA_DIR,
     AGENT_MEMORY_FILE,
+    REMOTE_CONTROL_FILE,
 )
 from .agent_status_tab import AgentStatusTab
 from .browser_tab import BrowserTab
@@ -166,6 +169,7 @@ class MainWindow(QWidget):
         )
         # 素材页初始化时可能触发配置迁移，启动后立即重载一次媒体索引确保 Agent 与配置一致。
         self.message_processor.reload_media_config()
+        self._load_remote_control_settings()
 
         self._update_model_badge()
         self._refresh_agent_tab_status()
@@ -175,6 +179,7 @@ class MainWindow(QWidget):
         self.left_panel.stop_clicked.connect(self._on_stop)
         self.left_panel.refresh_clicked.connect(self._on_refresh)
         self.left_panel.grab_clicked.connect(self._on_grab_test)
+        self.left_panel.remote_control_users_saved.connect(self._on_remote_control_users_saved)
 
         self.nav_group.buttonClicked.connect(lambda btn: self.stack.setCurrentIndex(self.nav_group.id(btn)))
 
@@ -275,11 +280,56 @@ class MainWindow(QWidget):
         self.model_badge.setText(self.config_manager.get_current_model())
 
     def _refresh_agent_tab_status(self):
-        self.agent_tab.update_status(self.agent.get_status())
+        status = dict(self.agent.get_status())
+        status.update(self.message_processor.get_runtime_status())
+        self.agent_tab.update_status(status)
+
+    def _load_remote_control_settings(self):
+        users: list[str] = []
+        if REMOTE_CONTROL_FILE.exists():
+            try:
+                loaded = json.loads(REMOTE_CONTROL_FILE.read_text(encoding="utf-8"))
+                raw_users = loaded.get("controller_user_names", []) if isinstance(loaded, dict) else []
+                if isinstance(raw_users, list):
+                    users = [str(x).strip() for x in raw_users if str(x).strip()]
+            except Exception:
+                users = []
+        self.message_processor.set_remote_control_users(users)
+        self.left_panel.set_remote_control_users(", ".join(users))
+
+    def _save_remote_control_settings(self, users: list[str]) -> bool:
+        try:
+            REMOTE_CONTROL_FILE.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "version": 1,
+                "updated_at": datetime.now().isoformat(),
+                "controller_user_names": users,
+            }
+            REMOTE_CONTROL_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            return True
+        except Exception:
+            return False
+
+    def _on_remote_control_users_saved(self, raw_text: str):
+        users = []
+        seen = set()
+        for part in str(raw_text or "").split(","):
+            name = part.strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            users.append(name)
+        if self._save_remote_control_settings(users):
+            self.message_processor.set_remote_control_users(users)
+            self.left_panel.set_remote_control_users(", ".join(users))
+            self.left_panel.append_log(f"✅ 远程控制白名单已保存: {', '.join(users) if users else '未配置'}")
+            self._refresh_agent_tab_status()
+        else:
+            self.left_panel.append_log("❌ 远程控制白名单保存失败")
 
     def closeEvent(self, event):
         if self.message_processor and self.message_processor.is_running():
-            self.message_processor.stop()
+            self.message_processor.shutdown()
 
         # 关闭前把“模型配置”页里尚未点保存的输入框内容同步到配置对象
         self.model_config_tab.sync_inputs_to_config()

@@ -23,6 +23,9 @@ from ..services.llm_service import LLMService
 CONTACT_INTENT_KEYWORDS = (
     "微信",
     "微信号",
+    "联系方式",
+    "联系方法",
+    "联系信息",
     "联系电话",
     "电话",
     "手机号",
@@ -31,6 +34,14 @@ CONTACT_INTENT_KEYWORDS = (
     "二维码",
     "外链",
     "邮箱",
+    "怎么加",
+    "如何加",
+    "加你",
+    "加你们",
+    "怎么添加",
+    "如何添加",
+    "怎么加微信",
+    "如何加微信",
     "怎么关注",
     "如何关注",
     "关注客服",
@@ -428,16 +439,11 @@ class CustomerServiceAgent:
             media_plan=original_media_plan,
             session_state=session_state,
             user_state=user_state,
-            is_first_turn_global=is_first_turn_global,
             force_contact_image=bool(decision.force_contact_image),
         )
         decision.media_items = media_items
         decision.media_skip_reason = media_skip_reason
-        decision.first_turn_media_guard_applied = bool(
-            is_first_turn_global
-            and original_media_plan in ("address_image", "contact_image")
-            and media_skip_reason == "first_turn_global_no_media"
-        )
+        decision.first_turn_media_guard_applied = False
         if not decision.media_items:
             decision.media_plan = "none"
 
@@ -665,6 +671,9 @@ class CustomerServiceAgent:
             # 否则也走general，让系统根据上下文判断
             return "general"
 
+        if self._looks_like_direct_contact_request(text):
+            return "contact"
+
         if self.knowledge_service.is_address_query(text):
             return "address"
         if self.knowledge_service.is_purchase_intent(text):
@@ -672,6 +681,32 @@ class CustomerServiceAgent:
         if any(k in (text or "") for k in CONTACT_INTENT_KEYWORDS):
             return "contact"
         return "general"
+
+    def _looks_like_direct_contact_request(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(text or "")).lower()
+        if not normalized:
+            return False
+
+        direct_patterns = (
+            "联系方式",
+            "联系方法",
+            "联系信息",
+            "你的联系",
+            "你们联系",
+            "你的微信",
+            "你们微信",
+            "怎么加",
+            "如何加",
+            "加你",
+            "加你们",
+            "怎么添加",
+            "如何添加",
+            "怎么加微信",
+            "如何加微信",
+            "怎么联系",
+            "如何联系",
+        )
+        return any(pattern in normalized for pattern in direct_patterns)
 
     def _should_apply_rule_decision(
         self,
@@ -1379,7 +1414,6 @@ class CustomerServiceAgent:
         media_plan: str,
         session_state: Dict[str, Any],
         user_state: Dict[str, Any],
-        is_first_turn_global: bool = False,
         force_contact_image: bool = False,
     ) -> Tuple[List[Dict[str, Any]], str]:
         items: List[Dict[str, Any]] = []
@@ -1387,9 +1421,6 @@ class CustomerServiceAgent:
         target_store = route.get("target_store", "unknown")
         reason = route_reason or route.get("reason", "unknown")
         detected_region = route.get("detected_region", "") or ""
-
-        if is_first_turn_global and media_plan in ("address_image", "contact_image"):
-            return [], "first_turn_global_no_media"
 
         if media_plan == "address_image":
             if target_store == "unknown":

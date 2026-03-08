@@ -4,10 +4,10 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QCoreApplication, QEventLoop, QObject, Signal, QTimer
 
 from src.core.message_processor import MessageProcessor
-from src.core.private_cs_agent import AgentDecision
+from src.core.private_cs_agent import AgentDecision, CustomerServiceAgent
 from src.core.session_manager import SessionManager
 from src.data.memory_store import MemoryStore
 from src.services.conversation_logger import ConversationLogger
@@ -19,6 +19,9 @@ class DummyBrowser(QObject):
 
     def find_and_click_first_unread(self, callback):
         del callback
+
+    def find_and_click_unread_by_usernames(self, user_names, callback):
+        del user_names, callback
 
     def grab_chat_data(self, callback):
         del callback
@@ -57,6 +60,9 @@ class DummyBrowserFlow(QObject):
     def find_and_click_first_unread(self, callback):
         del callback
 
+    def find_and_click_unread_by_usernames(self, user_names, callback):
+        del user_names, callback
+
     def grab_chat_data(self, callback):
         del callback
 
@@ -79,6 +85,9 @@ class DummyBrowserFlowRetry(QObject):
 
     def find_and_click_first_unread(self, callback):
         del callback
+
+    def find_and_click_unread_by_usernames(self, user_names, callback):
+        del user_names, callback
 
     def grab_chat_data(self, callback):
         del callback
@@ -176,6 +185,16 @@ class DummyAgentFlow:
         return queued
 
 
+class DummyKnowledgeServiceNoMatch:
+    def is_address_query(self, text: str) -> bool:
+        del text
+        return False
+
+    def is_purchase_intent(self, text: str) -> bool:
+        del text
+        return False
+
+
 class DummyBrowserFlowCompensation(QObject):
     page_loaded = Signal(bool)
     url_changed = Signal(str)
@@ -186,6 +205,9 @@ class DummyBrowserFlowCompensation(QObject):
 
     def find_and_click_first_unread(self, callback):
         del callback
+
+    def find_and_click_unread_by_usernames(self, user_names, callback):
+        del user_names, callback
 
     def grab_chat_data(self, callback):
         del callback
@@ -207,7 +229,93 @@ class DummyBrowserFlowCompensation(QObject):
         )
 
 
+class DummyBrowserDuplicateOnImage(QObject):
+    page_loaded = Signal(bool)
+    url_changed = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.composer_text = ""
+        self.sent_messages = []
+        self.clear_calls = 0
+
+    def find_and_click_first_unread(self, callback):
+        del callback
+
+    def find_and_click_unread_by_usernames(self, user_names, callback):
+        del user_names, callback
+
+    def grab_chat_data(self, callback):
+        del callback
+
+    def send_message(self, text, callback):
+        self.composer_text = text
+        self.sent_messages.append(text)
+        callback(True, {"ok": True})
+
+    def clear_message_input(self, callback):
+        self.clear_calls += 1
+        self.composer_text = ""
+        callback(True, {"ok": True})
+
+    def send_image(self, media_path, callback):
+        del media_path
+        if self.composer_text:
+            self.sent_messages.append(self.composer_text)
+        callback(True, {"ok": True})
+
+
+class DummyBrowserDelayedTextThenImage(QObject):
+    page_loaded = Signal(bool)
+    url_changed = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.pending_text = ""
+        self.sent_messages = []
+        self.clear_calls = 0
+        self.image_send_calls = 0
+
+    def find_and_click_first_unread(self, callback):
+        del callback
+
+    def find_and_click_unread_by_usernames(self, user_names, callback):
+        del user_names, callback
+
+    def grab_chat_data(self, callback):
+        del callback
+
+    def send_message(self, text, callback):
+        self.pending_text = text
+
+        def commit_text():
+            if self.pending_text:
+                self.sent_messages.append(self.pending_text)
+                self.pending_text = ""
+
+        QTimer.singleShot(300, commit_text)
+        callback(True, {"ok": True})
+
+    def clear_message_input(self, callback):
+        self.clear_calls += 1
+        self.pending_text = ""
+        callback(True, {"ok": True})
+
+    def send_image(self, media_path, callback):
+        del media_path
+        self.image_send_calls += 1
+        callback(True, {"ok": True})
+
+
 class MessageProcessorSessionIdTestCase(unittest.TestCase):
+    def test_contact_request_phrases_detect_as_contact_intent(self):
+        agent = CustomerServiceAgent.__new__(CustomerServiceAgent)
+        agent.knowledge_service = DummyKnowledgeServiceNoMatch()
+
+        self.assertEqual(agent._detect_intent("怎么加你们？"), "contact")
+        self.assertEqual(agent._detect_intent("你的联系方式"), "contact")
+        self.assertTrue(agent._looks_like_direct_contact_request("如何添加你们微信"))
+
     def test_conversation_logger_uses_user_name_and_date_filename(self):
         with tempfile.TemporaryDirectory() as td:
             logger = ConversationLogger(Path(td) / "conversations")
@@ -270,6 +378,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             sessions = SessionManager()
             agent = DummyAgentFlow(memory_store)
             processor = MessageProcessor(browser, sessions, agent)
+            processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
             processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
 
             payload = {
@@ -359,6 +468,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             sessions = SessionManager()
             agent = DummyAgentFlow(memory_store)
             processor = MessageProcessor(browser, sessions, agent)
+            processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
             processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
 
             payload = {
@@ -391,6 +501,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             sessions = SessionManager()
             agent = DummyAgentFlow(memory_store)
             processor = MessageProcessor(browser, sessions, agent)
+            processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
             processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
 
             payload = {
@@ -414,6 +525,125 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             self.assertTrue(any(x.get("event_type") == "contact_image_send_pending_compensation" for x in lines))
             result_payloads = [x.get("payload", {}) for x in lines if x.get("event_type") == "media_result"]
             self.assertTrue(any(bool(p.get("compensation_enqueued")) for p in result_payloads))
+
+    def test_remote_control_stop_and_start_from_whitelist_user(self):
+        class DummyBrowserRemote(QObject):
+            page_loaded = Signal(bool)
+            url_changed = Signal(str)
+
+            def __init__(self):
+                super().__init__()
+                self.sent_messages = []
+
+            def find_and_click_first_unread(self, callback):
+                del callback
+
+            def find_and_click_unread_by_usernames(self, user_names, callback):
+                del user_names, callback
+
+            def grab_chat_data(self, callback):
+                del callback
+
+            def send_message(self, text, callback):
+                self.sent_messages.append(text)
+                callback(True, {"ok": True})
+
+            def send_image(self, media_path, callback):
+                del media_path, callback
+
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserRemote()
+            sessions = SessionManager()
+            agent = DummyAgentFlow(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+            processor._page_ready = True
+            processor.set_remote_control_users(["控制用户"])
+            processor.start()
+
+            stop_payload = {
+                "user_name": "控制用户",
+                "chat_session_key": "",
+                "chat_session_method": "fallback",
+                "chat_session_fingerprint": "fp_remote",
+                "messages": [{"text": "stop", "is_user": True}],
+            }
+            processor._on_chat_data(True, stop_payload, auto_reply=True)
+            self.assertFalse(processor.is_ai_enabled())
+            self.assertEqual(browser.sent_messages[-1], "姐姐你好，已经关闭❤️")
+
+            start_payload = {
+                "user_name": "控制用户",
+                "chat_session_key": "",
+                "chat_session_method": "fallback",
+                "chat_session_fingerprint": "fp_remote",
+                "messages": [{"text": " start ", "is_user": True}],
+            }
+            processor._on_chat_data(True, start_payload, auto_reply=True)
+            self.assertTrue(processor.is_ai_enabled())
+            self.assertEqual(browser.sent_messages[-1], "姐姐你好，已经启动🏃")
+
+    def test_clear_input_before_sending_media_to_avoid_duplicate_text(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserDuplicateOnImage()
+            sessions = SessionManager()
+            agent = DummyAgentFlow(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            payload = {
+                "user_name": "去重用户",
+                "chat_session_key": "",
+                "chat_session_method": "fallback",
+                "chat_session_fingerprint": "fp_no_dup",
+                "messages": [
+                    {"text": "历史客服", "is_user": False},
+                    {"text": "发我地址图吧", "is_user": True},
+                ],
+            }
+
+            processor._on_chat_data(True, payload, auto_reply=True)
+            processor._send_pending_decision()
+
+            self.assertGreaterEqual(browser.clear_calls, 1)
+            self.assertEqual(browser.sent_messages.count("姐姐我马上帮您安排～🌹"), 1)
+
+    def test_delay_media_until_text_send_settles(self):
+        app = QCoreApplication.instance() or QCoreApplication([])
+
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserDelayedTextThenImage()
+            sessions = SessionManager()
+            agent = DummyAgentFlow(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            payload = {
+                "user_name": "落稳用户",
+                "chat_session_key": "",
+                "chat_session_method": "fallback",
+                "chat_session_fingerprint": "fp_text_delay",
+                "messages": [
+                    {"text": "历史客服", "is_user": False},
+                    {"text": "天津有门店吗？", "is_user": True},
+                ],
+            }
+
+            processor._on_chat_data(True, payload, auto_reply=True)
+            processor._send_pending_decision()
+
+            loop = QEventLoop()
+            QTimer.singleShot(1400, loop.quit)
+            loop.exec()
+
+            self.assertEqual(browser.sent_messages.count("姐姐我马上帮您安排～🌹"), 1)
+            self.assertEqual(browser.image_send_calls, 1)
+            self.assertGreaterEqual(browser.clear_calls, 1)
 
 
 if __name__ == "__main__":

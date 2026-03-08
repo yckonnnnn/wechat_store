@@ -5,7 +5,7 @@
 
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QTextEdit, QWidget, QGridLayout
+    QPushButton, QTextEdit, QWidget, QGridLayout, QLineEdit
 )
 from PySide6.QtCore import Qt, Signal, QTimer
 
@@ -20,6 +20,7 @@ class LeftPanel(QFrame):
     stop_clicked = Signal()
     refresh_clicked = Signal()
     grab_clicked = Signal()
+    remote_control_users_saved = Signal(str)
     
     # 注意: model_changed 信号已移除，模型切换功能移动到了 ModelConfigTab
 
@@ -174,7 +175,35 @@ class LeftPanel(QFrame):
         status_layout.addLayout(count_box)
         layout.addWidget(status_card)
 
-        layout.addStretch(1)
+        remote_card = QFrame()
+        remote_card.setObjectName("StatusCard")
+        remote_layout = QVBoxLayout(remote_card)
+        remote_layout.setContentsMargins(16, 16, 16, 16)
+        remote_layout.setSpacing(10)
+
+        remote_title = QLabel("远程控制")
+        remote_title.setObjectName("StatusTitle")
+        remote_layout.addWidget(remote_title)
+
+        self.remote_control_input = QLineEdit()
+        self.remote_control_input.setObjectName("AddressInput")
+        self.remote_control_input.setPlaceholderText("请输入远程控制白名单用户名")
+        remote_layout.addWidget(self.remote_control_input)
+
+        self.remote_control_save_btn = QPushButton("保存白名单")
+        self.remote_control_save_btn.setObjectName("SidebarSecondary")
+        self.remote_control_save_btn.setCursor(Qt.PointingHandCursor)
+        self.remote_control_save_btn.setMinimumHeight(40)
+        self.remote_control_save_btn.clicked.connect(
+            lambda: self.remote_control_users_saved.emit(self.remote_control_input.text())
+        )
+        remote_layout.addWidget(self.remote_control_save_btn)
+
+        self.remote_control_status = QLabel("未配置远程控制白名单")
+        self.remote_control_status.setObjectName("MutedText")
+        self.remote_control_status.setWordWrap(True)
+        remote_layout.addWidget(self.remote_control_status)
+        layout.addWidget(remote_card)
 
         # --- 4. 运行日志 ---
         log_container = QWidget()
@@ -234,6 +263,7 @@ class LeftPanel(QFrame):
             "running": "#22c55e",
             "ready": "#22c55e",
             "stopped": "#94a3b8",
+            "paused_remote": "#f59e0b",
             "error": "#ef4444"
         }
         color = color_map.get(status, "#94a3b8")
@@ -242,6 +272,8 @@ class LeftPanel(QFrame):
             self.status_badge.setText("● 运行中")
         elif status == "stopped":
             self.status_badge.setText("● 已停止")
+        elif status == "paused_remote":
+            self.status_badge.setText("● 已暂停(远程监听中)")
         elif status == "ready":
             self.status_badge.setText("● 就绪")
         elif status == "error":
@@ -275,9 +307,26 @@ class LeftPanel(QFrame):
             if self._spin_timer.isActive():
                 self._spin_timer.stop()
             self.start_btn.setText("▶  启动 AI")
-        
+        elif status == "paused_remote":
+            self.start_btn.setEnabled(True)
+            self.stop_btn.setEnabled(False)
+            self.start_btn.setProperty("running", "false")
+            self.start_btn.style().unpolish(self.start_btn)
+            self.start_btn.style().polish(self.start_btn)
+            if self._spin_timer.isActive():
+                self._spin_timer.stop()
+            self.start_btn.setText("▶  恢复 AI")
+
         if message:
             self.status_badge.setText(message)
+
+    def set_remote_control_users(self, users_text: str):
+        self.remote_control_input.setText(users_text or "")
+        users = [x.strip() for x in str(users_text or "").split(",") if x.strip()]
+        if users:
+            self.remote_control_status.setText(f"已配置：{', '.join(users)}")
+        else:
+            self.remote_control_status.setText("未配置远程控制白名单")
 
     def update_session_count(self, count: int):
         """更新会话数"""
