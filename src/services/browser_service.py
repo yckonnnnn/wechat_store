@@ -4,6 +4,7 @@
 """
 
 import json
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 from PySide6.QtCore import QObject, Signal, QTimer, Qt, QCoreApplication, QPointF
@@ -198,6 +199,73 @@ class BrowserService(QObject):
         except Exception as exc:
             return False, str(exc)
 
+    def _native_mouse_drag_move(self, x: float, y: float) -> tuple[bool, str]:
+        """在按住左键状态下发送原生鼠标移动，用于真实拖拽。"""
+        try:
+            target_widget = self.web_view.focusProxy() or self.web_view
+            target_widget.setMouseTracking(True)
+            local_pos = QPointF(float(x), float(y))
+            global_pos = target_widget.mapToGlobal(local_pos.toPoint())
+            global_pos_f = QPointF(global_pos.x(), global_pos.y())
+
+            move_event = QMouseEvent(
+                QMouseEvent.MouseMove,
+                local_pos,
+                global_pos_f,
+                Qt.NoButton,
+                Qt.LeftButton,
+                Qt.NoModifier,
+            )
+            QCoreApplication.sendEvent(target_widget, move_event)
+            QCoreApplication.processEvents()
+            return True, ""
+        except Exception as exc:
+            return False, str(exc)
+
+    def _native_left_press(self, x: float, y: float) -> tuple[bool, str]:
+        """在 WebView 内发送原生左键按下。"""
+        try:
+            target_widget = self.web_view.focusProxy() or self.web_view
+            local_pos = QPointF(float(x), float(y))
+            global_pos = target_widget.mapToGlobal(local_pos.toPoint())
+            global_pos_f = QPointF(global_pos.x(), global_pos.y())
+
+            press_event = QMouseEvent(
+                QMouseEvent.MouseButtonPress,
+                local_pos,
+                global_pos_f,
+                Qt.LeftButton,
+                Qt.LeftButton,
+                Qt.NoModifier,
+            )
+            QCoreApplication.sendEvent(target_widget, press_event)
+            QCoreApplication.processEvents()
+            return True, ""
+        except Exception as exc:
+            return False, str(exc)
+
+    def _native_left_release(self, x: float, y: float) -> tuple[bool, str]:
+        """在 WebView 内发送原生左键释放。"""
+        try:
+            target_widget = self.web_view.focusProxy() or self.web_view
+            local_pos = QPointF(float(x), float(y))
+            global_pos = target_widget.mapToGlobal(local_pos.toPoint())
+            global_pos_f = QPointF(global_pos.x(), global_pos.y())
+
+            release_event = QMouseEvent(
+                QMouseEvent.MouseButtonRelease,
+                local_pos,
+                global_pos_f,
+                Qt.LeftButton,
+                Qt.NoButton,
+                Qt.NoModifier,
+            )
+            QCoreApplication.sendEvent(target_widget, release_event)
+            QCoreApplication.processEvents()
+            return True, ""
+        except Exception as exc:
+            return False, str(exc)
+
     def _native_hover_sweep(self, x: float, y: float) -> tuple[bool, str]:
         """在目标点附近做一次轻微悬停扫过，提升 hover-only 控件触发率。"""
         offsets = [
@@ -217,6 +285,39 @@ class BrowserService(QObject):
             elif err:
                 last_error = err
         return moved, last_error
+
+    def _native_drag_and_drop(self, start_x: float, start_y: float, end_x: float, end_y: float) -> tuple[bool, str]:
+        """在 WebView 内执行原生拖拽。"""
+        self._native_mouse_move(start_x, start_y)
+        QCoreApplication.processEvents()
+        pressed, err = self._native_left_press(start_x, start_y)
+        if not pressed:
+            return False, err
+
+        time.sleep(0.08)
+        # 先跨过拖拽阈值，避免页面把它当作普通点击。
+        self._native_mouse_drag_move(start_x + 4, start_y + 4)
+        QCoreApplication.processEvents()
+        time.sleep(0.03)
+
+        last_err = ""
+        steps = 18
+        for idx in range(1, steps + 1):
+            ratio = idx / steps
+            x = start_x + (end_x - start_x) * ratio
+            y = start_y + (end_y - start_y) * ratio
+            moved, move_err = self._native_mouse_drag_move(x, y)
+            if not moved and move_err:
+                last_err = move_err
+            QCoreApplication.processEvents()
+            time.sleep(0.01)
+
+        released, release_err = self._native_left_release(end_x, end_y)
+        if not released:
+            return False, release_err
+        QCoreApplication.processEvents()
+        time.sleep(0.05)
+        return True, last_err
 
     def _native_press_enter(self) -> tuple[bool, str]:
         """在 WebView 内发送原生 Enter 键。"""
@@ -254,11 +355,15 @@ class BrowserService(QObject):
                     '.weui-desktop-dialog__wrp',
                     '.weui-desktop-dialog_wrp',
                     '.weui-desktop-dialog',
+                    '.weui-desktop-dialog__ft',
+                    '.weui-desktop-dialog__bd',
                     '.weui-desktop-modal',
                     '.weui-dialog',
                     '.modal',
                     '.dialog',
-                    '[role="dialog"]'
+                    '[role="dialog"]',
+                    '[class*="dialog"]',
+                    '[class*="modal"]'
                 ];
                 var roots = [];
                 for (var s = 0; s < selectors.length; s++) {
@@ -273,25 +378,23 @@ class BrowserService(QObject):
                 }
                 return roots;
             }
-            function findSendButtonInDialogs(dialogRoots) {
+            function rankSendButtonCandidates(nodes) {
                 var candidates = [];
-                for (var i = 0; i < dialogRoots.length; i++) {
-                    var root = dialogRoots[i];
-                    var nodes = Array.from(root.querySelectorAll('button, [role="button"], a, div, span')).filter(isVisible);
-                    for (var j = 0; j < nodes.length; j++) {
-                        var node = nodes[j];
-                        var text = safeText(node).replace(/\s+/g, '');
-                        if (!text || !/^发送/.test(text)) continue;
-                        if (text.indexOf('优惠券') !== -1) continue;
-                        var rect = node.getBoundingClientRect();
-                        if (!rect || rect.width < 20 || rect.height < 16) continue;
-                        candidates.push({
-                            text: text,
-                            x: rect.left + rect.width / 2,
-                            y: rect.top + rect.height / 2,
-                            area: rect.width * rect.height
-                        });
-                    }
+                for (var j = 0; j < nodes.length; j++) {
+                    var node = nodes[j];
+                    var text = safeText(node).replace(/\s+/g, '');
+                    if (!text || !/^发送/.test(text)) continue;
+                    if (text.indexOf('优惠券') !== -1) continue;
+                    var rect = node.getBoundingClientRect();
+                    if (!rect || rect.width < 20 || rect.height < 16) continue;
+                    candidates.push({
+                        text: text,
+                        x: rect.left + rect.width / 2,
+                        y: rect.top + rect.height / 2,
+                        area: rect.width * rect.height,
+                        bottomBias: rect.top + rect.height / 2,
+                        rightBias: rect.left + rect.width / 2
+                    });
                 }
                 if (!candidates.length) {
                     return { found: false };
@@ -300,6 +403,8 @@ class BrowserService(QObject):
                     var aHasCount = /\(\d+\)/.test(a.text);
                     var bHasCount = /\(\d+\)/.test(b.text);
                     if (aHasCount !== bHasCount) return aHasCount ? -1 : 1;
+                    if (Math.abs(a.bottomBias - b.bottomBias) > 8) return b.bottomBias - a.bottomBias;
+                    if (Math.abs(a.rightBias - b.rightBias) > 8) return b.rightBias - a.rightBias;
                     return b.area - a.area;
                 });
                 return {
@@ -309,12 +414,25 @@ class BrowserService(QObject):
                     y: candidates[0].y
                 };
             }
+            function findSendButtonInDialogs(dialogRoots) {
+                var scopedNodes = [];
+                for (var i = 0; i < dialogRoots.length; i++) {
+                    var root = dialogRoots[i];
+                    var nodes = Array.from(root.querySelectorAll('button, [role="button"], a, div, span')).filter(isVisible);
+                    scopedNodes = scopedNodes.concat(nodes);
+                }
+                var ranked = rankSendButtonCandidates(scopedNodes);
+                if (ranked.found) return ranked;
+
+                var globalNodes = Array.from(document.querySelectorAll('button, [role="button"], a, div, span')).filter(isVisible);
+                return rankSendButtonCandidates(globalNodes);
+            }
 
             var dialogRoots = collectDialogRoots();
             var sendBtn = findSendButtonInDialogs(dialogRoots);
             return JSON.stringify({
                 found: true,
-                dialog_visible: dialogRoots.length > 0,
+                dialog_visible: dialogRoots.length > 0 || !!sendBtn.found,
                 dialog_count: dialogRoots.length,
                 send_button_in_dialog_visible: !!sendBtn.found,
                 send_button_text: sendBtn.text || '',
@@ -500,11 +618,15 @@ class BrowserService(QObject):
                     '.weui-desktop-dialog__wrp',
                     '.weui-desktop-dialog_wrp',
                     '.weui-desktop-dialog',
+                    '.weui-desktop-dialog__ft',
+                    '.weui-desktop-dialog__bd',
                     '.weui-desktop-modal',
                     '.weui-dialog',
                     '.modal',
                     '.dialog',
-                    '[role="dialog"]'
+                    '[role="dialog"]',
+                    '[class*="dialog"]',
+                    '[class*="modal"]'
                 ];
                 var roots = [];
                 for (var s = 0; s < selectors.length; s++) {
@@ -519,15 +641,8 @@ class BrowserService(QObject):
                 }
                 return roots;
             }
-
-            var dialogRoots = collectDialogRoots();
-            if (!dialogRoots.length) {
-                return JSON.stringify({ found: false, error: '未检测到媒体发送弹窗' });
-            }
-            var candidates = [];
-            for (var i = 0; i < dialogRoots.length; i++) {
-                var root = dialogRoots[i];
-                var nodes = Array.from(root.querySelectorAll('button, [role="button"], a, div, span')).filter(isVisible);
+            function rankSendButtonCandidates(nodes) {
+                var candidates = [];
                 for (var j = 0; j < nodes.length; j++) {
                     var node = nodes[j];
                     var text = safeText(node).replace(/\s+/g, '');
@@ -539,24 +654,50 @@ class BrowserService(QObject):
                         text: text,
                         x: rect.left + rect.width / 2,
                         y: rect.top + rect.height / 2,
-                        area: rect.width * rect.height
+                        area: rect.width * rect.height,
+                        bottomBias: rect.top + rect.height / 2,
+                        rightBias: rect.left + rect.width / 2
                     });
                 }
+                if (!candidates.length) {
+                    return { found: false };
+                }
+                candidates.sort(function(a, b) {
+                    var aHasCount = /\(\d+\)/.test(a.text);
+                    var bHasCount = /\(\d+\)/.test(b.text);
+                    if (aHasCount !== bHasCount) return aHasCount ? -1 : 1;
+                    if (Math.abs(a.bottomBias - b.bottomBias) > 8) return b.bottomBias - a.bottomBias;
+                    if (Math.abs(a.rightBias - b.rightBias) > 8) return b.rightBias - a.rightBias;
+                    return b.area - a.area;
+                });
+                return {
+                    found: true,
+                    text: candidates[0].text,
+                    x: candidates[0].x,
+                    y: candidates[0].y
+                };
             }
-            if (!candidates.length) {
+
+            var dialogRoots = collectDialogRoots();
+            var scopedNodes = [];
+            for (var i = 0; i < dialogRoots.length; i++) {
+                var root = dialogRoots[i];
+                var nodes = Array.from(root.querySelectorAll('button, [role="button"], a, div, span')).filter(isVisible);
+                scopedNodes = scopedNodes.concat(nodes);
+            }
+            var ranked = rankSendButtonCandidates(scopedNodes);
+            if (!ranked.found) {
+                var globalNodes = Array.from(document.querySelectorAll('button, [role="button"], a, div, span')).filter(isVisible);
+                ranked = rankSendButtonCandidates(globalNodes);
+            }
+            if (!ranked.found) {
                 return JSON.stringify({ found: false, error: '未找到媒体发送按钮' });
             }
-            candidates.sort(function(a, b) {
-                var aHasCount = /\(\d+\)/.test(a.text);
-                var bHasCount = /\(\d+\)/.test(b.text);
-                if (aHasCount !== bHasCount) return aHasCount ? -1 : 1;
-                return b.area - a.area;
-            });
             return JSON.stringify({
                 found: true,
-                text: candidates[0].text,
-                x: candidates[0].x,
-                y: candidates[0].y
+                text: ranked.text,
+                x: ranked.x,
+                y: ranked.y
             });
         })()
         """
@@ -1846,17 +1987,19 @@ class BrowserService(QObject):
         self._get_chat_media_signature(on_baseline_signature)
 
     def send_video_from_material_library(self, callback: Callable = None):
-        """从页面素材库的“视频”tab发送第一个可见视频素材。"""
+        """从页面素材库拖拽第一个可见视频到聊天区，并确认发送。"""
         state: Dict[str, Any] = {
             "done": False,
             "baseline": {},
             "verify_attempt": 0,
-            "tab_clicks_done": False,
             "item_rect": {},
-            "click_attempt": 0,
-            "last_click_point": {},
+            "drop_rect": {},
+            "drop_candidates": [],
+            "drag_attempt": 0,
+            "confirm_attempt": 0,
         }
-        max_verify_attempts = 8
+        max_verify_attempts = 20
+        max_confirm_attempts = 6
 
         def build_failure_payload(message: str, step: str, **extra: Any) -> Dict[str, Any]:
             mapping = {
@@ -1865,7 +2008,9 @@ class BrowserService(QObject):
                 "locate_video_tab": "locate_video_tab_failed",
                 "click_video_tab": "locate_video_tab_failed",
                 "locate_video_item": "locate_video_item_failed",
-                "click_video_send_button": "click_video_send_button_failed",
+                "locate_chat_drop_target": "locate_chat_drop_target_failed",
+                "drag_video_to_chat": "drag_video_to_chat_failed",
+                "confirm_click": "confirm_click_failed",
                 "verify_timeout": "video_verify_timeout",
             }
             payload: Dict[str, Any] = {
@@ -1990,7 +2135,7 @@ class BrowserService(QObject):
         })()
         """
 
-        locate_video_send_button_script = r"""
+        locate_chat_drop_target_script = r"""
         (function() {
             function isVisible(el) {
                 if (!el) return false;
@@ -1998,56 +2143,79 @@ class BrowserService(QObject):
                 if (!style) return false;
                 if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
                 var rect = el.getBoundingClientRect();
-                if (!rect || rect.width < 12 || rect.height < 12) return false;
+                if (!rect || rect.width < 20 || rect.height < 20) return false;
                 return true;
             }
-            function within(rect, itemRect) {
-                return rect.left >= itemRect.left - 2 &&
-                    rect.right <= itemRect.right + 2 &&
-                    rect.top >= itemRect.top - 2 &&
-                    rect.bottom <= itemRect.bottom + 2;
-            }
-            var root = Array.from(document.querySelectorAll('.quick-resp-panel, .qr-panel-content, .panel-content, body')).find(function(el) {
-                return isVisible(el) && el.innerText.indexOf('默认分组') !== -1;
-            }) || document.body;
-            var item = Array.from(root.querySelectorAll('.item-container')).find(isVisible);
-            if (!item) {
-                return JSON.stringify({ found: false, error: '未找到视频素材项' });
-            }
-            try {
-                item.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, cancelable: true, view: window }));
-                item.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
-            } catch (e) {}
-            var itemRect = item.getBoundingClientRect();
-            var iconWraps = Array.from(item.querySelectorAll('.icon-wrap')).filter(isVisible);
-            if (iconWraps.length >= 2) {
-                var sendWrap = iconWraps[1];
-                var sendRect = sendWrap.getBoundingClientRect();
-                if (within(sendRect, itemRect)) {
-                    return JSON.stringify({
-                        found: true,
-                        x: sendRect.left + sendRect.width / 2,
-                        y: sendRect.top + sendRect.height / 2
+            function collectTargets() {
+                var selectors = [
+                    ['#chat-scroll-view', 'chat_scroll'],
+                    ['.chat-scroll-view', 'chat_scroll'],
+                    ['.chat-msg-list', 'chat_list'],
+                    ['.msg-list', 'chat_list'],
+                    ['.message-list', 'chat_list'],
+                    ['#input-textarea', 'textbox'],
+                    ['.text-area', 'textbox'],
+                    ['[role="textbox"]', 'textbox']
+                ];
+                var targets = [];
+                for (var i = 0; i < selectors.length; i++) {
+                    var selector = selectors[i][0];
+                    var kind = selectors[i][1];
+                    var node = document.querySelector(selector);
+                    if (!isVisible(node)) continue;
+                    var rect = node.getBoundingClientRect();
+                    targets.push({
+                        selector: selector,
+                        kind: kind,
+                        x: rect.left + rect.width / 2,
+                        y: rect.top + rect.height / 2,
+                        left: rect.left,
+                        top: rect.top,
+                        width: rect.width,
+                        height: rect.height
                     });
                 }
+                return targets;
             }
-            var buttons = Array.from(item.querySelectorAll('button, [role="button"], a, div, span')).filter(isVisible);
-            for (var i = 0; i < buttons.length; i++) {
-                var node = buttons[i];
-                var rect = node.getBoundingClientRect();
-                if (!within(rect, itemRect)) continue;
-                if (rect.left <= itemRect.left + itemRect.width * 0.45) continue;
-                if (rect.top <= itemRect.top + itemRect.height * 0.15) continue;
-                if (rect.width < 16 || rect.height < 16) continue;
-                return JSON.stringify({
-                    found: true,
-                    x: rect.left + rect.width / 2,
-                    y: rect.top + rect.height / 2
-                });
+            var targets = collectTargets();
+            if (!targets.length) {
+                return JSON.stringify({ found: false, error: '未找到聊天拖拽区域' });
             }
-            return JSON.stringify({ found: false, error: '未找到视频发送按钮' });
+            return JSON.stringify({
+                found: true,
+                candidates: targets
+            });
         })()
         """
+
+        def build_drop_candidates(data: Dict[str, Any]) -> list[Dict[str, float]]:
+            candidates: list[Dict[str, float]] = []
+            seen: set[tuple[int, int]] = set()
+            for raw in data.get("candidates", []) or []:
+                left = float(raw.get("left", 0) or 0)
+                top = float(raw.get("top", 0) or 0)
+                width = float(raw.get("width", 0) or 0)
+                height = float(raw.get("height", 0) or 0)
+                kind = str(raw.get("kind", "") or "")
+                if width <= 0 or height <= 0:
+                    continue
+                if kind == "chat_scroll" or kind == "chat_list":
+                    points = [
+                        (left + width * 0.40, top + height * 0.65, kind),
+                        (left + width * 0.50, top + height * 0.50, kind),
+                        (left + width * 0.32, top + height * 0.78, kind),
+                    ]
+                else:
+                    points = [
+                        (left + width * 0.50, top + height * 0.50, kind),
+                    ]
+                for x, y, point_kind in points:
+                    key = (int(round(x)), int(round(y)))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    candidates.append({"x": float(x), "y": float(y), "kind": point_kind})
+            return candidates
 
         def poll_delivery():
             if state["done"]:
@@ -2069,23 +2237,12 @@ class BrowserService(QObject):
                         {
                             "success": True,
                             "step": "verified",
-                            "triggerMethod": "material_library_video",
+                            "triggerMethod": "material_library_video_drag",
                             "verifyAttempts": state["verify_attempt"],
-                            "sendMethod": "material_library_first_video",
+                            "sendMethod": "material_library_drag_first_video",
                             "signature": signature,
                         },
                     )
-                    return
-
-                # 第一次点击如果完全没有产生任何发送迹象，切换候选点击点再试。
-                if (
-                    state["verify_attempt"] >= 3
-                    and not pending_visible
-                    and not dialog_visible
-                    and state.get("click_attempt", 0) < 3
-                ):
-                    state["verify_attempt"] = 0
-                    QTimer.singleShot(220, click_video_send_button)
                     return
 
                 if state["verify_attempt"] >= max_verify_attempts:
@@ -2094,10 +2251,8 @@ class BrowserService(QObject):
                         build_failure_payload(
                             "视频未检测到实际发送结果",
                             "verify_timeout",
-                            triggerMethod="material_library_video",
+                            triggerMethod="material_library_video_drag",
                             verifyAttempts=state["verify_attempt"],
-                            clickAttempt=int(state.get("click_attempt", 0) or 0),
-                            clickPoint=dict(state.get("last_click_point", {}) or {}),
                             signature=signature,
                         ),
                     )
@@ -2107,99 +2262,111 @@ class BrowserService(QObject):
 
             self._get_chat_media_signature(on_signature_result)
 
-        def click_video_send_button():
+        def confirm_send_dialog():
             if state["done"]:
                 return
+            state["confirm_attempt"] += 1
 
-            item_rect = dict(state.get("item_rect", {}) or {})
-            item_x = float(item_rect.get("item_x", 0) or 0)
-            item_y = float(item_rect.get("item_y", 0) or 0)
-            item_left = float(item_rect.get("item_left", 0) or 0)
-            item_top = float(item_rect.get("item_top", 0) or 0)
-            item_width = float(item_rect.get("item_width", 0) or 0)
-            item_height = float(item_rect.get("item_height", 0) or 0)
-            preview_x = float(item_rect.get("preview_x", item_x) or item_x)
-            preview_y = float(item_rect.get("preview_y", item_y) or item_y)
-            preview_left = float(item_rect.get("preview_left", item_left) or item_left)
-            preview_top = float(item_rect.get("preview_top", item_top) or item_top)
-            preview_width = float(item_rect.get("preview_width", item_width) or item_width)
-            preview_height = float(item_rect.get("preview_height", item_height) or item_height)
-
-            hover_x = preview_x if preview_x > 0 else item_x
-            hover_y = preview_y if preview_y > 0 else item_y
-            if hover_x > 0 and hover_y > 0:
-                self._native_hover_sweep(hover_x, hover_y)
-
-            state["click_attempt"] = int(state.get("click_attempt", 0) or 0) + 1
-            click_attempt = int(state["click_attempt"])
-
-            candidate_points = []
-            if preview_width > 0 and preview_height > 0:
-                candidate_points.extend([
-                    {
-                        "x": preview_left + preview_width * 0.70,
-                        "y": preview_top + preview_height * 0.41,
-                        "source": "preview_r70_t41",
-                    },
-                    {
-                        "x": preview_left + preview_width * 0.76,
-                        "y": preview_top + preview_height * 0.41,
-                        "source": "preview_r76_t41",
-                    },
-                    {
-                        "x": preview_left + preview_width * 0.72,
-                        "y": preview_top + preview_height * 0.48,
-                        "source": "preview_r72_t48",
-                    },
-                ])
-
-            def on_locate_button(success, result):
-                data = self._parse_js_payload(result) if success else {}
-                button_x = float(data.get("x", 0) or 0)
-                button_y = float(data.get("y", 0) or 0)
-                click_source = "dom_button"
-                if not data.get("found"):
-                    if 1 <= click_attempt <= len(candidate_points):
-                        point = candidate_points[click_attempt - 1]
-                        button_x = float(point.get("x", 0) or 0)
-                        button_y = float(point.get("y", 0) or 0)
-                        click_source = str(point.get("source", "heuristic") or "heuristic")
-                    elif item_width > 0 and item_height > 0:
-                        button_x = item_left + item_width * 0.72
-                        button_y = item_top + item_height * 0.38
-                        click_source = "item_fallback"
-                if button_x <= 0 or button_y <= 0:
-                    finish(
-                        False,
-                        build_failure_payload(
-                            data.get("error", "未找到视频发送按钮"),
-                            "locate_video_item",
-                            clickAttempt=click_attempt,
-                        ),
-                    )
-                    return
-                self._native_hover_sweep(button_x, button_y)
-                state["last_click_point"] = {
-                    "x": round(button_x, 2),
-                    "y": round(button_y, 2),
-                    "source": click_source,
-                }
-                clicked, click_err = self._native_left_click(button_x, button_y)
+            def click_confirm_button(btn_x: float, btn_y: float):
+                clicked, click_err = self._native_left_click(btn_x, btn_y)
                 if not clicked:
                     finish(
                         False,
                         build_failure_payload(
-                            f"点击视频发送按钮失败: {click_err}",
-                            "click_video_send_button",
-                            triggerMethod="material_library_video",
-                            clickAttempt=click_attempt,
-                            clickPoint=dict(state.get("last_click_point", {}) or {}),
+                            f"点击发送按钮失败: {click_err}",
+                            "confirm_click",
+                            triggerMethod="material_library_video_drag",
                         ),
                     )
                     return
-                QTimer.singleShot(400, poll_delivery)
+                QTimer.singleShot(350, poll_delivery)
 
-            self.run_javascript(locate_video_send_button_script, on_locate_button)
+            def fallback_find_confirm_button():
+                def on_find_confirm_btn(found_success, found_result):
+                    btn_data = self._parse_js_payload(found_result) if found_success else {}
+                    if btn_data.get("found"):
+                        click_confirm_button(
+                            float(btn_data.get("x", 0) or 0),
+                            float(btn_data.get("y", 0) or 0),
+                        )
+                        return
+
+                    if state["confirm_attempt"] >= max_confirm_attempts:
+                        more_drop_candidates = state.get("drag_attempt", 0) + 1 < len(state.get("drop_candidates", []))
+                        if more_drop_candidates:
+                            state["confirm_attempt"] = 0
+                            state["drag_attempt"] += 1
+                            QTimer.singleShot(180, drag_video_to_chat)
+                            return
+                        finish(
+                            False,
+                            build_failure_payload(
+                                "拖拽后未出现发送确认框",
+                                "drag_video_to_chat",
+                                triggerMethod="material_library_video_drag",
+                                attemptedDrops=len(state.get("drop_candidates", [])),
+                            ),
+                        )
+                        return
+
+                    QTimer.singleShot(250, confirm_send_dialog)
+
+                self._find_media_send_button(on_find_confirm_btn)
+
+            def on_dialog_state(success, result):
+                dialog_state = self._parse_js_payload(result) if success else {}
+                dialog_visible = bool(dialog_state.get("dialog_visible", False))
+                send_btn_visible = bool(dialog_state.get("send_button_in_dialog_visible", False))
+
+                if dialog_visible and send_btn_visible:
+                    click_confirm_button(
+                        float(dialog_state.get("send_button_x", 0) or 0),
+                        float(dialog_state.get("send_button_y", 0) or 0),
+                    )
+                    return
+
+                fallback_find_confirm_button()
+
+            self._get_media_dialog_state(on_dialog_state)
+
+        def drag_video_to_chat():
+            if state["done"]:
+                return
+
+            item_rect = dict(state.get("item_rect", {}) or {})
+            drop_candidates = list(state.get("drop_candidates", []) or [])
+            drag_attempt = int(state.get("drag_attempt", 0) or 0)
+            drop_rect = dict(drop_candidates[drag_attempt]) if drag_attempt < len(drop_candidates) else {}
+            start_x = float(item_rect.get("preview_x", item_rect.get("item_x", 0)) or 0)
+            start_y = float(item_rect.get("preview_y", item_rect.get("item_y", 0)) or 0)
+            end_x = float(drop_rect.get("x", 0) or 0)
+            end_y = float(drop_rect.get("y", 0) or 0)
+
+            if start_x <= 0 or start_y <= 0 or end_x <= 0 or end_y <= 0:
+                finish(
+                    False,
+                    build_failure_payload(
+                        "拖拽起点或终点坐标无效",
+                        "drag_video_to_chat",
+                    ),
+                )
+                return
+
+            self._native_hover_sweep(start_x, start_y)
+            dragged, drag_err = self._native_drag_and_drop(start_x, start_y, end_x, end_y)
+            if not dragged:
+                finish(
+                    False,
+                    build_failure_payload(
+                        f"拖拽视频到聊天区失败: {drag_err}",
+                        "drag_video_to_chat",
+                        triggerMethod="material_library_video_drag",
+                        dropKind=drop_rect.get("kind", ""),
+                        dragAttempt=drag_attempt + 1,
+                    ),
+                )
+                return
+            QTimer.singleShot(350, confirm_send_dialog)
 
         def open_video_tab():
             if state["done"]:
@@ -2230,7 +2397,7 @@ class BrowserService(QObject):
                     "preview_width": float(data.get("preview_width", data.get("item_width", 0)) or 0),
                     "preview_height": float(data.get("preview_height", data.get("item_height", 0)) or 0),
                 }
-                QTimer.singleShot(200, click_video_send_button)
+                QTimer.singleShot(200, drag_video_to_chat)
 
             def on_video_tab(success, result):
                 data = self._parse_js_payload(result) if success else {}
@@ -2289,7 +2456,32 @@ class BrowserService(QObject):
         def on_baseline_signature(success, result):
             baseline = self._parse_js_payload(result) if success else {}
             state["baseline"] = baseline if baseline.get("found") else {}
-            open_material_library()
+            def on_drop_target(success2, result2):
+                data = self._parse_js_payload(result2) if success2 else {}
+                if not data.get("found"):
+                    finish(
+                        False,
+                        build_failure_payload(
+                            data.get("error", "未找到聊天拖拽区域"),
+                            "locate_chat_drop_target",
+                        ),
+                    )
+                    return
+                candidates = build_drop_candidates(data)
+                if not candidates:
+                    finish(
+                        False,
+                        build_failure_payload(
+                            "未找到可用聊天拖拽落点",
+                            "locate_chat_drop_target",
+                        ),
+                    )
+                    return
+                state["drop_candidates"] = candidates
+                state["drop_rect"] = dict(candidates[0])
+                open_material_library()
+
+            self.run_javascript(locate_chat_drop_target_script, on_drop_target)
 
         self._get_chat_media_signature(on_baseline_signature)
 
