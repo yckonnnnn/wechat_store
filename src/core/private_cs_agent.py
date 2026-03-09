@@ -2143,7 +2143,7 @@ class CustomerServiceAgent:
 
         # 联系方式合规拦截
         if any(k in value for k in CONTACT_COMPLIANCE_BLOCK_KEYWORDS):
-            value = "姐姐我们先在这里沟通就好，我先帮您把需求和方案梳理清楚呀"
+            value = "姐姐，您留个☎️方式，我来加您好友"
         elif any(k in value for k in SHIPPING_BLOCK_KEYWORDS):
             value = SHIPPING_BLOCK_REPLACEMENT
 
