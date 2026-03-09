@@ -23,6 +23,7 @@ class MessageProcessor(QObject):
 
     _GRAB_CHAT_AFTER_CLICK_DELAY_MS = 3000
     _MEDIA_SEND_AFTER_TEXT_DELAY_MS = 900
+    _VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 1200
 
     status_changed = Signal(str)
     log_message = Signal(str)
@@ -439,7 +440,12 @@ class MessageProcessor(QObject):
             self.sessions.record_reply(session_id)
             self.reply_sent.emit(session_id, decision.reply_text)
 
-            extra_video = self.agent.mark_reply_sent(session_id, user_name, decision.reply_text)
+            extra_video = self.agent.mark_reply_sent(
+                session_id,
+                user_name,
+                decision.reply_text,
+                is_first_turn_global=bool(decision.is_first_turn_global),
+            )
             extra_medias = [extra_video] if extra_video else []
             media_queue = self.agent.build_post_text_media_queue(
                 session_id=session_id,
@@ -457,6 +463,12 @@ class MessageProcessor(QObject):
                     detail=f"queued_media={len(media_queue)}",
                 )
                 delay_ms = int(getattr(self, "_MEDIA_SEND_AFTER_TEXT_DELAY_MS", 900) or 0)
+                has_delayed_video = any(
+                    isinstance(item, dict) and str(item.get("type", "") or "") == "delayed_video"
+                    for item in media_queue
+                )
+                if has_delayed_video:
+                    delay_ms += int(getattr(self, "_VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS", 1200) or 0)
                 send_media = lambda: self._send_media_queue(
                         session_id,
                         user_name,
@@ -578,6 +590,7 @@ class MessageProcessor(QObject):
                 "store_address": item.get("store_address", ""),
                 "detected_region": item.get("detected_region", ""),
                 "route_reason": item.get("route_reason", ""),
+                "trigger_source": item.get("trigger_source", ""),
                 "delivery_stage": "attempting",
                 "failure_code": "",
                 "retry_attempt": int(item.get("_retry_count", 0) or 0),
@@ -676,6 +689,7 @@ class MessageProcessor(QObject):
                             "store_address": item.get("store_address", ""),
                             "detected_region": item.get("detected_region", ""),
                             "route_reason": item.get("route_reason", ""),
+                            "trigger_source": item.get("trigger_source", ""),
                         }
                     )
                 self._append_media_delivery_event(
@@ -716,6 +730,7 @@ class MessageProcessor(QObject):
                             "store_address": item.get("store_address", ""),
                             "detected_region": item.get("detected_region", ""),
                             "route_reason": item.get("route_reason", ""),
+                            "trigger_source": item.get("trigger_source", ""),
                         }
                     )
                 pending_item = self.agent.enqueue_media_compensation(
@@ -774,6 +789,7 @@ class MessageProcessor(QObject):
                     "store_address": item.get("store_address", ""),
                     "detected_region": item.get("detected_region", ""),
                     "route_reason": item.get("route_reason", ""),
+                    "trigger_source": item.get("trigger_source", ""),
                     "success": bool(success),
                     "retry_scheduled": False,
                     "retry_attempt": retry_count,
@@ -851,6 +867,8 @@ class MessageProcessor(QObject):
                 "locate_video_tab_failed",
                 "locate_video_item_failed",
                 "click_video_send_button_failed",
+                "drag_video_to_chat_failed",
+                "confirm_click_failed",
                 "video_verify_timeout",
             }
         return False

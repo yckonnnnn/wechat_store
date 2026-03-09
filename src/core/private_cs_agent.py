@@ -212,6 +212,7 @@ class CustomerServiceAgent:
         self.use_knowledge_first = True
         self.knowledge_threshold = 0.6
         self.memory_ttl_days = 30
+        self.first_reply_video_enabled = False
 
         self._address_index: Dict[str, List[str]] = {
             "beijing_chaoyang": [],
@@ -490,7 +491,14 @@ class CustomerServiceAgent:
         self.memory_store.save()
         return decision
 
-    def mark_reply_sent(self, session_id: str, user_name: str, reply_text: str) -> Optional[Dict[str, Any]]:
+    def mark_reply_sent(
+        self,
+        session_id: str,
+        user_name: str,
+        reply_text: str,
+        *,
+        is_first_turn_global: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         """文本发送成功后的状态推进；返回需要立即发送的视频媒体（若命中）"""
         user_hash = self._hash_user(user_name or session_id)
         user_state = self.memory_store.get_user_state(user_hash)
@@ -504,17 +512,21 @@ class CustomerServiceAgent:
         user_state["recent_reply_hashes"] = recent_hashes
 
         session_video = self.summarize_session_video_from_log(session_id=session_id)
-        if session_video.get("contact_sent") and not session_video.get("video_sent"):
+        if self.first_reply_video_enabled and is_first_turn_global and not session_video.get("first_reply_video_sent"):
+            video_item = self._build_video_media_item(trigger_source="first_reply")
+            if video_item:
+                self.memory_store.update_user_state(user_hash, user_state)
+                self.memory_store.save()
+                return video_item
+
+        if session_video.get("contact_sent") and not session_video.get("contact_followup_video_sent"):
             user_messages_after_contact = int(session_video.get("user_message_count_after_contact", 0) or 0)
             if user_messages_after_contact >= 2:
-                video_path = self._pick_video_media()
-                if video_path:
+                video_item = self._build_video_media_item(trigger_source="contact_followup")
+                if video_item:
                     self.memory_store.update_user_state(user_hash, user_state)
                     self.memory_store.save()
-                    return {
-                        "type": "delayed_video",
-                        "path": video_path,
-                    }
+                    return video_item
 
         self.memory_store.update_user_state(user_hash, user_state)
         self.memory_store.save()
@@ -656,15 +668,23 @@ class CustomerServiceAgent:
         self.memory_store.update_session_state(session_id, session_state, user_hash=user_hash)
         self.memory_store.save()
 
-    def set_options(self, use_knowledge_first: bool, knowledge_threshold: float) -> None:
+    def set_options(
+        self,
+        use_knowledge_first: bool,
+        knowledge_threshold: float,
+        first_reply_video_enabled: Optional[bool] = None,
+    ) -> None:
         self.use_knowledge_first = bool(use_knowledge_first)
         self.knowledge_threshold = max(0.0, min(1.0, float(knowledge_threshold)))
+        if first_reply_video_enabled is not None:
+            self.first_reply_video_enabled = bool(first_reply_video_enabled)
 
     def get_status(self) -> Dict[str, Any]:
         """给 UI 的状态快照"""
         return {
             "use_knowledge_first": self.use_knowledge_first,
             "knowledge_threshold": self.knowledge_threshold,
+            "first_reply_video_enabled": self.first_reply_video_enabled,
             "memory_ttl_days": self.memory_ttl_days,
             "system_prompt_loaded": bool(self._system_prompt_doc_text),
             "playbook_loaded": bool(self._playbook_doc_text),
@@ -1657,7 +1677,9 @@ class CustomerServiceAgent:
 
         session_video = self.summarize_session_video_from_log(session_id=session_id)
         session_state["session_video_armed"] = bool(session_video.get("contact_sent"))
-        session_state["session_video_sent"] = bool(session_video.get("video_sent"))
+        session_state["session_video_sent"] = bool(
+            session_video.get("first_reply_video_sent") or session_video.get("contact_followup_video_sent")
+        )
         session_state["session_post_contact_reply_count"] = int(session_video.get("assistant_reply_count_after_contact", 0) or 0)
         session_state["session_user_message_count_after_contact"] = int(session_video.get("user_message_count_after_contact", 0) or 0)
 
@@ -1800,7 +1822,8 @@ class CustomerServiceAgent:
     def summarize_session_video_from_log(self, session_id: str) -> Dict[str, Any]:
         summary = {
             "contact_sent": False,
-            "video_sent": False,
+            "first_reply_video_sent": False,
+            "contact_followup_video_sent": False,
             "assistant_reply_count_after_contact": 0,
             "user_message_count_after_contact": 0,
         }
@@ -1837,7 +1860,11 @@ class CustomerServiceAgent:
 
             if event_type == "media_result":
                 if str(payload.get("type", "") or "") == "delayed_video" and bool(payload.get("success")):
-                    summary["video_sent"] = True
+                    trigger_source = str(payload.get("trigger_source", "") or "contact_followup")
+                    if trigger_source == "first_reply":
+                        summary["first_reply_video_sent"] = True
+                    elif trigger_source == "contact_followup":
+                        summary["contact_followup_video_sent"] = True
             elif event_type == "user_message":
                 user_count += 1
             elif event_type == "assistant_reply":
@@ -1849,6 +1876,16 @@ class CustomerServiceAgent:
         summary["assistant_reply_count_after_contact"] = reply_count
         summary["user_message_count_after_contact"] = user_count
         return summary
+
+    def _build_video_media_item(self, trigger_source: str) -> Optional[Dict[str, Any]]:
+        video_path = self._pick_video_media()
+        if not video_path:
+            return None
+        return {
+            "type": "delayed_video",
+            "path": video_path,
+            "trigger_source": str(trigger_source or ""),
+        }
 
     def _read_session_log_records(self, session_id: str) -> List[Dict[str, Any]]:
         records: List[Dict[str, Any]] = []

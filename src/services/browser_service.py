@@ -1999,7 +1999,7 @@ class BrowserService(QObject):
             "confirm_attempt": 0,
         }
         max_verify_attempts = 20
-        max_confirm_attempts = 6
+        max_confirm_attempts = 10
 
         def build_failure_payload(message: str, step: str, **extra: Any) -> Dict[str, Any]:
             mapping = {
@@ -2355,6 +2355,12 @@ class BrowserService(QObject):
             self._native_hover_sweep(start_x, start_y)
             dragged, drag_err = self._native_drag_and_drop(start_x, start_y, end_x, end_y)
             if not dragged:
+                more_drop_candidates = drag_attempt + 1 < len(drop_candidates)
+                if more_drop_candidates:
+                    state["confirm_attempt"] = 0
+                    state["drag_attempt"] = drag_attempt + 1
+                    QTimer.singleShot(180, drag_video_to_chat)
+                    return
                 finish(
                     False,
                     build_failure_payload(
@@ -2366,7 +2372,8 @@ class BrowserService(QObject):
                     ),
                 )
                 return
-            QTimer.singleShot(350, confirm_send_dialog)
+            # 拖拽落下后给微信弹层一点渲染时间，避免刚出现时还没挂载到可检索节点上。
+            QTimer.singleShot(520, confirm_send_dialog)
 
         def open_video_tab():
             if state["done"]:

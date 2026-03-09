@@ -85,6 +85,11 @@ class MainWindow(QWidget):
             reply_templates_path=Path("config") / "reply_templates.json",
             media_whitelist_path=Path("config") / "media_whitelist.json",
         )
+        self.agent.set_options(
+            use_knowledge_first=self.agent.use_knowledge_first,
+            knowledge_threshold=self.agent.knowledge_threshold,
+            first_reply_video_enabled=bool(self.config_manager.get("agent.first_reply_video_enabled", False)),
+        )
         self.message_processor = None
 
     def _setup_ui(self):
@@ -271,9 +276,18 @@ class MainWindow(QWidget):
         self.message_processor.reload_media_config()
         self._refresh_agent_tab_status()
 
-    def _on_agent_options_changed(self, use_kb: bool, threshold: float):
-        self.agent.set_options(use_knowledge_first=use_kb, knowledge_threshold=threshold)
-        self.left_panel.append_log(f"⚙️ Agent参数已更新: use_kb={use_kb}, threshold={threshold:.2f}")
+    def _on_agent_options_changed(self, use_kb: bool, threshold: float, first_reply_video_enabled: bool):
+        self.agent.set_options(
+            use_knowledge_first=use_kb,
+            knowledge_threshold=threshold,
+            first_reply_video_enabled=first_reply_video_enabled,
+        )
+        self.config_manager.set("agent.first_reply_video_enabled", bool(first_reply_video_enabled))
+        self.config_manager.save()
+        self.left_panel.append_log(
+            f"⚙️ Agent参数已更新: use_kb={use_kb}, threshold={threshold:.2f}, "
+            f"first_reply_video={bool(first_reply_video_enabled)}"
+        )
         self._refresh_agent_tab_status()
 
     def _update_model_badge(self):

@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 class AgentStatusTab(QWidget):
     reload_prompt_clicked = Signal()
     reload_media_clicked = Signal()
-    options_changed = Signal(bool, float)
+    options_changed = Signal(bool, float, bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -56,6 +56,10 @@ class AgentStatusTab(QWidget):
         self.use_kb_checkbox = QCheckBox("优先知识库")
         self.use_kb_checkbox.setChecked(True)
         row.addWidget(self.use_kb_checkbox)
+
+        self.first_reply_video_checkbox = QCheckBox("首轮回复后直接触发视频")
+        self.first_reply_video_checkbox.setChecked(False)
+        row.addWidget(self.first_reply_video_checkbox)
 
         row.addWidget(QLabel("知识库阈值"))
         self.threshold_spin = QDoubleSpinBox()
@@ -99,13 +103,19 @@ class AgentStatusTab(QWidget):
         layout.addWidget(self.decision_view, 1)
 
     def _emit_options(self):
-        self.options_changed.emit(self.use_kb_checkbox.isChecked(), float(self.threshold_spin.value()))
+        self.options_changed.emit(
+            self.use_kb_checkbox.isChecked(),
+            float(self.threshold_spin.value()),
+            self.first_reply_video_checkbox.isChecked(),
+        )
 
     def update_status(self, status: Dict[str, Any]):
         use_kb = bool(status.get("use_knowledge_first", True))
         threshold = float(status.get("knowledge_threshold", 0.6))
+        first_reply_video_enabled = bool(status.get("first_reply_video_enabled", False))
         self.use_kb_checkbox.setChecked(use_kb)
         self.threshold_spin.setValue(threshold)
+        self.first_reply_video_checkbox.setChecked(first_reply_video_enabled)
 
         self.status_label.setText(
             " | ".join(
@@ -115,6 +125,7 @@ class AgentStatusTab(QWidget):
                     f"地址图: {status.get('address_image_count', 0)}",
                     f"联系方式图: {status.get('contact_image_count', 0)}",
                     f"视频: {status.get('video_media_count', 0)}",
+                    f"首轮视频: {'开' if first_reply_video_enabled else '关'}",
                     f"模板: {'已加载' if status.get('template_loaded') else '缺失'}",
                     f"白名单: {status.get('media_whitelist_count', 0)}",
                     f"远程控制: {status.get('remote_control_user_count', 0)}",

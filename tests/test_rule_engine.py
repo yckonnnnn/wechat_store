@@ -115,6 +115,7 @@ class RuleEngineTestCase(unittest.TestCase):
         media_path: str,
         ts: str,
         user_id_hash: str,
+        trigger_source: str = "",
     ) -> None:
         log_file = conversations_dir / f"{session_id}.jsonl"
         records = []
@@ -135,7 +136,11 @@ class RuleEngineTestCase(unittest.TestCase):
                     "reply_source": "",
                     "rule_id": "",
                     "model_name": "",
-                    "payload": {"type": media_type, "path": media_path},
+                    "payload": {
+                        "type": media_type,
+                        "path": media_path,
+                        "trigger_source": trigger_source,
+                    },
                 },
                 {
                     "timestamp": ts,
@@ -145,7 +150,12 @@ class RuleEngineTestCase(unittest.TestCase):
                     "reply_source": "",
                     "rule_id": "",
                     "model_name": "",
-                    "payload": {"type": media_type, "success": True, "result": {"ok": True}},
+                    "payload": {
+                        "type": media_type,
+                        "success": True,
+                        "result": {"ok": True},
+                        "trigger_source": trigger_source,
+                    },
                 },
             ]
         )
@@ -1178,12 +1188,146 @@ class RuleEngineTestCase(unittest.TestCase):
                 media_path=str(temp_dir / "images" / "video.mp4"),
                 ts="2026-02-27T10:00:10",
                 user_id_hash=user_hash,
+                trigger_source="contact_followup",
             )
 
             d2 = agent.decide("chat_b", user_name, "我在黑龙江怎么买", [])
             self.assertEqual(d2.media_plan, "contact_image")
             self.assertTrue(d2.media_items)
             self.assertIsNone(agent.mark_reply_sent("chat_a", user_name, "再追问一次"))
+
+    def test_first_reply_video_toggle_off_does_not_trigger(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = self._build_agent(temp_dir)
+            user_name = "用户首轮关闭"
+
+            agent.set_options(
+                use_knowledge_first=agent.use_knowledge_first,
+                knowledge_threshold=agent.knowledge_threshold,
+                first_reply_video_enabled=False,
+            )
+
+            self.assertIsNone(
+                agent.mark_reply_sent(
+                    "chat_first_reply_off",
+                    user_name,
+                    "首轮回复",
+                    is_first_turn_global=True,
+                )
+            )
+
+    def test_first_reply_and_contact_followup_videos_can_both_send(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, _, _ = self._build_agent(temp_dir)
+            user_name = "用户双视频"
+            user_hash = agent._hash_user(user_name)
+
+            agent.set_options(
+                use_knowledge_first=agent.use_knowledge_first,
+                knowledge_threshold=agent.knowledge_threshold,
+                first_reply_video_enabled=True,
+            )
+
+            first_video = agent.mark_reply_sent(
+                "chat_dual_video",
+                user_name,
+                "首轮回复",
+                is_first_turn_global=True,
+            )
+            self.assertIsNotNone(first_video)
+            self.assertEqual(first_video.get("type"), "delayed_video")
+            self.assertEqual(first_video.get("trigger_source"), "first_reply")
+
+            self._append_media_success_log(
+                conversations_dir=conversations_dir,
+                session_id="chat_dual_video",
+                media_type="delayed_video",
+                media_path=str(first_video.get("path", "")),
+                ts="2026-02-27T10:00:00",
+                user_id_hash=user_hash,
+                trigger_source="first_reply",
+            )
+
+            self.assertIsNone(
+                agent.mark_reply_sent(
+                    "chat_dual_video",
+                    user_name,
+                    "非首轮回复",
+                    is_first_turn_global=False,
+                )
+            )
+
+            d1 = agent.decide("chat_dual_video", user_name, "我在黑龙江怎么买", [])
+            agent.mark_media_sent("chat_dual_video", user_name, d1.media_items[0], success=True)
+            self._append_media_success_log(
+                conversations_dir=conversations_dir,
+                session_id="chat_dual_video",
+                media_type="contact_image",
+                media_path=d1.media_items[0]["path"],
+                ts="2026-02-27T10:00:10",
+                user_id_hash=user_hash,
+            )
+
+            log_file = conversations_dir / "chat_dual_video.jsonl"
+            existing = log_file.read_text(encoding="utf-8")
+            existing += json.dumps(
+                {
+                    "timestamp": "2026-02-27T10:00:11",
+                    "session_id": "chat_dual_video",
+                    "user_id_hash": user_hash,
+                    "event_type": "user_message",
+                    "reply_source": "",
+                    "rule_id": "",
+                    "model_name": "",
+                    "payload": {"text": "好的"},
+                },
+                ensure_ascii=False,
+            ) + "\n"
+            existing += json.dumps(
+                {
+                    "timestamp": "2026-02-27T10:00:12",
+                    "session_id": "chat_dual_video",
+                    "user_id_hash": user_hash,
+                    "event_type": "user_message",
+                    "reply_source": "",
+                    "rule_id": "",
+                    "model_name": "",
+                    "payload": {"text": "我再问下"},
+                },
+                ensure_ascii=False,
+            ) + "\n"
+            log_file.write_text(existing, encoding="utf-8")
+
+            second_video = agent.mark_reply_sent(
+                "chat_dual_video",
+                user_name,
+                "联系方式后第二轮回复",
+                is_first_turn_global=False,
+            )
+            self.assertIsNotNone(second_video)
+            self.assertEqual(second_video.get("trigger_source"), "contact_followup")
+
+            self._append_media_success_log(
+                conversations_dir=conversations_dir,
+                session_id="chat_dual_video",
+                media_type="delayed_video",
+                media_path=str(second_video.get("path", "")),
+                ts="2026-02-27T10:00:20",
+                user_id_hash=user_hash,
+                trigger_source="contact_followup",
+            )
+
+            self.assertIsNone(
+                agent.mark_reply_sent(
+                    "chat_dual_video",
+                    user_name,
+                    "再次回复",
+                    is_first_turn_global=False,
+                )
+            )
 
     def test_video_media_fallback_when_config_name_mismatch(self):
         with tempfile.TemporaryDirectory() as td:

@@ -25,6 +25,9 @@ class ConfigManager(QObject):
             "version": 1,
             "updated_at": "",
             "current_model": "ChatGPT",
+            "agent": {
+                "first_reply_video_enabled": False,
+            },
             "models": {
                 "ChatGPT": {
                     "base_url": "https://api.openai.com/v1",

@@ -125,6 +125,7 @@ class DummyBrowserFlowRetry(QObject):
 class DummyAgentFlow:
     def __init__(self, memory_store: MemoryStore):
         self.memory_store = memory_store
+        self.mark_reply_sent_calls = []
 
     def reload_media_library(self):
         return None
@@ -173,8 +174,15 @@ class DummyAgentFlow:
         del user_id_hash
         return True
 
-    def mark_reply_sent(self, session_id: str, user_name: str, reply_text: str):
-        del session_id, user_name, reply_text
+    def mark_reply_sent(self, session_id: str, user_name: str, reply_text: str, *, is_first_turn_global: bool = False):
+        self.mark_reply_sent_calls.append(
+            {
+                "session_id": session_id,
+                "user_name": user_name,
+                "reply_text": reply_text,
+                "is_first_turn_global": is_first_turn_global,
+            }
+        )
         return None
 
     def build_post_text_media_queue(self, session_id: str, user_name: str, planned_media_items, extra_media_items=None):
@@ -192,6 +200,23 @@ class DummyAgentFlow:
         queued = dict(media_item)
         queued["pending_media_id"] = "contact_image"
         return queued
+
+
+class DummyAgentFlowFirstReplyVideo(DummyAgentFlow):
+    def mark_reply_sent(self, session_id: str, user_name: str, reply_text: str, *, is_first_turn_global: bool = False):
+        super().mark_reply_sent(
+            session_id,
+            user_name,
+            reply_text,
+            is_first_turn_global=is_first_turn_global,
+        )
+        if not is_first_turn_global:
+            return None
+        return {
+            "type": "delayed_video",
+            "path": "video.mp4",
+            "trigger_source": "first_reply",
+        }
 
 
 class DummyKnowledgeServiceNoMatch:
@@ -442,6 +467,53 @@ class DummyBrowserVideoRouteRetry(QObject):
         callback(True, {"ok": True})
 
 
+class DummyBrowserVideoDragRetry(QObject):
+    page_loaded = Signal(bool)
+    url_changed = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.clear_calls = 0
+        self.image_send_calls = 0
+        self.video_send_calls = 0
+
+    def find_and_click_first_unread(self, callback):
+        del callback
+
+    def find_and_click_unread_by_usernames(self, user_names, callback):
+        del user_names, callback
+
+    def grab_chat_data(self, callback):
+        del callback
+
+    def send_message(self, text, callback):
+        del text
+        callback(True, {"ok": True})
+
+    def clear_message_input(self, callback):
+        self.clear_calls += 1
+        callback(True, {"ok": True})
+
+    def send_image(self, media_path, callback):
+        del media_path
+        self.image_send_calls += 1
+        callback(True, {"ok": True})
+
+    def send_video_from_material_library(self, callback):
+        self.video_send_calls += 1
+        if self.video_send_calls == 1:
+            callback(
+                False,
+                {
+                    "error": "拖拽后未出现发送确认框",
+                    "step": "drag_video_to_chat",
+                    "failure_code": "drag_video_to_chat_failed",
+                },
+            )
+            return
+        callback(True, {"ok": True})
+
+
 class MessageProcessorSessionIdTestCase(unittest.TestCase):
     def test_contact_request_phrases_detect_as_contact_intent(self):
         agent = CustomerServiceAgent.__new__(CustomerServiceAgent)
@@ -514,6 +586,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             agent = DummyAgentFlow(memory_store)
             processor = MessageProcessor(browser, sessions, agent)
             processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
+            processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
             processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
 
             payload = {
@@ -603,6 +676,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             agent = DummyAgentFlow(memory_store)
             processor = MessageProcessor(browser, sessions, agent)
             processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
+            processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
             processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
 
             payload = {
@@ -635,6 +709,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             agent = DummyAgentFlow(memory_store)
             processor = MessageProcessor(browser, sessions, agent)
             processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
+            processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
             processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
 
             payload = {
@@ -693,6 +768,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             agent = DummyAgentFlow(memory_store)
             processor = MessageProcessor(browser, sessions, agent)
             processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
+            processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
             processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
             processor._page_ready = True
             processor.set_remote_control_users(["控制用户"])
@@ -728,6 +804,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             agent = DummyAgentFlow(memory_store)
             processor = MessageProcessor(browser, sessions, agent)
             processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
+            processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
             processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
 
             payload = {
@@ -745,6 +822,65 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
 
             self.assertGreaterEqual(browser.clear_calls, 1)
             self.assertEqual(browser.sent_messages.count("姐姐我马上帮您安排～🌹"), 1)
+
+    def test_mark_reply_sent_receives_first_turn_flag(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserFlow()
+            sessions = SessionManager()
+            agent = DummyAgentFlow(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            payload = {
+                "user_name": "首轮透传用户",
+                "chat_session_key": "",
+                "chat_session_method": "fallback",
+                "chat_session_fingerprint": "fp_first_turn",
+                "messages": [
+                    {"text": "历史客服", "is_user": False},
+                    {"text": "我想买假发", "is_user": True},
+                ],
+            }
+
+            processor._on_chat_data(True, payload, auto_reply=True)
+
+            self.assertTrue(agent.mark_reply_sent_calls)
+            self.assertTrue(agent.mark_reply_sent_calls[-1]["is_first_turn_global"])
+
+    def test_first_reply_video_flows_through_material_library_sender(self):
+        app = QCoreApplication.instance() or QCoreApplication([])
+
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserVideoRoute()
+            sessions = SessionManager()
+            agent = DummyAgentFlowFirstReplyVideo(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
+            processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            payload = {
+                "user_name": "首轮视频用户",
+                "chat_session_key": "",
+                "chat_session_method": "fallback",
+                "chat_session_fingerprint": "fp_first_video",
+                "messages": [
+                    {"text": "历史客服", "is_user": False},
+                    {"text": "我想买假发", "is_user": True},
+                ],
+            }
+
+            processor._on_chat_data(True, payload, auto_reply=True)
+
+            loop = QEventLoop()
+            QTimer.singleShot(1400, loop.quit)
+            loop.exec()
+
+            self.assertEqual(browser.video_send_calls, 1)
+            self.assertEqual(browser.image_send_calls, 1)
 
     def test_delayed_video_uses_material_library_sender(self):
         with tempfile.TemporaryDirectory() as td:
@@ -778,6 +914,26 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             processor._send_media_queue(
                 session_id="chat_video_retry",
                 user_name="视频重试用户",
+                media_queue=[{"type": "delayed_video", "path": "dummy.mp4"}],
+                decision=None,
+                media_summary={"sent_types": [], "failed_types": [], "sent_details": [], "failed_details": []},
+            )
+
+            self.assertEqual(browser.video_send_calls, 2)
+            self.assertEqual(browser.image_send_calls, 0)
+
+    def test_delayed_video_drag_failure_retries_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserVideoDragRetry()
+            sessions = SessionManager()
+            agent = DummyAgentFlow(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            processor._send_media_queue(
+                session_id="chat_video_drag_retry",
+                user_name="视频拖拽重试用户",
                 media_queue=[{"type": "delayed_video", "path": "dummy.mp4"}],
                 decision=None,
                 media_summary={"sent_types": [], "failed_types": [], "sent_details": [], "failed_details": []},
