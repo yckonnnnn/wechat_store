@@ -19,6 +19,15 @@ import re
 class KnowledgeEditDialog(QDialog):
     """知识库编辑对话框"""
 
+    INTENT_LABELS = {
+        "general": "通用",
+        "address": "地址",
+        "price": "价格",
+        "wearing": "佩戴",
+        "care": "护理",
+        "appointment": "预约",
+    }
+
     def __init__(self, item: KnowledgeItem = None, parent=None,
                  categories: list = None, tags: list = None):
         super().__init__(parent)
@@ -38,9 +47,9 @@ class KnowledgeEditDialog(QDialog):
 
         # 意图
         self.category_input = QComboBox()
-        self.category_input.addItems(self._categories)
+        self._populate_intent_options()
         self.category_input.setEditable(True)
-        self.category_input.setCurrentText(self.item.intent or "")
+        self.category_input.setCurrentText(self._display_intent(self.item.intent or ""))
         layout.addRow("意图:", self.category_input)
 
         # 标签
@@ -104,16 +113,46 @@ class KnowledgeEditDialog(QDialog):
 
         self.item.question = question
         self.item.set_answers(answers)
-        self.item.intent = category
+        self.item.intent = self._normalize_intent(category)
         self.item.tags = tags
         self.accept()
 
     def get_item(self) -> KnowledgeItem:
         return self.item
 
+    def _populate_intent_options(self):
+        seen = set()
+        for intent in self._categories:
+            key = str(intent or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            self.category_input.addItem(self._display_intent(key), key)
+
+    def _display_intent(self, intent: str) -> str:
+        key = str(intent or "").strip()
+        return self.INTENT_LABELS.get(key, key)
+
+    def _normalize_intent(self, text: str) -> str:
+        value = str(text or "").strip()
+        if not value:
+            return ""
+        for key, label in self.INTENT_LABELS.items():
+            if value == label:
+                return key
+        index = self.category_input.currentIndex()
+        data = self.category_input.itemData(index)
+        if isinstance(data, str) and data.strip():
+            current_label = self.category_input.currentText().strip()
+            if value == current_label:
+                return data.strip()
+        return value
+
 
 class KnowledgeTab(QWidget):
     """知识库标签页"""
+
+    INTENT_LABELS = KnowledgeEditDialog.INTENT_LABELS
 
     data_changed = Signal()
 
@@ -273,7 +312,7 @@ class KnowledgeTab(QWidget):
             cat_widget = QWidget()
             cat_layout = QHBoxLayout(cat_widget)
             cat_layout.setContentsMargins(8, 0, 8, 0)
-            cat_label = QLabel(item.intent or "general")
+            cat_label = QLabel(self._display_intent(item.intent or "general"))
             cat_label.setStyleSheet("""
                 background: #eff6ff; color: #2563eb; 
                 padding: 4px 8px; border-radius: 6px; 
@@ -363,6 +402,10 @@ class KnowledgeTab(QWidget):
         """搜索"""
         self._search_text = text.strip()
         self._load_data()
+
+    def _display_intent(self, intent: str) -> str:
+        key = str(intent or "").strip()
+        return self.INTENT_LABELS.get(key, key)
 
     def _on_add(self):
         """添加条目"""

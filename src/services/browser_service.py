@@ -50,6 +50,10 @@ class BrowserService(QObject):
         settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, True)
         settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows, False)
+        self.web_view.setMouseTracking(True)
+        focus_proxy = self.web_view.focusProxy()
+        if focus_proxy is not None:
+            focus_proxy.setMouseTracking(True)
 
     def _on_load_finished(self, success: bool):
         """页面加载完成回调"""
@@ -171,6 +175,48 @@ class BrowserService(QObject):
             return True, ""
         except Exception as exc:
             return False, str(exc)
+
+    def _native_mouse_move(self, x: float, y: float) -> tuple[bool, str]:
+        """在 WebView 内发送原生鼠标移动，用于触发真实 hover。"""
+        try:
+            target_widget = self.web_view.focusProxy() or self.web_view
+            target_widget.setMouseTracking(True)
+            local_pos = QPointF(float(x), float(y))
+            global_pos = target_widget.mapToGlobal(local_pos.toPoint())
+            global_pos_f = QPointF(global_pos.x(), global_pos.y())
+
+            move_event = QMouseEvent(
+                QMouseEvent.MouseMove,
+                local_pos,
+                global_pos_f,
+                Qt.NoButton,
+                Qt.NoButton,
+                Qt.NoModifier,
+            )
+            QCoreApplication.sendEvent(target_widget, move_event)
+            return True, ""
+        except Exception as exc:
+            return False, str(exc)
+
+    def _native_hover_sweep(self, x: float, y: float) -> tuple[bool, str]:
+        """在目标点附近做一次轻微悬停扫过，提升 hover-only 控件触发率。"""
+        offsets = [
+            (0, 0),
+            (-8, -6),
+            (8, -6),
+            (0, 0),
+            (6, 6),
+            (0, 0),
+        ]
+        last_error = ""
+        moved = False
+        for dx, dy in offsets:
+            ok, err = self._native_mouse_move(float(x) + dx, float(y) + dy)
+            if ok:
+                moved = True
+            elif err:
+                last_error = err
+        return moved, last_error
 
     def _native_press_enter(self) -> tuple[bool, str]:
         """在 WebView 内发送原生 Enter 键。"""
@@ -1796,6 +1842,454 @@ class BrowserService(QObject):
             baseline = self._parse_js_payload(result) if success else {}
             state["baseline"] = baseline if baseline.get("found") else {}
             self.run_javascript(get_position_script, on_position_result)
+
+        self._get_chat_media_signature(on_baseline_signature)
+
+    def send_video_from_material_library(self, callback: Callable = None):
+        """从页面素材库的“视频”tab发送第一个可见视频素材。"""
+        state: Dict[str, Any] = {
+            "done": False,
+            "baseline": {},
+            "verify_attempt": 0,
+            "tab_clicks_done": False,
+            "item_rect": {},
+            "click_attempt": 0,
+            "last_click_point": {},
+        }
+        max_verify_attempts = 8
+
+        def build_failure_payload(message: str, step: str, **extra: Any) -> Dict[str, Any]:
+            mapping = {
+                "locate_material_library": "locate_material_library_failed",
+                "click_material_library": "locate_material_library_failed",
+                "locate_video_tab": "locate_video_tab_failed",
+                "click_video_tab": "locate_video_tab_failed",
+                "locate_video_item": "locate_video_item_failed",
+                "click_video_send_button": "click_video_send_button_failed",
+                "verify_timeout": "video_verify_timeout",
+            }
+            payload: Dict[str, Any] = {
+                "error": message,
+                "step": step,
+                "failure_code": mapping.get(step, step or "video_send_failed"),
+            }
+            payload.update(extra)
+            return payload
+
+        def finish(success: bool, payload: Dict[str, Any]):
+            if state["done"]:
+                return
+            state["done"] = True
+            if callback:
+                callback(success, payload)
+
+        locate_material_library_script = r"""
+        (function() {
+            function safeText(el) { return (el && (el.textContent || el.innerText) || "").trim(); }
+            function isVisible(el) {
+                if (!el) return false;
+                var style = window.getComputedStyle(el);
+                if (!style) return false;
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                var rect = el.getBoundingClientRect();
+                if (!rect || rect.width < 5 || rect.height < 5) return false;
+                return true;
+            }
+            var nodes = Array.from(document.querySelectorAll('li, button, div, span, a')).filter(isVisible);
+            for (var i = 0; i < nodes.length; i++) {
+                var node = nodes[i];
+                if (safeText(node) !== '素材库') continue;
+                var rect = node.getBoundingClientRect();
+                return JSON.stringify({
+                    found: true,
+                    x: rect.left + rect.width / 2,
+                    y: rect.top + rect.height / 2
+                });
+            }
+            return JSON.stringify({ found: false, error: '未找到素材库Tab' });
+        })()
+        """
+
+        locate_video_tab_script = r"""
+        (function() {
+            function safeText(el) { return (el && (el.textContent || el.innerText) || "").trim(); }
+            function isVisible(el) {
+                if (!el) return false;
+                var style = window.getComputedStyle(el);
+                if (!style) return false;
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                var rect = el.getBoundingClientRect();
+                if (!rect || rect.width < 5 || rect.height < 5) return false;
+                return true;
+            }
+            var roots = Array.from(document.querySelectorAll('.quick-resp-panel, .panel-content, body')).filter(isVisible);
+            for (var r = 0; r < roots.length; r++) {
+                var root = roots[r];
+                var nodes = Array.from(root.querySelectorAll('li, button, div, span, a')).filter(isVisible);
+                for (var i = 0; i < nodes.length; i++) {
+                    var node = nodes[i];
+                    if (safeText(node) !== '视频') continue;
+                    var rect = node.getBoundingClientRect();
+                    return JSON.stringify({
+                        found: true,
+                        x: rect.left + rect.width / 2,
+                        y: rect.top + rect.height / 2
+                    });
+                }
+            }
+            return JSON.stringify({ found: false, error: '未找到视频Tab' });
+        })()
+        """
+
+        locate_first_video_item_script = r"""
+        (function() {
+            function isVisible(el) {
+                if (!el) return false;
+                var style = window.getComputedStyle(el);
+                if (!style) return false;
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                var rect = el.getBoundingClientRect();
+                if (!rect || rect.width < 20 || rect.height < 20) return false;
+                return true;
+            }
+            function materialRoot() {
+                var roots = Array.from(document.querySelectorAll('.quick-resp-panel, .qr-panel-content, .panel-content')).filter(isVisible);
+                for (var i = 0; i < roots.length; i++) {
+                    if (roots[i].innerText.indexOf('默认分组') !== -1) return roots[i];
+                }
+                return document.body;
+            }
+            var root = materialRoot();
+            var items = Array.from(root.querySelectorAll('.item-container')).filter(isVisible);
+            if (!items.length) {
+                return JSON.stringify({ found: false, error: '未找到视频素材项' });
+            }
+            var item = items[0];
+            var preview = item.querySelector('.preview, img, video, canvas');
+            try {
+                item.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, cancelable: true, view: window }));
+                item.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
+            } catch (e) {}
+            var rect = item.getBoundingClientRect();
+            var previewRect = preview ? preview.getBoundingClientRect() : rect;
+            return JSON.stringify({
+                found: true,
+                item_x: rect.left + rect.width / 2,
+                item_y: rect.top + rect.height / 2,
+                item_left: rect.left,
+                item_top: rect.top,
+                item_width: rect.width,
+                item_height: rect.height,
+                preview_x: previewRect.left + previewRect.width / 2,
+                preview_y: previewRect.top + previewRect.height / 2,
+                preview_left: previewRect.left,
+                preview_top: previewRect.top,
+                preview_width: previewRect.width,
+                preview_height: previewRect.height
+            });
+        })()
+        """
+
+        locate_video_send_button_script = r"""
+        (function() {
+            function isVisible(el) {
+                if (!el) return false;
+                var style = window.getComputedStyle(el);
+                if (!style) return false;
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                var rect = el.getBoundingClientRect();
+                if (!rect || rect.width < 12 || rect.height < 12) return false;
+                return true;
+            }
+            function within(rect, itemRect) {
+                return rect.left >= itemRect.left - 2 &&
+                    rect.right <= itemRect.right + 2 &&
+                    rect.top >= itemRect.top - 2 &&
+                    rect.bottom <= itemRect.bottom + 2;
+            }
+            var root = Array.from(document.querySelectorAll('.quick-resp-panel, .qr-panel-content, .panel-content, body')).find(function(el) {
+                return isVisible(el) && el.innerText.indexOf('默认分组') !== -1;
+            }) || document.body;
+            var item = Array.from(root.querySelectorAll('.item-container')).find(isVisible);
+            if (!item) {
+                return JSON.stringify({ found: false, error: '未找到视频素材项' });
+            }
+            try {
+                item.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, cancelable: true, view: window }));
+                item.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
+            } catch (e) {}
+            var itemRect = item.getBoundingClientRect();
+            var iconWraps = Array.from(item.querySelectorAll('.icon-wrap')).filter(isVisible);
+            if (iconWraps.length >= 2) {
+                var sendWrap = iconWraps[1];
+                var sendRect = sendWrap.getBoundingClientRect();
+                if (within(sendRect, itemRect)) {
+                    return JSON.stringify({
+                        found: true,
+                        x: sendRect.left + sendRect.width / 2,
+                        y: sendRect.top + sendRect.height / 2
+                    });
+                }
+            }
+            var buttons = Array.from(item.querySelectorAll('button, [role="button"], a, div, span')).filter(isVisible);
+            for (var i = 0; i < buttons.length; i++) {
+                var node = buttons[i];
+                var rect = node.getBoundingClientRect();
+                if (!within(rect, itemRect)) continue;
+                if (rect.left <= itemRect.left + itemRect.width * 0.45) continue;
+                if (rect.top <= itemRect.top + itemRect.height * 0.15) continue;
+                if (rect.width < 16 || rect.height < 16) continue;
+                return JSON.stringify({
+                    found: true,
+                    x: rect.left + rect.width / 2,
+                    y: rect.top + rect.height / 2
+                });
+            }
+            return JSON.stringify({ found: false, error: '未找到视频发送按钮' });
+        })()
+        """
+
+        def poll_delivery():
+            if state["done"]:
+                return
+            state["verify_attempt"] += 1
+
+            def on_signature_result(success, result):
+                signature = self._parse_js_payload(result) if success else {}
+                pending_visible = bool(signature.get("pending_media_send_visible", False))
+                dialog_visible = bool(signature.get("dialog_visible", False))
+
+                if (
+                    self._media_send_confirmed(state.get("baseline", {}), signature)
+                    and not pending_visible
+                    and not dialog_visible
+                ):
+                    finish(
+                        True,
+                        {
+                            "success": True,
+                            "step": "verified",
+                            "triggerMethod": "material_library_video",
+                            "verifyAttempts": state["verify_attempt"],
+                            "sendMethod": "material_library_first_video",
+                            "signature": signature,
+                        },
+                    )
+                    return
+
+                # 第一次点击如果完全没有产生任何发送迹象，切换候选点击点再试。
+                if (
+                    state["verify_attempt"] >= 3
+                    and not pending_visible
+                    and not dialog_visible
+                    and state.get("click_attempt", 0) < 3
+                ):
+                    state["verify_attempt"] = 0
+                    QTimer.singleShot(220, click_video_send_button)
+                    return
+
+                if state["verify_attempt"] >= max_verify_attempts:
+                    finish(
+                        False,
+                        build_failure_payload(
+                            "视频未检测到实际发送结果",
+                            "verify_timeout",
+                            triggerMethod="material_library_video",
+                            verifyAttempts=state["verify_attempt"],
+                            clickAttempt=int(state.get("click_attempt", 0) or 0),
+                            clickPoint=dict(state.get("last_click_point", {}) or {}),
+                            signature=signature,
+                        ),
+                    )
+                    return
+
+                QTimer.singleShot(450, poll_delivery)
+
+            self._get_chat_media_signature(on_signature_result)
+
+        def click_video_send_button():
+            if state["done"]:
+                return
+
+            item_rect = dict(state.get("item_rect", {}) or {})
+            item_x = float(item_rect.get("item_x", 0) or 0)
+            item_y = float(item_rect.get("item_y", 0) or 0)
+            item_left = float(item_rect.get("item_left", 0) or 0)
+            item_top = float(item_rect.get("item_top", 0) or 0)
+            item_width = float(item_rect.get("item_width", 0) or 0)
+            item_height = float(item_rect.get("item_height", 0) or 0)
+            preview_x = float(item_rect.get("preview_x", item_x) or item_x)
+            preview_y = float(item_rect.get("preview_y", item_y) or item_y)
+            preview_left = float(item_rect.get("preview_left", item_left) or item_left)
+            preview_top = float(item_rect.get("preview_top", item_top) or item_top)
+            preview_width = float(item_rect.get("preview_width", item_width) or item_width)
+            preview_height = float(item_rect.get("preview_height", item_height) or item_height)
+
+            hover_x = preview_x if preview_x > 0 else item_x
+            hover_y = preview_y if preview_y > 0 else item_y
+            if hover_x > 0 and hover_y > 0:
+                self._native_hover_sweep(hover_x, hover_y)
+
+            state["click_attempt"] = int(state.get("click_attempt", 0) or 0) + 1
+            click_attempt = int(state["click_attempt"])
+
+            candidate_points = []
+            if preview_width > 0 and preview_height > 0:
+                candidate_points.extend([
+                    {
+                        "x": preview_left + preview_width * 0.70,
+                        "y": preview_top + preview_height * 0.41,
+                        "source": "preview_r70_t41",
+                    },
+                    {
+                        "x": preview_left + preview_width * 0.76,
+                        "y": preview_top + preview_height * 0.41,
+                        "source": "preview_r76_t41",
+                    },
+                    {
+                        "x": preview_left + preview_width * 0.72,
+                        "y": preview_top + preview_height * 0.48,
+                        "source": "preview_r72_t48",
+                    },
+                ])
+
+            def on_locate_button(success, result):
+                data = self._parse_js_payload(result) if success else {}
+                button_x = float(data.get("x", 0) or 0)
+                button_y = float(data.get("y", 0) or 0)
+                click_source = "dom_button"
+                if not data.get("found"):
+                    if 1 <= click_attempt <= len(candidate_points):
+                        point = candidate_points[click_attempt - 1]
+                        button_x = float(point.get("x", 0) or 0)
+                        button_y = float(point.get("y", 0) or 0)
+                        click_source = str(point.get("source", "heuristic") or "heuristic")
+                    elif item_width > 0 and item_height > 0:
+                        button_x = item_left + item_width * 0.72
+                        button_y = item_top + item_height * 0.38
+                        click_source = "item_fallback"
+                if button_x <= 0 or button_y <= 0:
+                    finish(
+                        False,
+                        build_failure_payload(
+                            data.get("error", "未找到视频发送按钮"),
+                            "locate_video_item",
+                            clickAttempt=click_attempt,
+                        ),
+                    )
+                    return
+                self._native_hover_sweep(button_x, button_y)
+                state["last_click_point"] = {
+                    "x": round(button_x, 2),
+                    "y": round(button_y, 2),
+                    "source": click_source,
+                }
+                clicked, click_err = self._native_left_click(button_x, button_y)
+                if not clicked:
+                    finish(
+                        False,
+                        build_failure_payload(
+                            f"点击视频发送按钮失败: {click_err}",
+                            "click_video_send_button",
+                            triggerMethod="material_library_video",
+                            clickAttempt=click_attempt,
+                            clickPoint=dict(state.get("last_click_point", {}) or {}),
+                        ),
+                    )
+                    return
+                QTimer.singleShot(400, poll_delivery)
+
+            self.run_javascript(locate_video_send_button_script, on_locate_button)
+
+        def open_video_tab():
+            if state["done"]:
+                return
+
+            def on_video_item_ready(success, result):
+                data = self._parse_js_payload(result) if success else {}
+                if not data.get("found"):
+                    finish(
+                        False,
+                        build_failure_payload(
+                            data.get("error", "未找到视频素材项"),
+                            "locate_video_item",
+                        ),
+                    )
+                    return
+                state["item_rect"] = {
+                    "item_x": float(data.get("item_x", 0) or 0),
+                    "item_y": float(data.get("item_y", 0) or 0),
+                    "item_left": float(data.get("item_left", 0) or 0),
+                    "item_top": float(data.get("item_top", 0) or 0),
+                    "item_width": float(data.get("item_width", 0) or 0),
+                    "item_height": float(data.get("item_height", 0) or 0),
+                    "preview_x": float(data.get("preview_x", data.get("item_x", 0)) or 0),
+                    "preview_y": float(data.get("preview_y", data.get("item_y", 0)) or 0),
+                    "preview_left": float(data.get("preview_left", data.get("item_left", 0)) or 0),
+                    "preview_top": float(data.get("preview_top", data.get("item_top", 0)) or 0),
+                    "preview_width": float(data.get("preview_width", data.get("item_width", 0)) or 0),
+                    "preview_height": float(data.get("preview_height", data.get("item_height", 0)) or 0),
+                }
+                QTimer.singleShot(200, click_video_send_button)
+
+            def on_video_tab(success, result):
+                data = self._parse_js_payload(result) if success else {}
+                if not data.get("found"):
+                    finish(
+                        False,
+                        build_failure_payload(
+                            data.get("error", "未找到视频Tab"),
+                            "locate_video_tab",
+                        ),
+                    )
+                    return
+                clicked, click_err = self._native_left_click(data.get("x", 0), data.get("y", 0))
+                if not clicked:
+                    finish(
+                        False,
+                        build_failure_payload(
+                            f"点击视频Tab失败: {click_err}",
+                            "click_video_tab",
+                        ),
+                    )
+                    return
+                QTimer.singleShot(350, lambda: self.run_javascript(locate_first_video_item_script, on_video_item_ready))
+
+            self.run_javascript(locate_video_tab_script, on_video_tab)
+
+        def open_material_library():
+            if state["done"]:
+                return
+
+            def on_material_tab(success, result):
+                data = self._parse_js_payload(result) if success else {}
+                if not data.get("found"):
+                    finish(
+                        False,
+                        build_failure_payload(
+                            data.get("error", "未找到素材库Tab"),
+                            "locate_material_library",
+                        ),
+                    )
+                    return
+                clicked, click_err = self._native_left_click(data.get("x", 0), data.get("y", 0))
+                if not clicked:
+                    finish(
+                        False,
+                        build_failure_payload(
+                            f"点击素材库Tab失败: {click_err}",
+                            "click_material_library",
+                        ),
+                    )
+                    return
+                QTimer.singleShot(350, open_video_tab)
+
+            self.run_javascript(locate_material_library_script, on_material_tab)
+
+        def on_baseline_signature(success, result):
+            baseline = self._parse_js_payload(result) if success else {}
+            state["baseline"] = baseline if baseline.get("found") else {}
+            open_material_library()
 
         self._get_chat_media_signature(on_baseline_signature)
 

@@ -696,11 +696,15 @@ class MessageProcessor(QObject):
                 if detail:
                     self._emit_media_ui_log(
                         media_type,
-                        f"媒体发送失败: type={media_type}, detail={detail}",
+                        f"媒体发送失败: type={media_type}, detail={detail}, failure={failure_code or 'unknown'}, step={str((result or {}).get('step', '') or '')}",
                         level="error",
                     )
                 else:
-                    self._emit_media_ui_log(media_type, f"媒体发送失败: type={media_type}", level="error")
+                    self._emit_media_ui_log(
+                        media_type,
+                        f"媒体发送失败: type={media_type}, failure={failure_code or 'unknown'}, step={str((result or {}).get('step', '') or '')}",
+                        level="error",
+                    )
                 if media_summary is not None:
                     media_summary.setdefault("failed_types", []).append(media_type)
                     media_summary.setdefault("failed_details", []).append(
@@ -802,7 +806,12 @@ class MessageProcessor(QObject):
                     media_summary=media_summary,
                 )
 
-        def send_image_after_clear():
+        def send_media_after_clear():
+            if media_type == "delayed_video":
+                send_video = getattr(self.browser, "send_video_from_material_library", None)
+                if callable(send_video):
+                    send_video(on_media_sent)
+                    return
             self.browser.send_image(media_path, on_media_sent)
 
         clear_input = getattr(self.browser, "clear_message_input", None)
@@ -814,27 +823,37 @@ class MessageProcessor(QObject):
                         "发送媒体前清空输入框失败，继续尝试发图",
                         level="warning",
                     )
-                send_image_after_clear()
+                send_media_after_clear()
 
             clear_input(on_input_cleared)
             return
 
-        send_image_after_clear()
+        send_media_after_clear()
 
     def _should_retry_media_send(self, media_type: str, result: Any, retry_count: int) -> bool:
-        if media_type not in ("contact_image", "address_image"):
-            return False
-        if retry_count >= 2:
-            return False
         failure_code = self._extract_failure_code(result)
-        return failure_code in {
-            "locate_image_button_failed",
-            "native_click_image_button_failed",
-            "confirm_click_failed",
-            "confirm_click_after_enter_failed",
-            "verify_timeout",
-            "verified_soft_timeout",
-        }
+        if media_type in ("contact_image", "address_image"):
+            if retry_count >= 2:
+                return False
+            return failure_code in {
+                "locate_image_button_failed",
+                "native_click_image_button_failed",
+                "confirm_click_failed",
+                "confirm_click_after_enter_failed",
+                "verify_timeout",
+                "verified_soft_timeout",
+            }
+        if media_type == "delayed_video":
+            if retry_count >= 1:
+                return False
+            return failure_code in {
+                "locate_material_library_failed",
+                "locate_video_tab_failed",
+                "locate_video_item_failed",
+                "click_video_send_button_failed",
+                "video_verify_timeout",
+            }
+        return False
 
     def test_grab(self, callback: Callable = None):
         def on_data(success, data):

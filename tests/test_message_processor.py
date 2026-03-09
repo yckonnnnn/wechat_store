@@ -32,6 +32,9 @@ class DummyBrowser(QObject):
     def send_image(self, media_path, callback):
         del media_path, callback
 
+    def send_video_from_material_library(self, callback):
+        del callback
+
 
 class DummyAgent:
     def __init__(self, memory_store: MemoryStore):
@@ -74,6 +77,9 @@ class DummyBrowserFlow(QObject):
         del media_path
         callback(True, {"ok": True})
 
+    def send_video_from_material_library(self, callback):
+        callback(True, {"ok": True})
+
 
 class DummyBrowserFlowRetry(QObject):
     page_loaded = Signal(bool)
@@ -110,6 +116,9 @@ class DummyBrowserFlowRetry(QObject):
                 },
             )
             return
+        callback(True, {"ok": True})
+
+    def send_video_from_material_library(self, callback):
         callback(True, {"ok": True})
 
 
@@ -228,6 +237,16 @@ class DummyBrowserFlowCompensation(QObject):
             },
         )
 
+    def send_video_from_material_library(self, callback):
+        callback(
+            False,
+            {
+                "error": "点击视频发送按钮失败",
+                "step": "click_video_send_button",
+                "failure_code": "click_video_send_button_failed",
+            },
+        )
+
 
 class DummyBrowserDuplicateOnImage(QObject):
     page_loaded = Signal(bool)
@@ -264,6 +283,11 @@ class DummyBrowserDuplicateOnImage(QObject):
             self.sent_messages.append(self.composer_text)
         callback(True, {"ok": True})
 
+    def send_video_from_material_library(self, callback):
+        if self.composer_text:
+            self.sent_messages.append(self.composer_text)
+        callback(True, {"ok": True})
+
 
 class DummyBrowserUnreadClick(QObject):
     page_loaded = Signal(bool)
@@ -283,6 +307,9 @@ class DummyBrowserUnreadClick(QObject):
 
     def send_image(self, media_path, callback):
         del media_path, callback
+
+    def send_video_from_material_library(self, callback):
+        del callback
 
 
 class DummyBrowserDelayedTextThenImage(QObject):
@@ -324,6 +351,94 @@ class DummyBrowserDelayedTextThenImage(QObject):
     def send_image(self, media_path, callback):
         del media_path
         self.image_send_calls += 1
+        callback(True, {"ok": True})
+
+    def send_video_from_material_library(self, callback):
+        callback(True, {"ok": True})
+
+
+class DummyBrowserVideoRoute(QObject):
+    page_loaded = Signal(bool)
+    url_changed = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.clear_calls = 0
+        self.image_send_calls = 0
+        self.video_send_calls = 0
+        self.sent_messages = []
+
+    def find_and_click_first_unread(self, callback):
+        del callback
+
+    def find_and_click_unread_by_usernames(self, user_names, callback):
+        del user_names, callback
+
+    def grab_chat_data(self, callback):
+        del callback
+
+    def send_message(self, text, callback):
+        self.sent_messages.append(text)
+        callback(True, {"ok": True})
+
+    def clear_message_input(self, callback):
+        self.clear_calls += 1
+        callback(True, {"ok": True})
+
+    def send_image(self, media_path, callback):
+        del media_path
+        self.image_send_calls += 1
+        callback(True, {"ok": True})
+
+    def send_video_from_material_library(self, callback):
+        self.video_send_calls += 1
+        callback(True, {"ok": True})
+
+
+class DummyBrowserVideoRouteRetry(QObject):
+    page_loaded = Signal(bool)
+    url_changed = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.clear_calls = 0
+        self.image_send_calls = 0
+        self.video_send_calls = 0
+
+    def find_and_click_first_unread(self, callback):
+        del callback
+
+    def find_and_click_unread_by_usernames(self, user_names, callback):
+        del user_names, callback
+
+    def grab_chat_data(self, callback):
+        del callback
+
+    def send_message(self, text, callback):
+        del text
+        callback(True, {"ok": True})
+
+    def clear_message_input(self, callback):
+        self.clear_calls += 1
+        callback(True, {"ok": True})
+
+    def send_image(self, media_path, callback):
+        del media_path
+        self.image_send_calls += 1
+        callback(True, {"ok": True})
+
+    def send_video_from_material_library(self, callback):
+        self.video_send_calls += 1
+        if self.video_send_calls == 1:
+            callback(
+                False,
+                {
+                    "error": "视频未检测到实际发送结果",
+                    "step": "verify_timeout",
+                    "failure_code": "video_verify_timeout",
+                },
+            )
+            return
         callback(True, {"ok": True})
 
 
@@ -568,6 +683,9 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             def send_image(self, media_path, callback):
                 del media_path, callback
 
+            def send_video_from_material_library(self, callback):
+                del callback
+
         with tempfile.TemporaryDirectory() as td:
             memory_store = MemoryStore(Path(td) / "memory.json")
             browser = DummyBrowserRemote()
@@ -627,6 +745,46 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
 
             self.assertGreaterEqual(browser.clear_calls, 1)
             self.assertEqual(browser.sent_messages.count("姐姐我马上帮您安排～🌹"), 1)
+
+    def test_delayed_video_uses_material_library_sender(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserVideoRoute()
+            sessions = SessionManager()
+            agent = DummyAgentFlow(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            processor._send_media_queue(
+                session_id="chat_video_route",
+                user_name="视频用户",
+                media_queue=[{"type": "delayed_video", "path": "dummy.mp4"}],
+                decision=None,
+                media_summary={"sent_types": [], "failed_types": [], "sent_details": [], "failed_details": []},
+            )
+
+            self.assertEqual(browser.video_send_calls, 1)
+            self.assertEqual(browser.image_send_calls, 0)
+
+    def test_delayed_video_retries_once_after_failure(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserVideoRouteRetry()
+            sessions = SessionManager()
+            agent = DummyAgentFlow(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            processor._send_media_queue(
+                session_id="chat_video_retry",
+                user_name="视频重试用户",
+                media_queue=[{"type": "delayed_video", "path": "dummy.mp4"}],
+                decision=None,
+                media_summary={"sent_types": [], "failed_types": [], "sent_details": [], "failed_details": []},
+            )
+
+            self.assertEqual(browser.video_send_calls, 2)
+            self.assertEqual(browser.image_send_calls, 0)
 
     def test_delay_media_until_text_send_settles(self):
         app = QCoreApplication.instance() or QCoreApplication([])
