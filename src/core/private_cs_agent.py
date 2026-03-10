@@ -76,10 +76,30 @@ SHIPPING_BLOCK_KEYWORDS = (
     "到家",
 )
 SHIPPING_BLOCK_REPLACEMENT = "姐姐我们是到店定制哦"
+ADDRESS_UNSUPPORTED_FALLBACK = "姐姐，您留个联系方式，我来加您并跟您具体沟通"
+ADDRESS_UNSUPPORTED_QUERY_KEYWORDS = (
+    "怎么去",
+    "怎么走",
+    "怎么过去",
+    "如何去",
+    "如何过去",
+    "坐什么车",
+    "怎么坐车",
+    "坐几号线",
+    "哪一站",
+    "哪个站",
+    "哪个出口",
+    "几号出口",
+    "定位",
+    "导航",
+    "路线",
+    "停车",
+    "怎么到",
+)
 DEFAULT_REPLY_EMOJI = "🌹"
 # 适合中老年客户的emoji表情池
 REPLY_EMOJI_POOL = ["🌹", "💗", "😘", "🥰", "🌷", "❤️", "😊", "💕", "🌸", "💐", "🌺", "😄"]
-ENTERPRISE_GUARD_DOC_PATH = Path("docs") / "llm_enterprise_knowledge_guard_v1.md"
+ENTERPRISE_GUARD_DOC_PATH = Path("config") / "llm_enterprise_knowledge_guard_v1.md"
 CONTACT_IMAGE_MAX_SEND = 3
 CONTACT_TRIGGER_KEYWORDS = (
     "邮寄",
@@ -1387,6 +1407,7 @@ class CustomerServiceAgent:
             )
 
         llm_reply = self._normalize_reply_text(result)
+        llm_reply = self._apply_llm_reply_guardrails(latest_user_text, llm_reply)
 
         return AgentDecision(
             reply_text=llm_reply,
@@ -2155,6 +2176,18 @@ class CustomerServiceAgent:
         # 随机选择emoji
         emoji = random.choice(REPLY_EMOJI_POOL)
         return f"{value}{emoji}"
+
+    def _apply_llm_reply_guardrails(self, latest_user_text: str, reply_text: str) -> str:
+        text = (latest_user_text or "").strip()
+        if self._is_address_unsupported_query(text):
+            return self._normalize_reply_text(ADDRESS_UNSUPPORTED_FALLBACK)
+        return reply_text
+
+    def _is_address_unsupported_query(self, text: str) -> bool:
+        value = (text or "").strip().lower()
+        if not value:
+            return False
+        return any(keyword in value for keyword in ADDRESS_UNSUPPORTED_QUERY_KEYWORDS)
 
     def _strip_inline_emoji_symbols(self, text: str) -> str:
         cleaned = re.sub(

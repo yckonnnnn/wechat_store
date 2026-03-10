@@ -21,7 +21,7 @@ from ..services.conversation_logger import ConversationLogger
 class MessageProcessor(QObject):
     """消息编排器"""
 
-    _GRAB_CHAT_AFTER_CLICK_DELAY_MS = 3000
+    _GRAB_CHAT_AFTER_CLICK_DELAY_MS = 5000
     _MEDIA_SEND_AFTER_TEXT_DELAY_MS = 900
     _VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 1200
 
