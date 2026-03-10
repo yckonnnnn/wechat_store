@@ -59,6 +59,9 @@ class MainWindow(QWidget):
         self._init_services()
         self._setup_ui()
         self._connect_signals()
+        self.left_panel.append_log(
+            f"⚙️ 首轮视频开关当前值: {bool(getattr(self.agent, 'first_reply_video_enabled', False))}"
+        )
         self._load_wechat_store()
 
     def _init_services(self):

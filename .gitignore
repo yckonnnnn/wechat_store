@@ -42,6 +42,7 @@ Thumbs.db
 
 # 图标文件（如果很大）
 # icon/
+images/*
 
 # 文档文件
 *.md
