@@ -388,6 +388,7 @@ class DummyBrowserVideoRoute(QObject):
 
     def __init__(self):
         super().__init__()
+        self.media_debug_hook = None
         self.clear_calls = 0
         self.image_send_calls = 0
         self.video_send_calls = 0
@@ -417,6 +418,29 @@ class DummyBrowserVideoRoute(QObject):
 
     def send_video_from_material_library(self, callback):
         self.video_send_calls += 1
+        callback(True, {"ok": True})
+
+
+class DummyBrowserVideoRouteWithDebug(DummyBrowserVideoRoute):
+    def send_video_from_material_library(self, callback):
+        self.video_send_calls += 1
+        if callable(self.media_debug_hook):
+            self.media_debug_hook(
+                {
+                    "media_type": "delayed_video",
+                    "message": "素材库Tab点击成功",
+                    "level": "info",
+                    "step": "material_tab_clicked",
+                }
+            )
+            self.media_debug_hook(
+                {
+                    "media_type": "delayed_video",
+                    "message": "视频Tab点击成功",
+                    "level": "info",
+                    "step": "video_tab_clicked",
+                }
+            )
         callback(True, {"ok": True})
 
 
@@ -901,6 +925,31 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
 
             self.assertEqual(browser.video_send_calls, 1)
             self.assertEqual(browser.image_send_calls, 0)
+
+    def test_delayed_video_emits_step_logs_from_browser_hook(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserVideoRouteWithDebug()
+            sessions = SessionManager()
+            agent = DummyAgentFlow(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            captured = []
+            processor.log_event.connect(captured.append)
+
+            processor._send_media_queue(
+                session_id="chat_video_debug",
+                user_name="视频日志用户",
+                media_queue=[{"type": "delayed_video", "path": "dummy.mp4", "trigger_source": "first_reply"}],
+                decision=None,
+                media_summary={"sent_types": [], "failed_types": [], "sent_details": [], "failed_details": []},
+            )
+
+            texts = [str(item.get("text", "") or "") for item in captured if isinstance(item, dict)]
+            self.assertTrue(any("开始触发首轮视频发送" in text for text in texts))
+            self.assertTrue(any("素材库Tab点击成功" in text for text in texts))
+            self.assertTrue(any("视频Tab点击成功" in text for text in texts))
 
     def test_delayed_video_retries_once_after_failure(self):
         with tempfile.TemporaryDirectory() as td:

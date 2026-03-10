@@ -58,6 +58,8 @@ class MessageProcessor(QObject):
 
         self.browser.page_loaded.connect(self._on_page_loaded)
         self.browser.url_changed.connect(self._on_url_changed)
+        if hasattr(self.browser, "media_debug_hook"):
+            self.browser.media_debug_hook = self._on_browser_media_debug
 
     def _emit_log(self, message: str, *, color: str = "", category: str = "", level: str = "info"):
         payload = {
@@ -68,6 +70,13 @@ class MessageProcessor(QObject):
         }
         self.log_message.emit(payload["text"])
         self.log_event.emit(payload)
+
+    def _on_browser_media_debug(self, payload: Dict[str, Any]) -> None:
+        media_type = str(payload.get("media_type", "") or "delayed_video")
+        message = str(payload.get("message", "") or "")
+        level = str(payload.get("level", "") or "info")
+        if message:
+            self._emit_media_ui_log(media_type, message, level=level)
 
     def start(self, interval_ms: int = 4000):
         self._poll_interval_ms = max(1000, int(interval_ms or self._poll_interval_ms or 4000))
@@ -561,6 +570,14 @@ class MessageProcessor(QObject):
             stage="sending_media",
             detail=f"type={media_type}",
         )
+        if media_type == "delayed_video":
+            trigger_source = str(item.get("trigger_source", "") or "")
+            if trigger_source == "first_reply":
+                self._emit_media_ui_log(media_type, "开始触发首轮视频发送", level="info")
+            elif trigger_source:
+                self._emit_media_ui_log(media_type, f"开始触发视频发送: source={trigger_source}", level="info")
+            else:
+                self._emit_media_ui_log(media_type, "开始触发视频发送", level="info")
         self._emit_media_ui_log(media_type, f"准备发送媒体: type={media_type}", level="info")
         self._append_media_delivery_event(
             session_id=session_id,

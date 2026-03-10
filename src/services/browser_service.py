@@ -31,6 +31,7 @@ class BrowserService(QObject):
         self._page_ready = False
         self._pending_callbacks: dict = {}
         self._last_url = ""
+        self.media_debug_hook: Optional[Callable[[Dict[str, Any]], None]] = None
 
         # 配置浏览器设置
         self._setup_browser()
@@ -146,6 +147,30 @@ class BrowserService(QObject):
             except Exception:
                 return {}
         return {}
+
+    def _emit_media_debug(
+        self,
+        message: str,
+        *,
+        media_type: str = "delayed_video",
+        level: str = "info",
+        step: str = "",
+        **extra: Any,
+    ) -> None:
+        hook = getattr(self, "media_debug_hook", None)
+        if not callable(hook):
+            return
+        payload: Dict[str, Any] = {
+            "message": str(message or ""),
+            "media_type": str(media_type or ""),
+            "level": str(level or "info"),
+            "step": str(step or ""),
+        }
+        payload.update(extra)
+        try:
+            hook(payload)
+        except Exception:
+            return
 
     def _native_left_click(self, x: float, y: float) -> tuple[bool, str]:
         """在 WebView 内发送原生左键点击。"""
@@ -2053,6 +2078,8 @@ class BrowserService(QObject):
             if callback:
                 callback(success, payload)
 
+        self._emit_media_debug("开始执行视频发送链路", step="start")
+
         locate_material_library_script = r"""
         (function() {
             function safeText(el) { return (el && (el.textContent || el.innerText) || "").trim(); }
@@ -2355,6 +2382,7 @@ class BrowserService(QObject):
                     and not pending_visible
                     and not dialog_visible
                 ):
+                    self._emit_media_debug("视频发送确认成功", level="success", step="verified")
                     finish(
                         True,
                         {
@@ -2391,6 +2419,7 @@ class BrowserService(QObject):
             state["confirm_attempt"] += 1
 
             def click_confirm_button(btn_x: float, btn_y: float):
+                self._emit_media_debug("视频发送确认按钮已定位", step="confirm_button_ready")
                 clicked, click_err = self._native_left_click(btn_x, btn_y)
                 if not clicked:
                     finish(
@@ -2402,6 +2431,7 @@ class BrowserService(QObject):
                         ),
                     )
                     return
+                self._emit_media_debug("视频发送确认按钮点击成功", step="confirm_button_clicked")
                 QTimer.singleShot(350, poll_delivery)
 
             def fallback_find_confirm_button():
@@ -2442,6 +2472,7 @@ class BrowserService(QObject):
                 send_btn_visible = bool(dialog_state.get("send_button_in_dialog_visible", False))
 
                 if dialog_visible and send_btn_visible:
+                    self._emit_media_debug("已检测到视频发送确认框", step="confirm_dialog_visible")
                     click_confirm_button(
                         float(dialog_state.get("send_button_x", 0) or 0),
                         float(dialog_state.get("send_button_y", 0) or 0),
@@ -2618,8 +2649,21 @@ class BrowserService(QObject):
                 )
                 return
 
+            self._emit_media_debug(
+                f"开始拖拽视频素材: attempt={drag_attempt + 1}, drop={str(drop_rect.get('kind', '') or 'unknown')}",
+                step="drag_video_to_chat",
+                dragAttempt=drag_attempt + 1,
+                dropKind=str(drop_rect.get("kind", "") or ""),
+            )
+
             def on_dom_drag_result(dragged: bool, payload: Dict[str, Any]):
                 if dragged:
+                    self._emit_media_debug(
+                        "视频拖拽完成，等待发送确认框",
+                        step="drag_video_to_chat_done",
+                        dragAttempt=drag_attempt + 1,
+                        dropKind=str(drop_rect.get("kind", "") or ""),
+                    )
                     QTimer.singleShot(520, confirm_send_dialog)
                     return
 
@@ -2646,6 +2690,7 @@ class BrowserService(QObject):
         def open_video_tab():
             if state["done"]:
                 return
+            self._emit_media_debug("开始查找视频Tab", step="locate_video_tab")
 
             def on_video_item_ready(success, result):
                 data = self._parse_js_payload(result) if success else {}
@@ -2658,6 +2703,7 @@ class BrowserService(QObject):
                         ),
                     )
                     return
+                self._emit_media_debug("视频素材定位成功", step="video_item_ready")
                 state["item_rect"] = {
                     "item_x": float(data.get("item_x", 0) or 0),
                     "item_y": float(data.get("item_y", 0) or 0),
@@ -2688,6 +2734,10 @@ class BrowserService(QObject):
                 state["drop_candidates"] = candidates
                 state["drop_rect"] = dict(candidates[0])
                 state["drag_attempt"] = 0
+                self._emit_media_debug(
+                    f"视频拖拽落点准备完成: count={len(candidates)}",
+                    step="drop_candidates_ready",
+                )
                 QTimer.singleShot(200, drag_video_to_chat)
 
             def on_video_tab(success, result):
@@ -2711,6 +2761,7 @@ class BrowserService(QObject):
                         ),
                     )
                     return
+                self._emit_media_debug("视频Tab点击成功", step="video_tab_clicked")
                 QTimer.singleShot(350, lambda: self.run_javascript(locate_first_video_item_script, on_video_item_ready))
 
             self.run_javascript(locate_video_tab_script, on_video_tab)
@@ -2720,6 +2771,10 @@ class BrowserService(QObject):
                 return
             state.setdefault("material_tab_attempt", 0)
             state["material_tab_attempt"] += 1
+            self._emit_media_debug(
+                f"开始查找素材库Tab: attempt={int(state.get('material_tab_attempt', 0) or 0)}",
+                step="locate_material_library",
+            )
 
             def on_material_tab(success, result):
                 data = self._parse_js_payload(result) if success else {}
@@ -2744,6 +2799,7 @@ class BrowserService(QObject):
                     )
                     return
                 if action == "back_from_send_with_buy":
+                    self._emit_media_debug("检测到发送一起买页面，已点击返回", step="back_from_send_with_buy")
                     if int(state.get("material_tab_attempt", 0) or 0) >= 3:
                         finish(
                             False,
@@ -2755,6 +2811,7 @@ class BrowserService(QObject):
                         return
                     QTimer.singleShot(320, open_material_library)
                     return
+                self._emit_media_debug("素材库Tab点击成功", step="material_tab_clicked")
                 QTimer.singleShot(350, open_video_tab)
 
             self.run_javascript(locate_material_library_script, on_material_tab)
@@ -2774,6 +2831,10 @@ class BrowserService(QObject):
                     )
                     return
                 state["drop_target_data"] = data
+                self._emit_media_debug(
+                    f"视频投放区域定位成功: count={len(data.get('candidates', []) or [])}",
+                    step="drop_target_ready",
+                )
                 open_material_library()
 
             self.run_javascript(locate_chat_drop_target_script, on_drop_target)

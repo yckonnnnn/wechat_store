@@ -5,9 +5,10 @@
 
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QTextEdit, QWidget, QGridLayout, QLineEdit
+    QPushButton, QTextEdit, QWidget, QGridLayout, QLineEdit, QDialog
 )
 from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QTextCursor
 
 from ..utils.constants import MAIN_STYLE_SHEET
 
@@ -27,9 +28,10 @@ class LeftPanel(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("LeftPanel")
-        self.setFixedWidth(320)
+        self.setFixedWidth(360)
         self._spin_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "⠋", "⠙"]
         self._spin_index = 0
+        self._log_lines: list[str] = []
         self._spin_timer = QTimer(self)
         self._spin_timer.setInterval(90)
         self._spin_timer.timeout.connect(self._update_spin)
@@ -220,13 +222,14 @@ class LeftPanel(QFrame):
         log_btn = QPushButton("🔍 查看全部 >")
         log_btn.setObjectName("LogLink")
         log_btn.setCursor(Qt.PointingHandCursor)
+        log_btn.clicked.connect(self._open_full_log_dialog)
         log_header.addWidget(log_btn)
         log_layout.addLayout(log_header)
 
         self.log_view = QTextEdit()
         self.log_view.setObjectName("LogText")
         self.log_view.setReadOnly(True)
-        self.log_view.setFixedHeight(250) # Increased height as requested
+        self.log_view.setMinimumHeight(320)
         self.log_view.setPlaceholderText("系统准备就绪...")
         
         # Limit lines
@@ -235,8 +238,8 @@ class LeftPanel(QFrame):
         doc.setMaximumBlockCount(1000)
         self.log_view.setDocument(doc)
         
-        log_layout.addWidget(self.log_view)
-        layout.addWidget(log_container)
+        log_layout.addWidget(self.log_view, 1)
+        layout.addWidget(log_container, 1)
 
     def _create_spark_bars(self) -> QWidget:
         """创建装饰用的迷你柱状图"""
@@ -347,6 +350,9 @@ class LeftPanel(QFrame):
         timestamp = datetime.now().strftime("%H:%M:%S")
         raw = f"[{timestamp}] {text}"
         safe = html.escape(raw)
+        self._log_lines.append(raw)
+        if len(self._log_lines) > 3000:
+            self._log_lines = self._log_lines[-3000:]
 
         if explicit_color:
             color = explicit_color
@@ -362,3 +368,26 @@ class LeftPanel(QFrame):
 
     def clear_log(self):
         self.log_view.clear()
+        self._log_lines = []
+
+    def _open_full_log_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("完整运行日志")
+        dialog.resize(1100, 760)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        title = QLabel("完整运行日志")
+        title.setObjectName("LogTitle")
+        layout.addWidget(title)
+
+        viewer = QTextEdit(dialog)
+        viewer.setReadOnly(True)
+        viewer.setLineWrapMode(QTextEdit.NoWrap)
+        viewer.setPlainText("\n".join(self._log_lines) if self._log_lines else "暂无日志")
+        layout.addWidget(viewer, 1)
+
+        viewer.moveCursor(QTextCursor.End)
+        dialog.exec()
