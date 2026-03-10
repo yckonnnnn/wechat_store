@@ -53,6 +53,7 @@ Thumbs.db
 !README.md
 !CLAUDE.md
 !Windows 打包发布指南.md
+!llm_enterprise_knowledge_guard_v1.md
 
 # 配置文件（包含 API 密钥）
 config/model_settings.json

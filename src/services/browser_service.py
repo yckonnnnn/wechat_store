@@ -12,6 +12,7 @@ from PySide6.QtGui import QKeyEvent, QMouseEvent
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineSettings, QWebEnginePage
 from PySide6.QtCore import QUrl
+from PySide6.QtWidgets import QApplication, QWidget
 
 
 class BrowserService(QObject):
@@ -247,9 +248,12 @@ class BrowserService(QObject):
     def _native_left_release(self, x: float, y: float) -> tuple[bool, str]:
         """在 WebView 内发送原生左键释放。"""
         try:
-            target_widget = self.web_view.focusProxy() or self.web_view
-            local_pos = QPointF(float(x), float(y))
-            global_pos = target_widget.mapToGlobal(local_pos.toPoint())
+            source_widget = self.web_view.focusProxy() or self.web_view
+            source_local_pos = QPointF(float(x), float(y))
+            global_pos = source_widget.mapToGlobal(source_local_pos.toPoint())
+            target_widget = QApplication.widgetAt(global_pos) or source_widget
+            local_point = target_widget.mapFromGlobal(global_pos)
+            local_pos = QPointF(float(local_point.x()), float(local_point.y()))
             global_pos_f = QPointF(global_pos.x(), global_pos.y())
 
             release_event = QMouseEvent(
@@ -261,6 +265,12 @@ class BrowserService(QObject):
                 Qt.NoModifier,
             )
             QCoreApplication.sendEvent(target_widget, release_event)
+            grabber = QWidget.mouseGrabber()
+            if grabber is not None:
+                grabber.releaseMouse()
+            source_widget.releaseMouse()
+            if target_widget is not source_widget:
+                target_widget.releaseMouse()
             QCoreApplication.processEvents()
             return True, ""
         except Exception as exc:
@@ -315,6 +325,20 @@ class BrowserService(QObject):
         released, release_err = self._native_left_release(end_x, end_y)
         if not released:
             return False, release_err
+
+        # 仅发送 release 还不够稳定，补一个“松手后的无按键轻微移动”，
+        # 模拟人工松开鼠标后的自然收手动作，避免页面一直停留在拖拽态。
+        QCoreApplication.processEvents()
+        time.sleep(0.02)
+        settle_points = [
+            (end_x - 4.0, end_y),
+            (end_x - 8.0, end_y + 2.0),
+            (end_x - 2.0, end_y - 2.0),
+        ]
+        for settle_x, settle_y in settle_points:
+            self._native_mouse_move(settle_x, settle_y)
+            QCoreApplication.processEvents()
+            time.sleep(0.015)
         QCoreApplication.processEvents()
         time.sleep(0.05)
         return True, last_err
@@ -1994,6 +2018,7 @@ class BrowserService(QObject):
             "verify_attempt": 0,
             "item_rect": {},
             "drop_rect": {},
+            "drop_target_data": {},
             "drop_candidates": [],
             "drag_attempt": 0,
             "confirm_attempt": 0,
@@ -2188,9 +2213,55 @@ class BrowserService(QObject):
         })()
         """
 
-        def build_drop_candidates(data: Dict[str, Any]) -> list[Dict[str, float]]:
+        def build_drop_candidates(data: Dict[str, Any], item_rect: Dict[str, Any]) -> list[Dict[str, float]]:
             candidates: list[Dict[str, float]] = []
             seen: set[tuple[int, int]] = set()
+            preview_left = float(item_rect.get("preview_left", item_rect.get("item_left", 0)) or 0)
+            preview_top = float(item_rect.get("preview_top", item_rect.get("item_top", 0)) or 0)
+            preview_width = float(item_rect.get("preview_width", item_rect.get("item_width", 0)) or 0)
+            preview_height = float(item_rect.get("preview_height", item_rect.get("item_height", 0)) or 0)
+            preview_center_y = float(item_rect.get("preview_y", item_rect.get("item_y", 0)) or 0)
+
+            def add_candidate(x: float, y: float, kind: str):
+                if x <= 40 or y <= 20:
+                    return
+                key = (int(round(x)), int(round(y)))
+                if key in seen:
+                    return
+                seen.add(key)
+                candidates.append({"x": float(x), "y": float(y), "kind": kind})
+
+            # 第一优先级：先试“向左轻拖一点点”的近距离落点。
+            if preview_left > 0 and preview_width > 0 and preview_height > 0:
+                left_shift = min(72.0, max(42.0, preview_width * 0.28))
+                near_points = [
+                    (preview_left - left_shift, preview_top + preview_height * 0.50, "left_shift_near"),
+                    (preview_left - left_shift - 18.0, preview_top + preview_height * 0.46, "left_shift_mid"),
+                    (preview_left - left_shift - 32.0, preview_top + preview_height * 0.54, "left_shift_far"),
+                ]
+                for x, y, point_kind in near_points:
+                    add_candidate(x, y, point_kind)
+
+            # 第二优先级：聊天接收区右边缘附近的落点。
+            for raw in data.get("candidates", []) or []:
+                left = float(raw.get("left", 0) or 0)
+                top = float(raw.get("top", 0) or 0)
+                width = float(raw.get("width", 0) or 0)
+                height = float(raw.get("height", 0) or 0)
+                kind = str(raw.get("kind", "") or "")
+                if width <= 0 or height <= 0:
+                    continue
+                if kind not in ("chat_scroll", "chat_list"):
+                    continue
+                right = left + width
+                edge_x = right - min(120.0, max(56.0, width * 0.10))
+                min_y = top + 36.0
+                max_y = top + max(40.0, height - 36.0)
+                edge_y = min(max(preview_center_y, min_y), max_y)
+                add_candidate(edge_x, edge_y, "chat_edge_primary")
+                add_candidate(edge_x - 28.0, edge_y - 18.0, "chat_edge_upper")
+                add_candidate(edge_x - 36.0, edge_y + 22.0, "chat_edge_lower")
+
             for raw in data.get("candidates", []) or []:
                 left = float(raw.get("left", 0) or 0)
                 top = float(raw.get("top", 0) or 0)
@@ -2210,11 +2281,7 @@ class BrowserService(QObject):
                         (left + width * 0.50, top + height * 0.50, kind),
                     ]
                 for x, y, point_kind in points:
-                    key = (int(round(x)), int(round(y)))
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    candidates.append({"x": float(x), "y": float(y), "kind": point_kind})
+                    add_candidate(x, y, point_kind)
             return candidates
 
         def poll_delivery():
@@ -2329,6 +2396,149 @@ class BrowserService(QObject):
 
             self._get_media_dialog_state(on_dialog_state)
 
+        def dom_drag_video_to_point(end_x: float, end_y: float, callback2: Callable[[bool, Dict[str, Any]], None]):
+            script = rf"""
+            (function() {{
+                function isVisible(el) {{
+                    if (!el) return false;
+                    var style = window.getComputedStyle(el);
+                    if (!style) return false;
+                    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                    var rect = el.getBoundingClientRect();
+                    if (!rect || rect.width < 20 || rect.height < 20) return false;
+                    return true;
+                }}
+                function pickSourceItem() {{
+                    var roots = Array.from(document.querySelectorAll('.quick-resp-panel, .qr-panel-content, .panel-content')).filter(isVisible);
+                    var root = document.body;
+                    for (var i = 0; i < roots.length; i++) {{
+                        if ((roots[i].innerText || '').indexOf('默认分组') !== -1) {{
+                            root = roots[i];
+                            break;
+                        }}
+                    }}
+                    var items = Array.from(root.querySelectorAll('.item-container')).filter(isVisible);
+                    return items.length ? items[0] : null;
+                }}
+                function createDataTransfer() {{
+                    try {{
+                        var dt = new DataTransfer();
+                        dt.effectAllowed = 'all';
+                        dt.dropEffect = 'copy';
+                        dt.setData('text/plain', 'video-material');
+                        return dt;
+                    }} catch (e) {{
+                        var store = {{}};
+                        return {{
+                            effectAllowed: 'all',
+                            dropEffect: 'copy',
+                            files: [],
+                            items: [],
+                            types: ['text/plain'],
+                            setData: function(t, v) {{ store[t] = String(v || ''); if (this.types.indexOf(t) === -1) this.types.push(t); }},
+                            getData: function(t) {{ return store[t] || ''; }},
+                        }};
+                    }}
+                }}
+                function fireDrag(el, type, x, y, dataTransfer) {{
+                    if (!el) return true;
+                    var ev;
+                    try {{
+                        ev = new DragEvent(type, {{
+                            bubbles: true,
+                            cancelable: true,
+                            clientX: x,
+                            clientY: y,
+                            dataTransfer: dataTransfer
+                        }});
+                    }} catch (e) {{
+                        ev = document.createEvent('CustomEvent');
+                        ev.initCustomEvent(type, true, true, null);
+                        Object.defineProperty(ev, 'clientX', {{ value: x }});
+                        Object.defineProperty(ev, 'clientY', {{ value: y }});
+                        Object.defineProperty(ev, 'dataTransfer', {{ value: dataTransfer }});
+                    }}
+                    return el.dispatchEvent(ev);
+                }}
+                function fireMouse(el, type, x, y) {{
+                    if (!el) return true;
+                    try {{
+                        return el.dispatchEvent(new MouseEvent(type, {{
+                            bubbles: true,
+                            cancelable: true,
+                            clientX: x,
+                            clientY: y,
+                            button: 0,
+                            buttons: type === 'mouseup' ? 0 : 1,
+                            view: window
+                        }}));
+                    }} catch (e) {{
+                        return true;
+                    }}
+                }}
+                function ancestors(node) {{
+                    var arr = [];
+                    while (node && arr.length < 8) {{
+                        arr.push(node);
+                        node = node.parentElement;
+                    }}
+                    return arr;
+                }}
+
+                var item = pickSourceItem();
+                if (!item) {{
+                    return JSON.stringify({{ found: false, error: '未找到视频素材项' }});
+                }}
+                var source = item.querySelector('.preview, img, video, canvas') || item;
+                var sourceRect = source.getBoundingClientRect();
+                var sx = sourceRect.left + sourceRect.width / 2;
+                var sy = sourceRect.top + sourceRect.height / 2;
+                var tx = {float(end_x):.2f};
+                var ty = {float(end_y):.2f};
+                var target = document.elementFromPoint(tx, ty);
+                if (!target) {{
+                    return JSON.stringify({{ found: false, error: '未找到拖拽目标', x: tx, y: ty }});
+                }}
+
+                var dt = createDataTransfer();
+                fireMouse(source, 'mousedown', sx, sy);
+                fireDrag(source, 'dragstart', sx, sy, dt);
+                fireDrag(source, 'drag', sx, sy, dt);
+
+                var chain = ancestors(target);
+                var accepted = false;
+                for (var i = 0; i < chain.length; i++) {{
+                    var node = chain[i];
+                    var enterOk = fireDrag(node, 'dragenter', tx, ty, dt);
+                    var overOk = fireDrag(node, 'dragover', tx, ty, dt);
+                    var dropOk = fireDrag(node, 'drop', tx, ty, dt);
+                    fireMouse(node, 'mouseup', tx, ty);
+                    if (enterOk === false || overOk === false || dropOk === false) {{
+                        accepted = true;
+                        break;
+                    }}
+                }}
+
+                fireDrag(source, 'dragend', tx, ty, dt);
+                fireMouse(source, 'mouseup', tx, ty);
+
+                return JSON.stringify({{
+                    found: true,
+                    target_tag: String(target.tagName || ''),
+                    target_class: String(target.className || ''),
+                    accepted: accepted,
+                    x: tx,
+                    y: ty
+                }});
+            }})()
+            """
+
+            def on_dom_drag(done_success, done_result):
+                payload = self._parse_js_payload(done_result) if done_success else {}
+                callback2(bool(payload.get("found")), payload)
+
+            self.run_javascript(script, on_dom_drag)
+
         def drag_video_to_chat():
             if state["done"]:
                 return
@@ -2352,9 +2562,11 @@ class BrowserService(QObject):
                 )
                 return
 
-            self._native_hover_sweep(start_x, start_y)
-            dragged, drag_err = self._native_drag_and_drop(start_x, start_y, end_x, end_y)
-            if not dragged:
+            def on_dom_drag_result(dragged: bool, payload: Dict[str, Any]):
+                if dragged:
+                    QTimer.singleShot(520, confirm_send_dialog)
+                    return
+
                 more_drop_candidates = drag_attempt + 1 < len(drop_candidates)
                 if more_drop_candidates:
                     state["confirm_attempt"] = 0
@@ -2364,16 +2576,16 @@ class BrowserService(QObject):
                 finish(
                     False,
                     build_failure_payload(
-                        f"拖拽视频到聊天区失败: {drag_err}",
+                        payload.get("error", "DOM拖拽视频到聊天区失败"),
                         "drag_video_to_chat",
-                        triggerMethod="material_library_video_drag",
+                        triggerMethod="material_library_video_dom_drag",
                         dropKind=drop_rect.get("kind", ""),
                         dragAttempt=drag_attempt + 1,
+                        dropTargetClass=str(payload.get("target_class", "") or ""),
                     ),
                 )
-                return
-            # 拖拽落下后给微信弹层一点渲染时间，避免刚出现时还没挂载到可检索节点上。
-            QTimer.singleShot(520, confirm_send_dialog)
+
+            dom_drag_video_to_point(end_x, end_y, on_dom_drag_result)
 
         def open_video_tab():
             if state["done"]:
@@ -2404,6 +2616,22 @@ class BrowserService(QObject):
                     "preview_width": float(data.get("preview_width", data.get("item_width", 0)) or 0),
                     "preview_height": float(data.get("preview_height", data.get("item_height", 0)) or 0),
                 }
+                candidates = build_drop_candidates(
+                    state.get("drop_target_data", {}) or {},
+                    state.get("item_rect", {}) or {},
+                )
+                if not candidates:
+                    finish(
+                        False,
+                        build_failure_payload(
+                            "未找到可用视频拖拽落点",
+                            "locate_chat_drop_target",
+                        ),
+                    )
+                    return
+                state["drop_candidates"] = candidates
+                state["drop_rect"] = dict(candidates[0])
+                state["drag_attempt"] = 0
                 QTimer.singleShot(200, drag_video_to_chat)
 
             def on_video_tab(success, result):
@@ -2474,18 +2702,7 @@ class BrowserService(QObject):
                         ),
                     )
                     return
-                candidates = build_drop_candidates(data)
-                if not candidates:
-                    finish(
-                        False,
-                        build_failure_payload(
-                            "未找到可用聊天拖拽落点",
-                            "locate_chat_drop_target",
-                        ),
-                    )
-                    return
-                state["drop_candidates"] = candidates
-                state["drop_rect"] = dict(candidates[0])
+                state["drop_target_data"] = data
                 open_material_library()
 
             self.run_javascript(locate_chat_drop_target_script, on_drop_target)
