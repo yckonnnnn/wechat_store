@@ -2065,17 +2065,73 @@ class BrowserService(QObject):
                 if (!rect || rect.width < 5 || rect.height < 5) return false;
                 return true;
             }
-            var nodes = Array.from(document.querySelectorAll('li, button, div, span, a')).filter(isVisible);
-            for (var i = 0; i < nodes.length; i++) {
-                var node = nodes[i];
-                if (safeText(node) !== '素材库') continue;
-                var rect = node.getBoundingClientRect();
-                return JSON.stringify({
-                    found: true,
-                    x: rect.left + rect.width / 2,
-                    y: rect.top + rect.height / 2
-                });
+            function locateSidebarMaterialLibrary() {
+                var panelTabs = Array.from(document.querySelectorAll('.panel-tab, .tabs, .tab-list')).filter(isVisible);
+                for (var p = 0; p < panelTabs.length; p++) {
+                    var root = panelTabs[p];
+                    var text = safeText(root);
+                    if (text.indexOf('用户信息') === -1 || text.indexOf('商品') === -1 || text.indexOf('快捷语') === -1) continue;
+                    var nodes = Array.from(root.querySelectorAll('li, button, div, span, a')).filter(isVisible);
+                    for (var i = 0; i < nodes.length; i++) {
+                        var node = nodes[i];
+                        if (safeText(node) !== '素材库') continue;
+                        var rect = node.getBoundingClientRect();
+                        return {
+                            found: true,
+                            action: 'material_library',
+                            x: rect.left + rect.width / 2,
+                            y: rect.top + rect.height / 2
+                        };
+                    }
+                }
+                return { found: false };
             }
+            function locateBackFromProductPanel() {
+                var nodes = Array.from(document.querySelectorAll('button, div, span, a, i, svg')).filter(isVisible);
+                var titleNode = null;
+                for (var i = 0; i < nodes.length; i++) {
+                    if (safeText(nodes[i]) === '发送一起买') {
+                        titleNode = nodes[i];
+                        break;
+                    }
+                }
+                if (!titleNode) return { found: false };
+
+                var titleRect = titleNode.getBoundingClientRect();
+                var best = null;
+                for (var j = 0; j < nodes.length; j++) {
+                    var node = nodes[j];
+                    if (node === titleNode) continue;
+                    var rect = node.getBoundingClientRect();
+                    if (!rect || rect.width < 8 || rect.height < 8) continue;
+                    var centerX = rect.left + rect.width / 2;
+                    var centerY = rect.top + rect.height / 2;
+                    if (centerY < titleRect.top - 30 || centerY > titleRect.bottom + 30) continue;
+                    if (centerX >= titleRect.left) continue;
+                    var distance = titleRect.left - centerX;
+                    if (!best || distance < best.distance) {
+                        best = { x: centerX, y: centerY, distance: distance };
+                    }
+                }
+                if (!best) return { found: false };
+                return {
+                    found: true,
+                    action: 'back_from_send_with_buy',
+                    x: best.x,
+                    y: best.y
+                };
+            }
+
+            var panelResult = locateSidebarMaterialLibrary();
+            if (panelResult.found) {
+                return JSON.stringify(panelResult);
+            }
+
+            var backResult = locateBackFromProductPanel();
+            if (backResult.found) {
+                return JSON.stringify(backResult);
+            }
+
             return JSON.stringify({ found: false, error: '未找到素材库Tab' });
         })()
         """
@@ -2662,6 +2718,8 @@ class BrowserService(QObject):
         def open_material_library():
             if state["done"]:
                 return
+            state.setdefault("material_tab_attempt", 0)
+            state["material_tab_attempt"] += 1
 
             def on_material_tab(success, result):
                 data = self._parse_js_payload(result) if success else {}
@@ -2674,6 +2732,7 @@ class BrowserService(QObject):
                         ),
                     )
                     return
+                action = str(data.get("action", "") or "material_library")
                 clicked, click_err = self._native_left_click(data.get("x", 0), data.get("y", 0))
                 if not clicked:
                     finish(
@@ -2683,6 +2742,18 @@ class BrowserService(QObject):
                             "click_material_library",
                         ),
                     )
+                    return
+                if action == "back_from_send_with_buy":
+                    if int(state.get("material_tab_attempt", 0) or 0) >= 3:
+                        finish(
+                            False,
+                            build_failure_payload(
+                                "已返回发送一起买页但仍未恢复到素材库侧栏",
+                                "locate_material_library",
+                            ),
+                        )
+                        return
+                    QTimer.singleShot(320, open_material_library)
                     return
                 QTimer.singleShot(350, open_video_tab)
 
