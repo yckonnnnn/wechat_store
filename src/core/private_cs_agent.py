@@ -81,6 +81,8 @@ MATERIAL_LIBRARY_VIDEO_SENTINEL = "__material_library_video__"
 ADDRESS_FACT_FALLBACK = "姐姐，具体地址，楼层，怎么坐车导航路线，您发☎️，我来添加您，告诉您"
 PRICE_FACT_FALLBACK = "姐姐，具体的价格，设计，您可以留个☎️，我来添加您，专门给您详细介绍"
 CONTACT_FACT_FALLBACK = "姐姐，您留个☎️，我来主动跟您介绍"
+PHONE_LEAK_BLOCK_FALLBACK = "姐姐，您提供电话，我来联系您，可以给您具体的介绍假发价格，款式，地址位置，坐车导航路线，以及预约事项。❤️"
+USER_PHONE_SUBMITTED_REPLY = "收到啦姐姐，我稍后加您好友，具体跟你详细介绍❤️"
 ADDRESS_UNSUPPORTED_QUERY_KEYWORDS = (
     "怎么去",
     "怎么走",
@@ -442,6 +444,17 @@ class CustomerServiceAgent:
         )
 
         text = (latest_user_text or "").strip()
+        if self._looks_like_phone_submission(text):
+            return AgentDecision(
+                reply_text=USER_PHONE_SUBMITTED_REPLY,
+                intent="contact",
+                route_reason="user_phone_submitted",
+                reply_goal="承接联系方式",
+                media_plan="none",
+                reply_source="rule",
+                rule_id="CONTACT_PHONE_SUBMITTED",
+                rule_applied=True,
+            )
         route = self.knowledge_service.resolve_store_recommendation(text)
         if bool(session_state.get("last_geo_pending", False)) and self._is_remote_geo_followup_reply(text):
             route = {
@@ -834,6 +847,12 @@ class CustomerServiceAgent:
             "如何联系",
         )
         return any(pattern in normalized for pattern in direct_patterns)
+
+    def _looks_like_phone_submission(self, text: str) -> bool:
+        normalized = re.sub(r"[^\d]", "", str(text or ""))
+        if not normalized:
+            return False
+        return bool(re.fullmatch(r"1[3-9]\d{9}", normalized))
 
     def _should_apply_rule_decision(
         self,
@@ -2265,13 +2284,16 @@ class CustomerServiceAgent:
         state = session_state or {}
         history = conversation_history or []
 
+        if self._contains_explicit_phone_number(reply):
+            return PHONE_LEAK_BLOCK_FALLBACK
+
         if self._is_contact_fact_risk(text, reply):
             return self._render_guardrail_reply(CONTACT_FACT_FALLBACK)
 
-        if self._is_price_fact_risk(text, reply):
-            if self._is_specific_price_query(text) or self._reply_contains_specific_price(reply):
-                return self._render_guardrail_reply(PRICE_FACT_FALLBACK)
-            return self._normalize_reply_text("姐姐，我们的价格大概在3000到6000这个价位")
+        if self._contains_low_price_quote(reply):
+            return self._render_guardrail_reply(
+                "姐姐，我们的价格有3000，4000，5000，6000不同价位是根据您的脸型头围来设计❤️"
+            )
 
         if self._is_address_fact_risk(text, reply, state, history):
             if self._is_address_unsupported_query(text):
@@ -2304,25 +2326,10 @@ class CustomerServiceAgent:
             return True
         return bool(re.search(r"1[3-9]\d{9}", normalized_reply))
 
-    def _is_price_fact_risk(self, text: str, reply_text: str) -> bool:
-        normalized_text = re.sub(r"\s+", "", str(text or "")).lower()
+    def _contains_low_price_quote(self, reply_text: str) -> bool:
         normalized_reply = re.sub(r"\s+", "", str(reply_text or "")).lower()
-        if any(keyword in normalized_text for keyword in PRICE_FACT_QUERY_KEYWORDS):
-            return True
-        if any(keyword in normalized_reply for keyword in PRICE_REPLY_RISK_KEYWORDS):
-            return True
-        return bool(re.search(r"\d+\s*(元|块|w|万)", normalized_reply))
-
-    def _is_specific_price_query(self, text: str) -> bool:
-        normalized_text = re.sub(r"\s+", "", str(text or "")).lower()
-        return any(keyword in normalized_text for keyword in PRICE_FACT_SPECIFIC_KEYWORDS)
-
-    def _reply_contains_specific_price(self, reply_text: str) -> bool:
-        normalized_reply = re.sub(r"\s+", "", str(reply_text or "")).lower()
-        if any(keyword in normalized_reply for keyword in PRICE_FACT_SPECIFIC_KEYWORDS):
-            return True
-        explicit_numbers = re.findall(r"(\d{3,6})", normalized_reply)
-        return any(num not in {"3000", "6000"} for num in explicit_numbers)
+        explicit_numbers = [int(num) for num in re.findall(r"(\d{3,6})", normalized_reply)]
+        return any(number < 3000 for number in explicit_numbers)
 
     def _is_address_fact_risk(
         self,
@@ -2352,6 +2359,17 @@ class CustomerServiceAgent:
             value = f"{value}。"
         emoji = random.choice(REPLY_EMOJI_POOL)
         return f"{value}{emoji}"
+
+    def _contains_explicit_phone_number(self, text: str) -> bool:
+        value = str(text or "")
+        if not value:
+            return False
+        compact = re.sub(r"[^\d]", "", value)
+        if re.search(r"1[3-9]\d{9}", compact):
+            return True
+        if re.search(r"(400|800)\d{7,}", compact):
+            return True
+        return False
 
     def _resolve_guardrail_store_key(
         self,

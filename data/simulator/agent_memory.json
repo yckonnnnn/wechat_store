@@ -1,20 +1,20 @@
 {
   "version": 4,
-  "updated_at": "2026-03-11T09:57:04.719896",
+  "updated_at": "2026-03-11T13:41:04.471108",
   "sessions": {
     "sim_session": {
       "session_id": "sim_session",
       "user_hash": "de81f6891f",
       "session_fingerprint": "",
       "first_seen_at": "2026-03-10T10:09:57.092668",
-      "updated_at": "2026-03-11T09:57:04.718270",
+      "updated_at": "2026-03-11T13:41:04.470533",
       "address_prompt_count": 0,
       "sent_address_stores": [
-        "sh_xuhui"
+        "sh_renmin"
       ],
       "address_image_sent_count": 1,
       "address_image_last_sent_at_by_store": {
-        "sh_xuhui": "2026-03-11T09:55:46.647379"
+        "sh_renmin": "2026-03-11T13:40:39.343853"
       },
       "contact_image_sent_count": 0,
       "contact_image_last_sent_at": "",
@@ -23,16 +23,16 @@
       "geo_choice_offered": false,
       "last_geo_pending": false,
       "last_detected_region": "辽宁省",
-      "last_target_store": "sh_xuhui",
-      "last_geo_route_reason": "sh_district_map:嘉定",
-      "last_geo_updated_at": "2026-03-11T09:55:46.646143",
+      "last_target_store": "sh_renmin",
+      "last_geo_route_reason": "sh_district_map:人广",
+      "last_geo_updated_at": "2026-03-11T13:40:45.495974",
       "strong_intent_after_both_count": 0,
       "purchase_both_first_hint_sent": false,
       "session_video_armed": false,
       "session_video_sent": false,
       "session_post_contact_reply_count": 0,
       "pending_required_media": [],
-      "pending_required_media_updated_at": "2026-03-11T09:55:46.647470",
+      "pending_required_media_updated_at": "2026-03-11T13:40:39.343994",
       "last_required_media_failure_code": "",
       "last_required_media_failure_detail": "",
       "required_media_retry_budget": {},
@@ -41,14 +41,16 @@
       "last_reply_goal": "解答",
       "session_user_message_count_after_contact": 0,
       "knowledge_reply_count": 0,
-      "address_text_reply_count_by_store": {}
+      "address_text_reply_count_by_store": {
+        "sh_renmin": 1
+      }
     }
   },
   "users": {
     "de81f6891f": {
       "user_hash": "de81f6891f",
       "first_seen_at": "2026-03-10T10:09:57.092696",
-      "updated_at": "2026-03-11T09:57:04.719870",
+      "updated_at": "2026-03-11T13:41:04.471095",
       "video_armed": false,
       "video_sent": false,
       "post_contact_reply_count": 0,
@@ -65,7 +67,13 @@
         "好的姐姐我让马老师来加您您稍等哦",
         "好的姐姐祝您生活愉快",
         "姐姐您把发我我加您细说",
-        "姐姐马老师加您后会给您发详细定位和楼层信息的您稍等一下哦"
+        "姐姐马老师加您后会给您发详细定位和楼层信息的您稍等一下哦",
+        "姐姐具体的价格设计您可以留个我来添加您专门给您详细介绍",
+        "姐姐您在什么城市区域呀方便告诉我吗我可以帮您针对性推荐门店我们目前北京朝阳1家上海5家静安人广虹口五角场徐汇",
+        "姐姐推荐您去上海人民广场门店我给您发一张位置图您跟着图中圈圈的位置会更直观",
+        "姐姐上海人民广场门店具体位置是黄埔区汉口路650号亚洲大厦",
+        "姐姐具体地址楼层怎么坐车导航路线您发我来添加您告诉您",
+        "姐姐楼层信息我帮您确认一下您留个我加您告诉您具体怎么找到我们"
       ]
     }
   }

@@ -1079,10 +1079,10 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d.media_plan, "none")
             self.assertFalse(d.media_items)
 
-    def test_llm_price_reply_is_overridden_by_fixed_range(self):
+    def test_llm_low_price_reply_is_overridden_by_fixed_price_levels(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, _, llm = self._build_agent(Path(td))
-            llm.reply_text = "姐姐这个价格要看情况，我也说不准呢🌹"
+            llm.reply_text = "姐姐这个款式2000就可以做呢🌹"
 
             d = agent._decide_llm_reply(
                 latest_user_text="你们价格多少？",
@@ -1092,9 +1092,30 @@ class RuleEngineTestCase(unittest.TestCase):
                 rule_id="LLM_GENERAL",
             )
 
+            print(f"LLM输出：{llm.reply_text}")
+            print(f"实际发出：{d.reply_text}")
             self.assertEqual(llm.calls, 1)
             self.assertEqual(d.reply_source, "llm")
-            self.assertIn("3000到6000", d.reply_text)
+            self.assertIn("3000，4000，5000，6000不同价位", d.reply_text)
+
+    def test_llm_non_low_price_reply_is_sent_as_is(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+            llm.reply_text = "姐姐这个价格要看具体设计方案呢🌹"
+
+            d = agent._decide_llm_reply(
+                latest_user_text="你们价格多少？",
+                intent="general",
+                route_reason="unknown",
+                conversation_history=[],
+                rule_id="LLM_GENERAL",
+            )
+
+            print(f"LLM输出：{llm.reply_text}")
+            print(f"实际发出：{d.reply_text}")
+            self.assertEqual(llm.calls, 1)
+            self.assertEqual(d.reply_source, "llm")
+            self.assertIn("姐姐这个价格要看具体设计方案呢。", d.reply_text)
 
     def test_llm_address_reply_is_overridden_by_canonical_store_address(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1109,6 +1130,8 @@ class RuleEngineTestCase(unittest.TestCase):
                 rule_id="LLM_GENERAL",
             )
 
+            print(f"LLM输出：{llm.reply_text}")
+            print(f"实际发出：{d.reply_text}")
             self.assertEqual(llm.calls, 1)
             self.assertEqual(d.reply_source, "llm")
             self.assertIn("静安区愚园路172号环球世界大厦A座", d.reply_text)
@@ -1127,6 +1150,8 @@ class RuleEngineTestCase(unittest.TestCase):
                 rule_id="LLM_GENERAL",
             )
 
+            print(f"LLM输出：{llm.reply_text}")
+            print(f"实际发出：{d.reply_text}")
             self.assertEqual(llm.calls, 1)
             self.assertIn("您留个☎️", d.reply_text)
             self.assertIn("主动跟您介绍", d.reply_text)
@@ -1145,9 +1170,50 @@ class RuleEngineTestCase(unittest.TestCase):
                 rule_id="LLM_GENERAL",
             )
 
+            print(f"LLM输出：{llm.reply_text}")
+            print(f"实际发出：{d.reply_text}")
             self.assertEqual(llm.calls, 1)
             self.assertIn("具体地址，楼层，怎么坐车导航路线", d.reply_text)
             self.assertNotIn("南京西路", d.reply_text)
+
+    def test_llm_phone_leak_reply_is_blocked(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+            llm.reply_text = "姐姐，您直接拨打客服热线19521462613就能获取详细地址和导航啦🌹"
+
+            d = agent._decide_llm_reply(
+                latest_user_text="北京店怎么联系？",
+                intent="general",
+                route_reason="unknown",
+                conversation_history=[],
+                rule_id="LLM_GENERAL",
+            )
+
+            print(f"LLM输出：{llm.reply_text}")
+            print(f"实际发出：{d.reply_text}")
+            self.assertEqual(llm.calls, 1)
+            self.assertEqual(
+                d.reply_text,
+                "姐姐，您提供电话，我来联系您，可以给您具体的介绍假发价格，款式，地址位置，坐车导航路线，以及预约事项。❤️",
+            )
+
+    def test_user_phone_submission_uses_fixed_rule_reply(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+
+            d = agent.decide(
+                "chat_phone_submit",
+                "留电话用户",
+                "13916008878",
+                [],
+            )
+
+            print("LLM输出：<未调用LLM，命中手机号硬规则>")
+            print(f"实际发出：{d.reply_text}")
+            self.assertEqual(llm.calls, 0)
+            self.assertEqual(d.reply_source, "rule")
+            self.assertEqual(d.rule_id, "CONTACT_PHONE_SUBMITTED")
+            self.assertEqual(d.reply_text, "收到啦姐姐，我稍后加您好友，具体跟你详细介绍❤️")
 
     def test_video_session_once_with_log_driven_state(self):
         with tempfile.TemporaryDirectory() as td:
