@@ -78,6 +78,9 @@ SHIPPING_BLOCK_KEYWORDS = (
 SHIPPING_BLOCK_REPLACEMENT = "姐姐我们是到店定制哦"
 ADDRESS_UNSUPPORTED_FALLBACK = "姐姐，您留个联系方式，我来加您并跟您具体沟通"
 MATERIAL_LIBRARY_VIDEO_SENTINEL = "__material_library_video__"
+ADDRESS_FACT_FALLBACK = "姐姐，具体地址，楼层，怎么坐车导航路线，您发☎️，我来添加您，告诉您"
+PRICE_FACT_FALLBACK = "姐姐，具体的价格，设计，您可以留个☎️，我来添加您，专门给您详细介绍"
+CONTACT_FACT_FALLBACK = "姐姐，您留个☎️，我来主动跟您介绍"
 ADDRESS_UNSUPPORTED_QUERY_KEYWORDS = (
     "怎么去",
     "怎么走",
@@ -96,6 +99,67 @@ ADDRESS_UNSUPPORTED_QUERY_KEYWORDS = (
     "路线",
     "停车",
     "怎么到",
+    "几楼",
+    "楼层",
+)
+ADDRESS_FACT_QUERY_KEYWORDS = (
+    "地址",
+    "具体地址",
+    "位置",
+    "具体位置",
+    "门店",
+    "店铺",
+    "在哪",
+    "在哪里",
+    "哪儿",
+    "几楼",
+    "楼层",
+    "导航",
+    "路线",
+    "怎么去",
+    "怎么走",
+    "坐什么车",
+    "哪一站",
+    "哪个出口",
+)
+PRICE_FACT_QUERY_KEYWORDS = (
+    "价格",
+    "多少钱",
+    "价位",
+    "报价",
+    "收费",
+    "预算",
+    "贵",
+    "便宜",
+)
+PRICE_FACT_SPECIFIC_KEYWORDS = (
+    "具体价格",
+    "具体多少钱",
+    "设计",
+    "设计费",
+    "费用",
+    "收费",
+    "报价",
+    "方案",
+    "定制费",
+)
+ADDRESS_REPLY_RISK_KEYWORDS = (
+    "区",
+    "路",
+    "号",
+    "大厦",
+    "广场",
+    "soho",
+    "楼",
+    "层",
+)
+PRICE_REPLY_RISK_KEYWORDS = (
+    "价格",
+    "价位",
+    "元",
+    "块",
+    "w",
+    "万",
 )
 DEFAULT_REPLY_EMOJI = "🌹"
 # 适合中老年客户的emoji表情池
@@ -1251,6 +1315,7 @@ class CustomerServiceAgent:
                 intent=intent,
                 route_reason=route_reason,
                 conversation_history=conversation_history,
+                session_state=session_state,
                 rule_id="LLM_FOLLOW_UP",
             )
 
@@ -1272,6 +1337,7 @@ class CustomerServiceAgent:
                         intent=intent,
                         route_reason=route_reason,
                         conversation_history=conversation_history,
+                        session_state=session_state,
                         kb_match_score=kb_detail.get("score", 0.0),
                         kb_match_question=kb_detail.get("question", ""),
                         kb_match_mode=kb_detail.get("mode", ""),
@@ -1334,6 +1400,7 @@ class CustomerServiceAgent:
                         intent=intent,
                         route_reason=route_reason,
                         conversation_history=conversation_history,
+                        session_state=session_state,
                         kb_blocked_by_polite_guard=False,
                         kb_polite_guard_reason="",
                         user_message_override=rewrite_prompt,
@@ -1353,6 +1420,7 @@ class CustomerServiceAgent:
             intent=intent,
             route_reason=route_reason,
             conversation_history=conversation_history,
+            session_state=session_state,
             kb_blocked_by_polite_guard=kb_blocked_by_polite_guard,
             kb_polite_guard_reason=kb_polite_guard_reason,
         )
@@ -1363,6 +1431,7 @@ class CustomerServiceAgent:
         intent: str,
         route_reason: str,
         conversation_history: List[Dict[str, str]],
+        session_state: Optional[Dict[str, Any]] = None,
         kb_blocked_by_polite_guard: bool = False,
         kb_polite_guard_reason: str = "",
         user_message_override: str = "",
@@ -1408,7 +1477,12 @@ class CustomerServiceAgent:
             )
 
         llm_reply = self._normalize_reply_text(result)
-        llm_reply = self._apply_llm_reply_guardrails(latest_user_text, llm_reply)
+        llm_reply = self._apply_llm_reply_guardrails(
+            latest_user_text=latest_user_text,
+            reply_text=llm_reply,
+            session_state=session_state or {},
+            conversation_history=conversation_history,
+        )
 
         return AgentDecision(
             reply_text=llm_reply,
@@ -2179,11 +2253,145 @@ class CustomerServiceAgent:
         emoji = random.choice(REPLY_EMOJI_POOL)
         return f"{value}{emoji}"
 
-    def _apply_llm_reply_guardrails(self, latest_user_text: str, reply_text: str) -> str:
+    def _apply_llm_reply_guardrails(
+        self,
+        latest_user_text: str,
+        reply_text: str,
+        session_state: Optional[Dict[str, Any]] = None,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+    ) -> str:
         text = (latest_user_text or "").strip()
+        reply = (reply_text or "").strip()
+        state = session_state or {}
+        history = conversation_history or []
+
+        if self._is_contact_fact_risk(text, reply):
+            return self._render_guardrail_reply(CONTACT_FACT_FALLBACK)
+
+        if self._is_price_fact_risk(text, reply):
+            if self._is_specific_price_query(text) or self._reply_contains_specific_price(reply):
+                return self._render_guardrail_reply(PRICE_FACT_FALLBACK)
+            return self._normalize_reply_text("姐姐，我们的价格大概在3000到6000这个价位")
+
+        if self._is_address_fact_risk(text, reply, state, history):
+            if self._is_address_unsupported_query(text):
+                return self._render_guardrail_reply(ADDRESS_FACT_FALLBACK)
+            store_key = self._resolve_guardrail_store_key(text, reply, state, history)
+            if store_key:
+                store = self.knowledge_service.get_store_display(store_key)
+                store_name = str(store.get("store_name", "") or "门店")
+                store_address = str(store.get("store_address", "") or "")
+                if store_address:
+                    return self._normalize_reply_text(f"姐姐，{store_name}具体位置是：{store_address}")
+            if self._reply_contains_unsupported_address_detail(reply):
+                return self._render_guardrail_reply(ADDRESS_FACT_FALLBACK)
+            return self._render_guardrail_reply(ADDRESS_FACT_FALLBACK)
+
         if self._is_address_unsupported_query(text):
             return self._normalize_reply_text(ADDRESS_UNSUPPORTED_FALLBACK)
         return reply_text
+
+    def _is_contact_fact_risk(self, text: str, reply_text: str) -> bool:
+        normalized_text = re.sub(r"\s+", "", str(text or "")).lower()
+        normalized_reply = re.sub(r"\s+", "", str(reply_text or "")).lower()
+        if self._looks_like_direct_contact_request(text):
+            return True
+        if re.search(r"1[3-9]\d{9}", normalized_text):
+            return True
+        if any(k.lower() in normalized_text for k in CONTACT_INTENT_KEYWORDS):
+            return True
+        if any(k.lower() in normalized_reply for k in CONTACT_COMPLIANCE_BLOCK_KEYWORDS):
+            return True
+        return bool(re.search(r"1[3-9]\d{9}", normalized_reply))
+
+    def _is_price_fact_risk(self, text: str, reply_text: str) -> bool:
+        normalized_text = re.sub(r"\s+", "", str(text or "")).lower()
+        normalized_reply = re.sub(r"\s+", "", str(reply_text or "")).lower()
+        if any(keyword in normalized_text for keyword in PRICE_FACT_QUERY_KEYWORDS):
+            return True
+        if any(keyword in normalized_reply for keyword in PRICE_REPLY_RISK_KEYWORDS):
+            return True
+        return bool(re.search(r"\d+\s*(元|块|w|万)", normalized_reply))
+
+    def _is_specific_price_query(self, text: str) -> bool:
+        normalized_text = re.sub(r"\s+", "", str(text or "")).lower()
+        return any(keyword in normalized_text for keyword in PRICE_FACT_SPECIFIC_KEYWORDS)
+
+    def _reply_contains_specific_price(self, reply_text: str) -> bool:
+        normalized_reply = re.sub(r"\s+", "", str(reply_text or "")).lower()
+        if any(keyword in normalized_reply for keyword in PRICE_FACT_SPECIFIC_KEYWORDS):
+            return True
+        explicit_numbers = re.findall(r"(\d{3,6})", normalized_reply)
+        return any(num not in {"3000", "6000"} for num in explicit_numbers)
+
+    def _is_address_fact_risk(
+        self,
+        text: str,
+        reply_text: str,
+        session_state: Dict[str, Any],
+        conversation_history: List[Dict[str, str]],
+    ) -> bool:
+        normalized_text = re.sub(r"\s+", "", str(text or "")).lower()
+        normalized_reply = re.sub(r"\s+", "", str(reply_text or "")).lower()
+        if any(keyword in normalized_text for keyword in ADDRESS_FACT_QUERY_KEYWORDS):
+            return True
+        if any(keyword in normalized_reply for keyword in ADDRESS_REPLY_RISK_KEYWORDS):
+            return True
+        if self._resolve_guardrail_store_key(text, reply_text, session_state, conversation_history):
+            return any(keyword in normalized_reply for keyword in ADDRESS_REPLY_RISK_KEYWORDS)
+        return False
+
+    def _reply_contains_unsupported_address_detail(self, reply_text: str) -> bool:
+        normalized_reply = re.sub(r"\s+", "", str(reply_text or "")).lower()
+        unsupported_keywords = ("几楼", "楼层", "导航", "路线", "坐什么车", "哪个出口", "哪一站", "电梯")
+        return any(keyword in normalized_reply for keyword in unsupported_keywords)
+
+    def _render_guardrail_reply(self, text: str) -> str:
+        value = (text or "").strip().rstrip("，,；; ")
+        if not re.search(r"[。！？!?]$", value):
+            value = f"{value}。"
+        emoji = random.choice(REPLY_EMOJI_POOL)
+        return f"{value}{emoji}"
+
+    def _resolve_guardrail_store_key(
+        self,
+        text: str,
+        reply_text: str,
+        session_state: Dict[str, Any],
+        conversation_history: List[Dict[str, str]],
+    ) -> str:
+        store_key = str((session_state or {}).get("last_target_store", "") or "").strip()
+        if store_key and store_key != "unknown":
+            return store_key
+
+        candidates = [
+            str(text or ""),
+            str(reply_text or ""),
+            " ".join(str(item.get("content", "") or "") for item in conversation_history[-4:]),
+        ]
+        for candidate in candidates:
+            resolved = self._infer_store_from_context_text(candidate)
+            if resolved:
+                return resolved
+        return ""
+
+    def _infer_store_from_context_text(self, text: str) -> str:
+        normalized = re.sub(r"\s+", "", str(text or ""))
+        if not normalized:
+            return ""
+        if any(token in normalized for token in ("建外soho", "朝阳", "北京店", "北京门店")):
+            return "beijing_chaoyang"
+        if any(token in normalized for token in ("静安寺", "静安店", "静安门店", "静安")):
+            return "sh_jingan"
+        if any(token in normalized for token in ("人民广场", "人广", "黄浦", "黄埔")):
+            return "sh_renmin"
+        if any(token in normalized for token in ("虹口", "花园路")):
+            return "sh_hongkou"
+        if any(token in normalized for token in ("五角场", "杨浦", "政通路")):
+            return "sh_wujiaochang"
+        if any(token in normalized for token in ("徐汇", "徐家汇", "漕溪北路")):
+            return "sh_xuhui"
+        return ""
 
     def _is_address_unsupported_query(self, text: str) -> bool:
         value = (text or "").strip().lower()

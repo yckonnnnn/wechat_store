@@ -1114,6 +1114,41 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertIn("静安区愚园路172号环球世界大厦A座", d.reply_text)
             self.assertNotIn("南京西路", d.reply_text)
 
+    def test_llm_contact_reply_is_overridden_by_fixed_contact_phrase(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+            llm.reply_text = "好的姐姐，我加您微信详细说下🌹"
+
+            d = agent._decide_llm_reply(
+                latest_user_text="13916008878",
+                intent="general",
+                route_reason="unknown",
+                conversation_history=[],
+                rule_id="LLM_GENERAL",
+            )
+
+            self.assertEqual(llm.calls, 1)
+            self.assertIn("您留个☎️", d.reply_text)
+            self.assertIn("主动跟您介绍", d.reply_text)
+
+    def test_llm_address_detail_reply_is_overridden_by_fixed_address_fallback(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+            llm.reply_text = "好的姐姐帮您问了，门店在静安区南京西路1818号国际广场2楼🌹"
+
+            d = agent._decide_llm_reply(
+                latest_user_text="在几楼啊？",
+                intent="general",
+                route_reason="unknown",
+                conversation_history=[],
+                session_state={"last_target_store": "sh_jingan"},
+                rule_id="LLM_GENERAL",
+            )
+
+            self.assertEqual(llm.calls, 1)
+            self.assertIn("具体地址，楼层，怎么坐车导航路线", d.reply_text)
+            self.assertNotIn("南京西路", d.reply_text)
+
     def test_video_session_once_with_log_driven_state(self):
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)
