@@ -79,10 +79,13 @@ SHIPPING_BLOCK_REPLACEMENT = "姐姐我们是到店定制哦"
 ADDRESS_UNSUPPORTED_FALLBACK = "姐姐，您留个联系方式，我来加您并跟您具体沟通"
 MATERIAL_LIBRARY_VIDEO_SENTINEL = "__material_library_video__"
 ADDRESS_FACT_FALLBACK = "姐姐，具体地址，楼层，怎么坐车导航路线，您发☎️，我来添加您，告诉您"
+ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK = "您发个☎️，我来加您好友，具体给您介绍怎么走，位置在哪里"
 PRICE_FACT_FALLBACK = "姐姐，具体的价格，设计，您可以留个☎️，我来添加您，专门给您详细介绍"
 CONTACT_FACT_FALLBACK = "姐姐，您留个☎️，我来主动跟您介绍"
 PHONE_LEAK_BLOCK_FALLBACK = "姐姐，您提供电话，我来联系您，可以给您具体的介绍假发价格，款式，地址位置，坐车导航路线，以及预约事项。❤️"
 USER_PHONE_SUBMITTED_REPLY = "收到啦姐姐，我稍后加您好友，具体跟你详细介绍❤️"
+MA_TEACHER_ROLE_FALLBACK = "姐姐，马老师是做短视频拍摄的，暂时不负责做头发、剪头和假发处理哦。🥰"
+MA_TEACHER_DIRECT_QUERY_FALLBACK = "姐姐，马老师是做短视频拍摄的，暂时无法安排🥰"
 ADDRESS_UNSUPPORTED_QUERY_KEYWORDS = (
     "怎么去",
     "怎么走",
@@ -162,6 +165,18 @@ PRICE_REPLY_RISK_KEYWORDS = (
     "块",
     "w",
     "万",
+)
+MA_TEACHER_INVALID_SERVICE_KEYWORDS = (
+    "做头发",
+    "做假发",
+    "剪头",
+    "剪发",
+    "烫发",
+    "修剪",
+    "造型",
+    "帮您弄",
+    "给您弄",
+    "帮您做",
 )
 DEFAULT_REPLY_EMOJI = "🌹"
 # 适合中老年客户的emoji表情池
@@ -471,6 +486,11 @@ class CustomerServiceAgent:
             intent=intent,
             session_state=session_state,
         )
+        address_contact_after_text_decision = self._build_address_contact_after_text_decision(
+            route=route,
+            intent=intent,
+            session_state=session_state,
+        )
         appointment_kb_decision: Optional[AgentDecision] = None
         if self._looks_like_appointment_query(text):
             appointment_kb_decision = self._decide_general_reply(
@@ -485,6 +505,8 @@ class CustomerServiceAgent:
 
         if address_text_after_image_decision is not None:
             decision = address_text_after_image_decision
+        elif address_contact_after_text_decision is not None:
+            decision = address_contact_after_text_decision
         elif appointment_kb_decision and appointment_kb_decision.reply_source == "knowledge":
             decision = appointment_kb_decision
         elif self._should_apply_rule_decision(text=text, intent=intent, route=route, session_state=session_state):
@@ -567,10 +589,19 @@ class CustomerServiceAgent:
         detected_region = route.get("detected_region", "") or ""
         next_knowledge_reply_count = knowledge_reply_count + (1 if decision.reply_source == "knowledge" else 0)
         next_address_text_reply_count_by_store = dict(session_state.get("address_text_reply_count_by_store", {}) or {})
+        next_address_contact_reply_count_by_store = dict(session_state.get("address_contact_reply_count_by_store", {}) or {})
         if decision.rule_id == "ADDR_TEXT_AFTER_IMAGE":
             decision_store = str(route.get("target_store", "") or "")
+            if not decision_store or decision_store == "unknown":
+                decision_store = str(session_state.get("last_target_store", "") or "")
             if decision_store and decision_store != "unknown":
                 next_address_text_reply_count_by_store[decision_store] = int(next_address_text_reply_count_by_store.get(decision_store, 0) or 0) + 1
+        if decision.rule_id == "ADDR_CONTACT_AFTER_TEXT":
+            decision_store = str(route.get("target_store", "") or "")
+            if not decision_store or decision_store == "unknown":
+                decision_store = str(session_state.get("last_target_store", "") or "")
+            if decision_store and decision_store != "unknown":
+                next_address_contact_reply_count_by_store[decision_store] = int(next_address_contact_reply_count_by_store.get(decision_store, 0) or 0) + 1
         self.memory_store.update_session_state(
             session_id,
             {
@@ -583,6 +614,7 @@ class CustomerServiceAgent:
                 "last_geo_updated_at": now if (target_store != "unknown" or detected_region) else session_state.get("last_geo_updated_at", ""),
                 "knowledge_reply_count": next_knowledge_reply_count,
                 "address_text_reply_count_by_store": next_address_text_reply_count_by_store,
+                "address_contact_reply_count_by_store": next_address_contact_reply_count_by_store,
             },
             user_hash=user_hash,
         )
@@ -884,6 +916,22 @@ class CustomerServiceAgent:
                 print(f"[DEBUG] 该门店已发送过地址图片，跳过地址路由")
                 return False
 
+        if intent == "address":
+            session_target_store = str(session_state.get("last_target_store", "") or "")
+            sent_stores = set(session_state.get("sent_address_stores", []) or [])
+            text_reply_count_by_store = dict(session_state.get("address_text_reply_count_by_store", {}) or {})
+            contact_reply_count_by_store = dict(session_state.get("address_contact_reply_count_by_store", {}) or {})
+            if (
+                target_store == "unknown"
+                and session_target_store
+                and session_target_store != "unknown"
+                and session_target_store in sent_stores
+                and int(text_reply_count_by_store.get(session_target_store, 0) or 0) >= 1
+                and int(contact_reply_count_by_store.get(session_target_store, 0) or 0) >= 1
+            ):
+                # 已经给过一次真实文字地址和一次联系方式兜底后，后续泛地址追问直接走 LLM，避免继续追问地区。
+                return False
+
         # 原有的规则决策逻辑
         if route_type in ("coverage", "non_coverage", "need_district"):
             return True
@@ -920,10 +968,13 @@ class CustomerServiceAgent:
         intent: str,
         session_state: Dict[str, Any],
     ) -> Optional[AgentDecision]:
+        if intent != "address":
+            return None
+
         target_store = str(route.get("target_store", "") or "")
         if not target_store or target_store == "unknown":
-            return None
-        if intent != "address":
+            target_store = str(session_state.get("last_target_store", "") or "")
+        if not target_store or target_store == "unknown":
             return None
 
         sent_stores = set(session_state.get("sent_address_stores", []) or [])
@@ -948,6 +999,45 @@ class CustomerServiceAgent:
             media_plan="none",
             reply_source="rule",
             rule_id="ADDR_TEXT_AFTER_IMAGE",
+            rule_applied=True,
+        )
+
+    def _build_address_contact_after_text_decision(
+        self,
+        route: Dict[str, Any],
+        intent: str,
+        session_state: Dict[str, Any],
+    ) -> Optional[AgentDecision]:
+        if intent != "address":
+            return None
+
+        if str(route.get("target_store", "") or "") not in ("", "unknown"):
+            return None
+
+        target_store = str(session_state.get("last_target_store", "") or "")
+        if not target_store or target_store == "unknown":
+            return None
+
+        sent_stores = set(session_state.get("sent_address_stores", []) or [])
+        if target_store not in sent_stores:
+            return None
+
+        text_reply_count_by_store = dict(session_state.get("address_text_reply_count_by_store", {}) or {})
+        if int(text_reply_count_by_store.get(target_store, 0) or 0) < 1:
+            return None
+
+        contact_reply_count_by_store = dict(session_state.get("address_contact_reply_count_by_store", {}) or {})
+        if int(contact_reply_count_by_store.get(target_store, 0) or 0) >= 1:
+            return None
+
+        return AgentDecision(
+            reply_text=ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK,
+            intent="address",
+            route_reason=str(route.get("reason", "unknown") or "unknown"),
+            reply_goal="解答",
+            media_plan="none",
+            reply_source="rule",
+            rule_id="ADDR_CONTACT_AFTER_TEXT",
             rule_applied=True,
         )
 
@@ -2205,10 +2295,11 @@ class CustomerServiceAgent:
         enterprise_guard = self._enterprise_guard_doc_text or "（企业知识约束文档缺失，请按已有品牌口径稳妥回复）"
 
         return (
-            "你是艾耐儿假发客服马老师的小助手。\n"
+            "你是艾耐儿假发客服助理。\n"
             "你只负责补充规则外的一般问答，不做任何地址/媒体/流程决策。\n"
             "语气自然、亲切、有耐心，接地气，拟人化口语，像真人客服。\n"
             "硬规则：结论先行；尽量1句话完成回复，不拖拉，不啰嗦，且必须是完整句；末尾只保留1个emoji表情。\n"
+            "人物事实硬规则：马老师只负责短视频拍摄，不做假发、不做头发、不剪头、不加好友、不负责修剪造型，禁止把这些服务归给马老师。\n"
             "超出知识库可常规发挥，但必须围绕企业知识口径；禁止编造活动承诺、禁止要求对方发图、联系方式或超出事实的信息。\n"
             "若信息不确定，给稳妥结论并引导用户补充。\n\n"
             f"【企业知识约束】\n{enterprise_guard}\n\n"
@@ -2286,6 +2377,14 @@ class CustomerServiceAgent:
 
         if self._contains_explicit_phone_number(reply):
             return PHONE_LEAK_BLOCK_FALLBACK
+
+        if self._contains_invalid_ma_teacher_claim(reply):
+            if self._is_ma_teacher_direct_query(text):
+                return MA_TEACHER_DIRECT_QUERY_FALLBACK
+            cleaned_reply = self._strip_invalid_ma_teacher_service_clauses(reply)
+            if cleaned_reply and cleaned_reply != reply:
+                return cleaned_reply
+            return MA_TEACHER_ROLE_FALLBACK
 
         if self._is_contact_fact_risk(text, reply):
             return self._render_guardrail_reply(CONTACT_FACT_FALLBACK)
@@ -2370,6 +2469,61 @@ class CustomerServiceAgent:
         if re.search(r"(400|800)\d{7,}", compact):
             return True
         return False
+
+    def _contains_invalid_ma_teacher_claim(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(text or ""))
+        if "马老师" not in normalized:
+            return False
+        return any(keyword in normalized for keyword in MA_TEACHER_INVALID_SERVICE_KEYWORDS)
+
+    def _is_ma_teacher_direct_query(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(text or ""))
+        if "马老师" not in normalized:
+            return False
+        direct_query_markers = ("找", "做", "在哪", "可以", "能", "安排", "约", "吗", "？", "?")
+        return normalized == "马老师" or any(marker in normalized for marker in direct_query_markers)
+
+    def _strip_invalid_ma_teacher_service_clauses(self, text: str) -> str:
+        original = str(text or "").strip()
+        if not original:
+            return original
+
+        trailing_emoji = self._extract_trailing_known_reply_emoji(original)
+        body = original[:-len(trailing_emoji)] if trailing_emoji and original.endswith(trailing_emoji) else original
+
+        sentence_parts = re.split(r"([。！？!?])", body)
+        kept_sentences: List[str] = []
+        removed = False
+
+        for idx in range(0, len(sentence_parts), 2):
+            segment = sentence_parts[idx].strip()
+            punctuation = sentence_parts[idx + 1] if idx + 1 < len(sentence_parts) else ""
+            if not segment and not punctuation:
+                continue
+            sentence = f"{segment}{punctuation}".strip()
+            if not sentence:
+                continue
+            if self._contains_invalid_ma_teacher_claim(sentence):
+                removed = True
+                continue
+            kept_sentences.append(sentence)
+
+        if not removed:
+            return original
+
+        cleaned = "".join(kept_sentences).strip()
+        cleaned = re.sub(r"[，,、；;]\s*$", "", cleaned)
+        cleaned = cleaned.rstrip("，,；; ")
+        if cleaned and trailing_emoji and trailing_emoji not in cleaned[-len(trailing_emoji) - 2 :]:
+            cleaned = f"{cleaned}{trailing_emoji}"
+        return cleaned
+
+    def _extract_trailing_known_reply_emoji(self, text: str) -> str:
+        value = str(text or "")
+        for emoji in sorted(REPLY_EMOJI_POOL, key=len, reverse=True):
+            if value.endswith(emoji):
+                return emoji
+        return ""
 
     def _resolve_guardrail_store_key(
         self,

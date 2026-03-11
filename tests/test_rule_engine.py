@@ -451,6 +451,45 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
             self.assertEqual(d.route_reason, "north_fallback_beijing")
 
+    def test_generic_address_after_known_region_uses_real_text_then_contact_then_llm(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, _, llm = self._build_agent(temp_dir)
+            session_id = "chat_generic_addr_after_region"
+            user_name = "用户泛地址追问"
+            user_hash = agent._hash_user(user_name)
+
+            d1 = agent.decide(session_id, user_name, "具体地址在哪？", [])
+            self.assertEqual(d1.rule_id, "ADDR_ASK_REGION_R1")
+
+            d2 = agent.decide(session_id, user_name, "北京", [])
+            self.assertEqual(d2.rule_id, "ADDR_STORE_RECOMMEND")
+            self.assertEqual(d2.media_plan, "address_image")
+            self.assertTrue(d2.media_items)
+            agent.mark_media_sent(session_id, user_name, d2.media_items[0], success=True)
+            self._append_media_success_log(
+                conversations_dir=conversations_dir,
+                session_id=session_id,
+                media_type="address_image",
+                media_path=d2.media_items[0]["path"],
+                ts="2026-03-11T15:16:01",
+                user_id_hash=user_hash,
+            )
+
+            d3 = agent.decide(session_id, user_name, "具体地址", [])
+            self.assertEqual(d3.rule_id, "ADDR_TEXT_AFTER_IMAGE")
+            self.assertIn("朝阳区建外SOHO东区", d3.reply_text)
+
+            d4 = agent.decide(session_id, user_name, "具体地址", [])
+            self.assertEqual(d4.rule_id, "ADDR_CONTACT_AFTER_TEXT")
+            self.assertIn("您发个☎️", d4.reply_text)
+
+            llm.reply_text = "姐姐，北京店就在朝阳，您导航建外SOHO东区就行🌹"
+            d5 = agent.decide(session_id, user_name, "具体地址", [])
+            self.assertEqual(d5.reply_source, "llm")
+            self.assertEqual(d5.rule_id, "LLM_FOLLOW_UP")
+
     def test_address_query_cityless_asks_region(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, _, _ = self._build_agent(Path(td))
@@ -1196,6 +1235,43 @@ class RuleEngineTestCase(unittest.TestCase):
                 d.reply_text,
                 "姐姐，您提供电话，我来联系您，可以给您具体的介绍假发价格，款式，地址位置，坐车导航路线，以及预约事项。❤️",
             )
+
+    def test_llm_ma_teacher_hair_service_claim_is_blocked(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+            llm.reply_text = "可以的姐姐，假发修剪造型我们这边没问题。您到时过来，马老师帮您弄。💗"
+
+            d = agent._decide_llm_reply(
+                latest_user_text="你们店里也可以剪发的吧？",
+                intent="general",
+                route_reason="unknown",
+                conversation_history=[],
+                rule_id="LLM_GENERAL",
+            )
+
+            print(f"LLM输出：{llm.reply_text}")
+            print(f"实际发出：{d.reply_text}")
+            self.assertEqual(llm.calls, 1)
+            self.assertIn("假发修剪造型我们这边没问题", d.reply_text)
+            self.assertNotIn("马老师帮您弄", d.reply_text)
+
+    def test_llm_ma_teacher_direct_query_keeps_identity_reply(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+            llm.reply_text = "可以的姐姐，马老师帮您弄。💗"
+
+            d = agent._decide_llm_reply(
+                latest_user_text="我找马老师做可以吗？",
+                intent="general",
+                route_reason="unknown",
+                conversation_history=[],
+                rule_id="LLM_GENERAL",
+            )
+
+            print(f"LLM输出：{llm.reply_text}")
+            print(f"实际发出：{d.reply_text}")
+            self.assertEqual(llm.calls, 1)
+            self.assertEqual(d.reply_text, "姐姐，马老师是做短视频拍摄的，暂时无法安排🥰")
 
     def test_user_phone_submission_uses_fixed_rule_reply(self):
         with tempfile.TemporaryDirectory() as td:
