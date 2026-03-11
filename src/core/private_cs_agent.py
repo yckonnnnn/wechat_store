@@ -77,6 +77,7 @@ SHIPPING_BLOCK_KEYWORDS = (
 )
 SHIPPING_BLOCK_REPLACEMENT = "姐姐我们是到店定制哦"
 ADDRESS_UNSUPPORTED_FALLBACK = "姐姐，您留个联系方式，我来加您并跟您具体沟通"
+MATERIAL_LIBRARY_VIDEO_SENTINEL = "__material_library_video__"
 ADDRESS_UNSUPPORTED_QUERY_KEYWORDS = (
     "怎么去",
     "怎么走",
@@ -2060,9 +2061,10 @@ class CustomerServiceAgent:
         return random.choice(pool)
 
     def _pick_video_media(self) -> Optional[str]:
-        if not self._video_medias:
-            return None
-        return random.choice(self._video_medias)
+        if self._video_medias:
+            return random.choice(self._video_medias)
+        # 视频实际发送已统一走页面素材库；没有本地视频文件时，仍允许触发 delayed_video。
+        return MATERIAL_LIBRARY_VIDEO_SENTINEL
 
     def summarize_recent_assistant_hashes_from_logs(self, user_id_hash: str, limit: int = 40) -> set[str]:
         if not user_id_hash:

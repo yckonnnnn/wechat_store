@@ -1,41 +1,45 @@
 {
   "version": 4,
-  "updated_at": "2026-03-10T10:10:35.916380",
+  "updated_at": "2026-03-11T09:57:04.719896",
   "sessions": {
     "sim_session": {
       "session_id": "sim_session",
       "user_hash": "de81f6891f",
       "session_fingerprint": "",
       "first_seen_at": "2026-03-10T10:09:57.092668",
-      "updated_at": "2026-03-10T10:10:35.915716",
+      "updated_at": "2026-03-11T09:57:04.718270",
       "address_prompt_count": 0,
-      "sent_address_stores": [],
-      "address_image_sent_count": 0,
-      "address_image_last_sent_at_by_store": {},
-      "contact_image_sent_count": 1,
-      "contact_image_last_sent_at": "2026-03-10T10:10:02.475567",
+      "sent_address_stores": [
+        "sh_xuhui"
+      ],
+      "address_image_sent_count": 1,
+      "address_image_last_sent_at_by_store": {
+        "sh_xuhui": "2026-03-11T09:55:46.647379"
+      },
+      "contact_image_sent_count": 0,
+      "contact_image_last_sent_at": "",
       "contact_warmup": false,
       "geo_followup_round": 0,
       "geo_choice_offered": false,
       "last_geo_pending": false,
       "last_detected_region": "辽宁省",
-      "last_target_store": "",
-      "last_geo_route_reason": "out_of_coverage",
-      "last_geo_updated_at": "2026-03-10T10:10:02.474940",
+      "last_target_store": "sh_xuhui",
+      "last_geo_route_reason": "sh_district_map:嘉定",
+      "last_geo_updated_at": "2026-03-11T09:55:46.646143",
       "strong_intent_after_both_count": 0,
       "purchase_both_first_hint_sent": false,
-      "session_video_armed": true,
-      "session_video_sent": true,
-      "session_post_contact_reply_count": 2,
+      "session_video_armed": false,
+      "session_video_sent": false,
+      "session_post_contact_reply_count": 0,
       "pending_required_media": [],
-      "pending_required_media_updated_at": "2026-03-10T10:10:02.475658",
+      "pending_required_media_updated_at": "2026-03-11T09:55:46.647470",
       "last_required_media_failure_code": "",
       "last_required_media_failure_detail": "",
       "required_media_retry_budget": {},
       "last_route_reason": "unknown",
       "last_intent": "general",
       "last_reply_goal": "解答",
-      "session_user_message_count_after_contact": 3,
+      "session_user_message_count_after_contact": 0,
       "knowledge_reply_count": 0,
       "address_text_reply_count_by_store": {}
     }
@@ -44,7 +48,7 @@
     "de81f6891f": {
       "user_hash": "de81f6891f",
       "first_seen_at": "2026-03-10T10:09:57.092696",
-      "updated_at": "2026-03-10T10:10:35.916361",
+      "updated_at": "2026-03-11T09:57:04.719870",
       "video_armed": false,
       "video_sent": false,
       "post_contact_reply_count": 0,
@@ -53,7 +57,15 @@
         "姐姐辽宁省暂时没有我们的门店目前假发是需要根据头围和脸型进行私人定制的您可以看看下面图中画圈圈的地方会有专门的老师跟您远程鉴定",
         "姐姐我们是根据头围脸型私人定制的价格在3000到6000之间您可以留个方式我来安排专业老师跟您详细沟通帮您选到最适合的款式",
         "好的姐姐您留个方式我来加您并跟您具体沟通哦",
-        "不客气姐姐"
+        "不客气姐姐",
+        "姐姐您在什么城市区域呀方便告诉我吗我可以帮您针对性推荐门店我们目前北京朝阳1家上海5家静安人广虹口五角场徐汇",
+        "姐姐推荐您去上海徐汇门店我给您发一张位置图您跟着图中圈圈的位置会更直观",
+        "姐姐您留个方式我来加您并跟您具体沟通哦",
+        "姐姐您留个方式我来加您好友",
+        "好的姐姐我让马老师来加您您稍等哦",
+        "好的姐姐祝您生活愉快",
+        "姐姐您把发我我加您细说",
+        "姐姐马老师加您后会给您发详细定位和楼层信息的您稍等一下哦"
       ]
     }
   }

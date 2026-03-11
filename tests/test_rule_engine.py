@@ -37,6 +37,7 @@ class RuleEngineTestCase(unittest.TestCase):
         whitelist_sessions=None,
         address_image_files=None,
         store_targets=None,
+        include_local_video: bool = True,
     ):
         whitelist_sessions = whitelist_sessions or []
         address_image_files = address_image_files or ["北京地址.jpg"]
@@ -45,7 +46,8 @@ class RuleEngineTestCase(unittest.TestCase):
         images_dir = temp_dir / "images"
         images_dir.mkdir(parents=True, exist_ok=True)
         (images_dir / "contact.jpg").write_text("x", encoding="utf-8")
-        (images_dir / "video.mp4").write_text("x", encoding="utf-8")
+        if include_local_video:
+            (images_dir / "video.mp4").write_text("x", encoding="utf-8")
         for address_name in address_image_files:
             (images_dir / address_name).write_text("x", encoding="utf-8")
 
