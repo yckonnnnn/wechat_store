@@ -1114,9 +1114,184 @@ class RuleEngineTestCase(unittest.TestCase):
 
             d = agent.decide("chat_normal_kb", user_name, "价格是多少", [])
             self.assertEqual(d.reply_source, "knowledge")
-            self.assertEqual(d.rule_id, "KB_MATCH")
+            self.assertEqual(d.rule_id, "PRICE_PRIORITY")
             self.assertEqual(d.media_plan, "none")
             self.assertFalse(d.media_items)
+
+    def test_price_query_uses_price_priority_even_with_beijing_context(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, llm = self._build_agent(temp_dir)
+            repository.add(
+                "这款多少钱？图片上多少钱？第二款多少钱？",
+                "姐姐这款不是固定价格，价格在3000到6000之间，需要根据头围脸型设计定价🌷",
+                intent="price",
+                tags=["价格", "咨询", "定制"],
+            )
+
+            user_name = "价格用户"
+            user_hash = agent._hash_user(user_name)
+            agent.memory_store.update_session_state(
+                "chat_price_beijing",
+                {
+                    "last_target_store": "beijing_chaoyang",
+                    "last_detected_region": "北京",
+                },
+                user_hash=user_hash,
+            )
+
+            d = agent.decide("chat_price_beijing", user_name, "第二款假发多少钱", [])
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertEqual(d.rule_id, "PRICE_PRIORITY")
+            self.assertEqual(d.media_plan, "none")
+            self.assertFalse(d.media_items)
+            self.assertIn("3000", d.reply_text)
+            self.assertNotIn("北京朝阳门店", d.reply_text)
+            self.assertEqual(llm.calls, 0)
+
+    def test_price_plus_store_question_answers_price_then_store_distribution(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, llm = self._build_agent(temp_dir)
+            repository.add(
+                "这款多少钱？图片上多少钱？第二款多少钱？",
+                "姐姐这款不是固定价格，价格在3000到6000之间，需要根据头围脸型设计定价🌷",
+                intent="price",
+                tags=["价格", "咨询", "定制"],
+            )
+
+            d = agent.decide("chat_price_store", "价格门店用户", "这款多少钱，在哪个店能看？", [])
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertEqual(d.rule_id, "PRICE_PRIORITY")
+            self.assertEqual(d.media_plan, "none")
+            self.assertIn("3000", d.reply_text)
+            self.assertIn("北京朝阳1家", d.reply_text)
+            self.assertIn("上海5家", d.reply_text)
+            self.assertEqual(llm.calls, 0)
+
+    def test_price_plus_appointment_answers_price_then_appointment_fact_without_media(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, llm = self._build_agent(temp_dir)
+            repository.add(
+                "价格多少？多少钱？",
+                "姐姐价格这块主要看材质和您想要的效果，通常在3000到6000之间😊",
+                intent="price",
+                tags=["价格"],
+            )
+
+            d = agent.decide("chat_price_appoint", "价格预约用户", "这款多少钱，需要预约吗？", [])
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertEqual(d.rule_id, "PRICE_PRIORITY")
+            self.assertEqual(d.media_plan, "none")
+            self.assertIn("3000", d.reply_text)
+            self.assertIn("预约制", d.reply_text)
+            self.assertFalse(d.media_items)
+            self.assertEqual(llm.calls, 0)
+
+    def test_price_priority_rotates_variants_for_same_user(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, _ = self._build_agent(temp_dir)
+            repository.add(
+                "价格多少？多少钱？价格多少钱？什么价位？",
+                "姐姐，我们是私人定制的假发，根据不同的材质，正常3000、4000、5000、6000都有，具体要看您的头围、脸型和需求方案💗",
+                intent="price",
+                tags=["价格", "预算"],
+                answers=[
+                    "姐姐价格这块主要看材质和您想要的效果～通常在3000、4000、5000、6000都有区间，得结合头围、脸型再定方案😊",
+                    "姐姐我们是按定制方案走的，不同材质价格不一样，大概3000、4000、5000、6000都有，具体要看您适合哪一款🌷",
+                ],
+            )
+
+            user_name = "价格轮换用户"
+            d1 = agent.decide("chat_price_rotate", user_name, "价格呢", [])
+            d2 = agent.decide("chat_price_rotate", user_name, "第二款价格是多少", [])
+
+            self.assertEqual(d1.rule_id, "PRICE_PRIORITY")
+            self.assertEqual(d2.rule_id, "PRICE_PRIORITY")
+            self.assertNotEqual(d1.reply_text, d2.reply_text)
+            self.assertIn("3000", d1.reply_text)
+            self.assertIn("4000", d1.reply_text)
+            self.assertIn("3000", d2.reply_text)
+            self.assertIn("4000", d2.reply_text)
+
+    def test_address_followup_keeps_true_address_residual_question(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, _, _ = self._build_agent(temp_dir)
+            session_id = "chat_addr_residual"
+            user_name = "用户地址残句"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_addr_residual",
+                user_id_hash=user_hash,
+                ts="2026-03-11T15:15:00",
+            )
+
+            d1 = agent.decide(session_id, user_name, "具体地址在哪？", [])
+            self.assertEqual(d1.rule_id, "ADDR_ASK_REGION_R1")
+
+            d2 = agent.decide(session_id, user_name, "北京", [])
+            self.assertEqual(d2.rule_id, "ADDR_STORE_RECOMMEND")
+            agent.mark_media_sent(session_id, user_name, d2.media_items[0], success=True)
+            self._append_media_success_log(
+                conversations_dir=conversations_dir,
+                session_id=session_id,
+                media_type="address_image",
+                media_path=d2.media_items[0]["path"],
+                ts="2026-03-11T15:16:01",
+                user_id_hash=user_hash,
+            )
+
+            d3 = agent.decide(session_id, user_name, "北在哪？", [])
+            self.assertEqual(d3.rule_id, "ADDR_TEXT_AFTER_IMAGE")
+            self.assertIn("朝阳区建外SOHO东区", d3.reply_text)
+
+    def test_address_followup_does_not_hijack_price_question_after_address_context(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, repository, llm = self._build_agent(temp_dir)
+            session_id = "chat_addr_then_price"
+            user_name = "用户地址后价格"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_addr_then_price",
+                user_id_hash=user_hash,
+                ts="2026-03-11T15:15:00",
+            )
+            repository.add(
+                "这款多少钱？图片上多少钱？第二款多少钱？",
+                "姐姐这款不是固定价格，价格在3000到6000之间，需要根据头围脸型设计定价🌷",
+                intent="price",
+                tags=["价格", "咨询", "定制"],
+            )
+
+            d1 = agent.decide(session_id, user_name, "具体地址在哪？", [])
+            self.assertEqual(d1.rule_id, "ADDR_ASK_REGION_R1")
+
+            d2 = agent.decide(session_id, user_name, "北京", [])
+            self.assertEqual(d2.rule_id, "ADDR_STORE_RECOMMEND")
+            agent.mark_media_sent(session_id, user_name, d2.media_items[0], success=True)
+            self._append_media_success_log(
+                conversations_dir=conversations_dir,
+                session_id=session_id,
+                media_type="address_image",
+                media_path=d2.media_items[0]["path"],
+                ts="2026-03-11T15:16:01",
+                user_id_hash=user_hash,
+            )
+
+            d3 = agent.decide(session_id, user_name, "第二款的短发多少钱", [])
+            self.assertEqual(d3.rule_id, "PRICE_PRIORITY")
+            self.assertEqual(d3.reply_source, "knowledge")
+            self.assertIn("3000", d3.reply_text)
+            self.assertNotIn("朝阳区建外SOHO东区", d3.reply_text)
+            self.assertEqual(llm.calls, 0)
 
     def test_llm_low_price_reply_is_overridden_by_fixed_price_levels(self):
         with tempfile.TemporaryDirectory() as td:

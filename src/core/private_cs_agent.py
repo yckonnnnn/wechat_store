@@ -127,6 +127,86 @@ ADDRESS_FACT_QUERY_KEYWORDS = (
     "哪一站",
     "哪个出口",
 )
+ADDRESS_FOLLOWUP_EXPLICIT_KEYWORDS = (
+    "地址",
+    "具体地址",
+    "位置",
+    "具体位置",
+    "门店地址",
+    "店铺地址",
+    "在哪",
+    "在哪里",
+    "哪儿",
+    "位置在哪",
+    "怎么走",
+    "怎么去",
+    "怎么过去",
+    "如何去",
+    "如何过去",
+    "导航",
+    "路线",
+    "怎么导航",
+    "导航怎么导",
+    "坐车",
+    "坐什么车",
+    "地铁",
+    "几号线",
+    "哪一站",
+    "哪个站",
+    "哪个出口",
+    "几号出口",
+    "开车怎么去",
+    "打车到哪里",
+    "几楼",
+    "楼层",
+    "在哪层",
+    "哪栋",
+    "哪一栋",
+    "哪个门",
+    "从哪进",
+    "停车",
+    "停车方便吗",
+)
+ADDRESS_FOLLOWUP_RESIDUAL_KEYWORDS = (
+    "北在哪",
+    "店在哪",
+    "具体呢",
+    "哪里呢",
+    "位置呢",
+)
+ADDRESS_FOLLOWUP_BLOCK_KEYWORDS = (
+    "多少钱",
+    "价格",
+    "价位",
+    "多少",
+    "钱",
+    "报价",
+    "费用",
+    "收费",
+    "预算",
+    "贵",
+    "便宜",
+    "预约",
+    "怎么预约",
+    "需要预约",
+    "能约吗",
+    "材质",
+    "真人发",
+    "短发",
+    "长发",
+    "这款",
+    "第二款",
+    "第三款",
+    "自然吗",
+    "热吗",
+    "闷吗",
+    "好打理吗",
+    "会掉吗",
+    "清洗",
+    "保养",
+    "护理",
+    "售后",
+)
 PRICE_FACT_QUERY_KEYWORDS = (
     "价格",
     "多少钱",
@@ -166,6 +246,28 @@ PRICE_REPLY_RISK_KEYWORDS = (
     "w",
     "万",
 )
+PRICE_PRIORITY_KEYWORDS = (
+    "多少钱",
+    "价格",
+    "价位",
+    "多少",
+    "钱",
+    "报价",
+    "费用",
+    "收费",
+    "预算",
+    "贵",
+    "便宜",
+    "什么价",
+    "什么价格",
+    "大概多少",
+    "大概多少钱",
+    "多少米",
+)
+PRICE_FACT_FOLLOWUP_APPOINTMENT = "我们这边是预约制的，您定好时间我可以帮您安排。"
+PRICE_FACT_FOLLOWUP_STORE_DISTRIBUTION = "门店目前是北京朝阳1家，上海5家（静安、人广、虹口、五角场、徐汇）。"
+PRICE_FACT_FOLLOWUP_PROCESS = "我们是一对一定制，通常会先看脸型头围，再定材质、长度和款式。"
+PRICE_FACT_FOLLOWUP_PRICING_BASIS = "具体价格主要看材质、款式、头围和想要的效果。"
 MA_TEACHER_INVALID_SERVICE_KEYWORDS = (
     "做头发",
     "做假发",
@@ -481,29 +583,38 @@ class CustomerServiceAgent:
                 "detected_region": "外地",
             }
         intent = self._detect_intent(text)
+        price_priority_decision = self._decide_price_priority_reply(
+            latest_user_text=text,
+            route=route,
+            conversation_history=conversation_history or [],
+            session_state=session_state,
+            user_state=user_state,
+            user_id_hash=user_hash,
+        )
         address_text_after_image_decision = self._build_address_text_after_image_decision(
+            latest_user_text=text,
             route=route,
             intent=intent,
             session_state=session_state,
         )
         address_contact_after_text_decision = self._build_address_contact_after_text_decision(
+            latest_user_text=text,
             route=route,
             intent=intent,
             session_state=session_state,
         )
         appointment_kb_decision: Optional[AgentDecision] = None
-        if self._looks_like_appointment_query(text):
-            appointment_kb_decision = self._decide_general_reply(
+        if price_priority_decision is None and self._looks_like_appointment_query(text):
+            appointment_kb_decision = self._decide_appointment_priority_reply(
                 latest_user_text=text,
-                intent=intent,
                 route=route,
-                conversation_history=conversation_history or [],
-                session_state=session_state,
                 user_state=user_state,
                 user_id_hash=user_hash,
             )
 
-        if address_text_after_image_decision is not None:
+        if price_priority_decision is not None:
+            decision = price_priority_decision
+        elif address_text_after_image_decision is not None:
             decision = address_text_after_image_decision
         elif address_contact_after_text_decision is not None:
             decision = address_contact_after_text_decision
@@ -581,6 +692,11 @@ class CustomerServiceAgent:
         decision.media_items = media_items
         decision.media_skip_reason = media_skip_reason
         decision.first_turn_media_guard_applied = False
+        if is_first_turn_global and decision.media_items:
+            decision.media_items = []
+            decision.media_plan = "none"
+            decision.media_skip_reason = "first_turn_global_no_media"
+            decision.first_turn_media_guard_applied = True
         if not decision.media_items:
             decision.media_plan = "none"
 
@@ -964,11 +1080,14 @@ class CustomerServiceAgent:
 
     def _build_address_text_after_image_decision(
         self,
+        latest_user_text: str,
         route: Dict[str, Any],
         intent: str,
         session_state: Dict[str, Any],
     ) -> Optional[AgentDecision]:
         if intent != "address":
+            return None
+        if not self._should_continue_address_followup(latest_user_text=latest_user_text, session_state=session_state):
             return None
 
         target_store = str(route.get("target_store", "") or "")
@@ -1004,11 +1123,14 @@ class CustomerServiceAgent:
 
     def _build_address_contact_after_text_decision(
         self,
+        latest_user_text: str,
         route: Dict[str, Any],
         intent: str,
         session_state: Dict[str, Any],
     ) -> Optional[AgentDecision]:
         if intent != "address":
+            return None
+        if not self._should_continue_address_followup(latest_user_text=latest_user_text, session_state=session_state):
             return None
 
         if str(route.get("target_store", "") or "") not in ("", "unknown"):
@@ -1040,6 +1162,24 @@ class CustomerServiceAgent:
             rule_id="ADDR_CONTACT_AFTER_TEXT",
             rule_applied=True,
         )
+
+    def _should_continue_address_followup(self, latest_user_text: str, session_state: Dict[str, Any]) -> bool:
+        normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
+        if not normalized:
+            return False
+
+        if any(keyword in normalized for keyword in ADDRESS_FOLLOWUP_BLOCK_KEYWORDS):
+            return False
+
+        if any(keyword in normalized for keyword in ADDRESS_FOLLOWUP_EXPLICIT_KEYWORDS):
+            return True
+
+        if any(keyword in normalized for keyword in ADDRESS_FOLLOWUP_RESIDUAL_KEYWORDS):
+            has_sent_address = int(session_state.get("address_image_sent_count", 0) or 0) > 0
+            has_target_store = str(session_state.get("last_target_store", "") or "").strip() not in ("", "unknown")
+            return has_sent_address and has_target_store
+
+        return False
 
     def _resolve_geo_context(self, route: Dict[str, Any], session_state: Dict[str, Any]) -> Dict[str, Any]:
         target_store = route.get("target_store", "unknown")
@@ -1376,6 +1516,183 @@ class CustomerServiceAgent:
 
         return False
 
+    def _has_price_priority(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(text or "")).lower()
+        if not normalized:
+            return False
+        return any(keyword in normalized for keyword in PRICE_PRIORITY_KEYWORDS)
+
+    def _decide_price_priority_reply(
+        self,
+        latest_user_text: str,
+        route: Dict[str, Any],
+        conversation_history: List[Dict[str, str]],
+        session_state: Dict[str, Any],
+        user_state: Dict[str, Any],
+        user_id_hash: str = "",
+    ) -> Optional[AgentDecision]:
+        del conversation_history, session_state
+        text = (latest_user_text or "").strip()
+        if not self._has_price_priority(text):
+            return None
+
+        kb_detail = self.knowledge_service.find_answer_detail(text, threshold=self.knowledge_threshold)
+        kb_intent = str(kb_detail.get("intent", "") or "").strip().lower()
+        if kb_detail.get("matched") and kb_intent == "price":
+            kb_answer = str(kb_detail.get("answer", "") or "").strip()
+            kb_answers = [
+                str(x).strip()
+                for x in (kb_detail.get("answers", []) or [])
+                if str(x).strip()
+            ]
+            if kb_answer and kb_answer not in kb_answers:
+                kb_answers.append(kb_answer)
+
+            selected_answer, selected_index, exhausted = self._select_kb_variant_answer(
+                answers=kb_answers,
+                user_state=user_state,
+                user_id_hash=user_id_hash,
+            )
+            base_answer = selected_answer or kb_answer or (kb_answers[0] if kb_answers else "")
+            if base_answer:
+                self._remember_selected_kb_answer(
+                    user_state=user_state,
+                    user_id_hash=user_id_hash,
+                    answer_text=base_answer,
+                )
+                return AgentDecision(
+                    reply_text=self._append_price_fact_followup(base_answer, text, route),
+                    intent="price",
+                    route_reason="price_priority",
+                    reply_goal="解答",
+                    media_plan="none",
+                    reply_source="knowledge",
+                    rule_id="PRICE_PRIORITY",
+                    rule_applied=True,
+                    kb_match_score=float(kb_detail.get("score", 0.0) or 0.0),
+                    kb_match_question=str(kb_detail.get("question", "") or ""),
+                    kb_match_mode=f"price_priority_{str(kb_detail.get('mode', '') or 'match')}",
+                    kb_item_id=str(kb_detail.get("item_id", "") or ""),
+                    kb_variant_total=len(kb_answers),
+                    kb_variant_selected_index=selected_index if selected_answer else (-1 if exhausted else 0),
+                    kb_variant_fallback_llm=False,
+                    kb_confident=True,
+                )
+
+        fallback_answer = "姐姐价格一般在3000到6000之间，具体要看材质、款式、头围和想要的效果。"
+        return AgentDecision(
+            reply_text=self._append_price_fact_followup(fallback_answer, text, route),
+            intent="price",
+            route_reason="price_priority_fallback",
+            reply_goal="解答",
+            media_plan="none",
+            reply_source="knowledge",
+            rule_id="PRICE_PRIORITY_FALLBACK",
+            rule_applied=True,
+            kb_match_score=0.0,
+            kb_match_question="",
+            kb_match_mode="price_priority_fallback",
+            kb_item_id="",
+            kb_variant_total=0,
+            kb_variant_selected_index=-1,
+            kb_variant_fallback_llm=False,
+            kb_confident=True,
+        )
+
+    def _append_price_fact_followup(self, base_reply: str, latest_user_text: str, route: Dict[str, Any]) -> str:
+        base = str(base_reply or "").strip()
+        if not base:
+            return base
+
+        normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
+        followups: List[str] = []
+
+        if self.knowledge_service.is_address_query(latest_user_text):
+            followups.append(PRICE_FACT_FOLLOWUP_STORE_DISTRIBUTION)
+        if self._looks_like_appointment_query(latest_user_text):
+            followups.append(PRICE_FACT_FOLLOWUP_APPOINTMENT)
+        if any(token in normalized for token in ("材质", "区别", "为什么", "怎么定", "怎么算", "档次", "等级", "效果", "款式")):
+            followups.append(PRICE_FACT_FOLLOWUP_PRICING_BASIS)
+        if any(token in normalized for token in ("定制", "流程", "怎么做", "怎么弄")):
+            followups.append(PRICE_FACT_FOLLOWUP_PROCESS)
+        if route.get("reason", "") == "shanghai_need_district" and PRICE_FACT_FOLLOWUP_STORE_DISTRIBUTION not in followups:
+            followups.append(PRICE_FACT_FOLLOWUP_STORE_DISTRIBUTION)
+
+        unique_followups: List[str] = []
+        seen = set()
+        for item in followups:
+            key = re.sub(r"\s+", "", item)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_followups.append(item)
+
+        if not unique_followups:
+            return self._normalize_reply_text(base)
+
+        trailing_emoji = self._extract_trailing_known_reply_emoji(base)
+        base_clean = base[:-len(trailing_emoji)].strip() if trailing_emoji and base.endswith(trailing_emoji) else base
+        base_clean = base_clean.rstrip("，,；; ")
+        if not re.search(r"[。！？!?]$", base_clean):
+            base_clean = f"{base_clean}。"
+        combined = f"{base_clean}{''.join(unique_followups)}"
+        return self._normalize_reply_text(combined)
+
+    def _decide_appointment_priority_reply(
+        self,
+        latest_user_text: str,
+        route: Dict[str, Any],
+        user_state: Dict[str, Any],
+        user_id_hash: str = "",
+    ) -> Optional[AgentDecision]:
+        kb_detail = self.knowledge_service.find_answer_detail(
+            latest_user_text,
+            threshold=self.knowledge_threshold,
+        )
+        kb_intent = str(kb_detail.get("intent", "") or "").strip().lower()
+        tags = {str(tag).strip() for tag in (kb_detail.get("tags", []) or []) if str(tag).strip()}
+        if not (kb_detail.get("matched") and (kb_intent == "appointment" or "预约" in tags)):
+            return None
+
+        kb_answer = str(kb_detail.get("answer", "") or "").strip()
+        kb_answers = [
+            str(x).strip()
+            for x in (kb_detail.get("answers", []) or [])
+            if str(x).strip()
+        ]
+        if kb_answer and kb_answer not in kb_answers:
+            kb_answers.insert(0, kb_answer)
+
+        selected_answer, selected_index, exhausted = self._select_kb_variant_answer(
+            answers=kb_answers,
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+        )
+        answer = selected_answer or kb_answer or (kb_answers[0] if kb_answers else "")
+        if not answer:
+            return None
+
+        return AgentDecision(
+            reply_text=answer,
+            intent="appointment",
+            route_reason=str(route.get("reason", "unknown") or "unknown"),
+            reply_goal="解答",
+            media_plan="contact_image",
+            reply_source="knowledge",
+            rule_id="KB_MATCH_CONTACT_IMAGE",
+            rule_applied=False,
+            kb_match_score=float(kb_detail.get("score", 0.0) or 0.0),
+            kb_match_question=str(kb_detail.get("question", "") or ""),
+            kb_match_mode=f"appointment_priority_{str(kb_detail.get('mode', '') or 'match')}",
+            kb_item_id=str(kb_detail.get("item_id", "") or ""),
+            kb_variant_total=len(kb_answers),
+            kb_variant_selected_index=selected_index if selected_answer else (-1 if exhausted else 0),
+            kb_variant_fallback_llm=False,
+            kb_confident=True,
+            force_contact_image=True,
+            kb_contact_trigger_type="appointment",
+        )
+
     def _decide_general_reply(
         self,
         latest_user_text: str,
@@ -1643,6 +1960,26 @@ class CustomerServiceAgent:
             if self._normalize_for_dedupe(candidate) not in previous:
                 return candidate, idx, False
         return "", -1, True
+
+    def _remember_selected_kb_answer(
+        self,
+        user_state: Dict[str, Any],
+        user_id_hash: str,
+        answer_text: str,
+    ) -> None:
+        normalized = self._normalize_for_dedupe(answer_text)
+        if not normalized:
+            return
+
+        recent_hashes = list(user_state.get("recent_reply_hashes", []) or [])
+        recent_hashes.append(normalized)
+        if len(recent_hashes) > 40:
+            recent_hashes = recent_hashes[-40:]
+        user_state["recent_reply_hashes"] = recent_hashes
+
+        if user_id_hash:
+            self.memory_store.update_user_state(user_id_hash, user_state)
+            self.memory_store.save()
 
     def _build_kb_variant_fallback_prompt(self, latest_user_text: str, kb_question: str, kb_answer: str) -> str:
         return (
