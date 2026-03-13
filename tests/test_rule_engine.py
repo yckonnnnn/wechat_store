@@ -1189,6 +1189,44 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertFalse(d.media_items)
             self.assertEqual(llm.calls, 0)
 
+    def test_price_plus_same_day_duration_answers_duration_then_price(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, llm = self._build_agent(temp_dir)
+            repository.add(
+                "价格多少？多少钱？",
+                "姐姐价格这块主要看材质和您想要的效果，通常在3000到6000之间😊",
+                intent="price",
+                tags=["价格"],
+            )
+
+            d = agent.decide("chat_price_duration", "价格时效用户", "到上海来一天能完成吗?大概多少钱?", [])
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertEqual(d.rule_id, "PRICE_PRIORITY")
+            self.assertEqual(d.media_plan, "none")
+            self.assertIn("3000", d.reply_text)
+            self.assertIn("当天一般做不完", d.reply_text)
+            self.assertNotIn("上海5家", d.reply_text)
+            self.assertEqual(llm.calls, 0)
+
+    def test_price_plus_store_question_still_answers_store_distribution(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, llm = self._build_agent(temp_dir)
+            repository.add(
+                "价格多少？多少钱？",
+                "姐姐价格这块主要看材质和您想要的效果，通常在3000到6000之间😊",
+                intent="price",
+                tags=["价格"],
+            )
+
+            d = agent.decide("chat_price_store_2", "价格门店用户2", "到上海看大概多少钱，在哪个店能看？", [])
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertEqual(d.rule_id, "PRICE_PRIORITY")
+            self.assertIn("3000", d.reply_text)
+            self.assertIn("上海5家", d.reply_text)
+            self.assertEqual(llm.calls, 0)
+
     def test_price_priority_rotates_variants_for_same_user(self):
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)
@@ -1215,6 +1253,28 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertIn("4000", d1.reply_text)
             self.assertIn("3000", d2.reply_text)
             self.assertIn("4000", d2.reply_text)
+
+    def test_process_priority_handles_single_visit_followup(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, llm = self._build_agent(temp_dir)
+            repository.add(
+                "要来几次才能做好？来几次可以？来一次可以吗？",
+                "姐姐一般需要来2次会更稳妥，第一次测量设计，第二次调整佩戴，当天通常做不好哦🤍",
+                intent="process",
+                tags=["流程", "到店", "次数"],
+                answers=[
+                    "姐姐一般需要来2次会更稳妥哦🤍",
+                    "姐姐第一次测量设计，第二次调整佩戴，会更合适一些🤍",
+                ],
+            )
+
+            d = agent.decide("chat_process_once", "流程用户", "来一次可以吗？", [])
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertEqual(d.rule_id, "PROCESS_PRIORITY")
+            self.assertIn("2次", d.reply_text)
+            self.assertNotIn("一次就可以完成", d.reply_text)
+            self.assertEqual(llm.calls, 0)
 
     def test_address_followup_keeps_true_address_residual_question(self):
         with tempfile.TemporaryDirectory() as td:

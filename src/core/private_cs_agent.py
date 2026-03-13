@@ -293,6 +293,8 @@ PRICE_PRIORITY_KEYWORDS = (
 )
 PRICE_FACT_FOLLOWUP_APPOINTMENT = "我们这边是预约制的，您定好时间我可以帮您安排。"
 PRICE_FACT_FOLLOWUP_STORE_DISTRIBUTION = "门店目前是北京朝阳1家，上海5家（静安、人广、虹口、五角场、徐汇）。"
+PRICE_FACT_FOLLOWUP_SAME_DAY_DURATION = "如果是到店定制，当天一般做不完哦，我们是私人定制，需要时间制作。"
+PRICE_FACT_FOLLOWUP_GENERAL_DURATION = "正常定制一般需要7到10天，门店周边城市通常2到3天能安排，外地也可以加急。"
 PRICE_FACT_FOLLOWUP_PROCESS = "我们是一对一定制，通常会先看脸型头围，再定材质、长度和款式。"
 PRICE_FACT_FOLLOWUP_PRICING_BASIS = "具体价格主要看材质、款式、头围和想要的效果。"
 MA_TEACHER_INVALID_SERVICE_KEYWORDS = (
@@ -337,6 +339,17 @@ APPOINTMENT_PRIORITY_KEYWORDS = (
     "如何预约",
     "需要预约",
     "要预约",
+)
+PROCESS_PRIORITY_KEYWORDS = (
+    "来一次",
+    "一次可以",
+    "一次能",
+    "一次行吗",
+    "1次",
+    "一趟",
+    "跑一趟",
+    "来几次",
+    "几次",
 )
 REQUIRED_MEDIA_TYPES = ("address_image", "contact_image")
 
@@ -631,8 +644,16 @@ class CustomerServiceAgent:
             session_state=session_state,
         )
         appointment_kb_decision: Optional[AgentDecision] = None
+        process_priority_decision: Optional[AgentDecision] = None
         if price_priority_decision is None and self._looks_like_appointment_query(text):
             appointment_kb_decision = self._decide_appointment_priority_reply(
+                latest_user_text=text,
+                route=route,
+                user_state=user_state,
+                user_id_hash=user_hash,
+            )
+        if price_priority_decision is None and appointment_kb_decision is None:
+            process_priority_decision = self._decide_process_priority_reply(
                 latest_user_text=text,
                 route=route,
                 user_state=user_state,
@@ -641,6 +662,8 @@ class CustomerServiceAgent:
 
         if price_priority_decision is not None:
             decision = price_priority_decision
+        elif process_priority_decision is not None:
+            decision = process_priority_decision
         elif address_text_after_image_decision is not None:
             decision = address_text_after_image_decision
         elif address_contact_after_text_decision is not None:
@@ -1634,6 +1657,10 @@ class CustomerServiceAgent:
         normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
         followups: List[str] = []
 
+        if self._looks_like_same_day_duration_query(normalized):
+            followups.append(PRICE_FACT_FOLLOWUP_SAME_DAY_DURATION)
+        elif self._looks_like_duration_query(normalized):
+            followups.append(PRICE_FACT_FOLLOWUP_GENERAL_DURATION)
         if self.knowledge_service.is_address_query(latest_user_text):
             followups.append(PRICE_FACT_FOLLOWUP_STORE_DISTRIBUTION)
         if self._looks_like_appointment_query(latest_user_text):
@@ -1642,8 +1669,6 @@ class CustomerServiceAgent:
             followups.append(PRICE_FACT_FOLLOWUP_PRICING_BASIS)
         if any(token in normalized for token in ("定制", "流程", "怎么做", "怎么弄")):
             followups.append(PRICE_FACT_FOLLOWUP_PROCESS)
-        if route.get("reason", "") == "shanghai_need_district" and PRICE_FACT_FOLLOWUP_STORE_DISTRIBUTION not in followups:
-            followups.append(PRICE_FACT_FOLLOWUP_STORE_DISTRIBUTION)
 
         unique_followups: List[str] = []
         seen = set()
@@ -1664,6 +1689,51 @@ class CustomerServiceAgent:
             base_clean = f"{base_clean}。"
         combined = f"{base_clean}{''.join(unique_followups)}"
         return self._normalize_reply_text(combined)
+
+    def _looks_like_same_day_duration_query(self, normalized_text: str) -> bool:
+        normalized = str(normalized_text or "")
+        if not normalized:
+            return False
+        return any(
+            token in normalized
+            for token in (
+                "一天",
+                "当天",
+                "当天能",
+                "一天能",
+                "当天拿",
+                "当天做",
+                "做完吗",
+                "做得完",
+                "完成吗",
+                "能完成吗",
+                "能做完吗",
+                "能做好吗",
+            )
+        )
+
+    def _looks_like_duration_query(self, normalized_text: str) -> bool:
+        normalized = str(normalized_text or "")
+        if not normalized:
+            return False
+        if self._looks_like_same_day_duration_query(normalized):
+            return True
+        return any(
+            token in normalized
+            for token in (
+                "多久",
+                "几天",
+                "多长时间",
+                "周期",
+                "时间",
+                "多久能好",
+                "多久能做",
+                "多久能完成",
+                "多久能拿",
+                "什么时候能拿",
+                "什么时候做好",
+            )
+        )
 
     def _decide_appointment_priority_reply(
         self,
@@ -1718,6 +1788,73 @@ class CustomerServiceAgent:
             kb_confident=True,
             force_contact_image=True,
             kb_contact_trigger_type="appointment",
+        )
+
+    def _looks_like_process_query(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(text or "")).lower()
+        if not normalized:
+            return False
+        return any(keyword in normalized for keyword in PROCESS_PRIORITY_KEYWORDS)
+
+    def _decide_process_priority_reply(
+        self,
+        latest_user_text: str,
+        route: Dict[str, Any],
+        user_state: Dict[str, Any],
+        user_id_hash: str = "",
+    ) -> Optional[AgentDecision]:
+        if not self._looks_like_process_query(latest_user_text):
+            return None
+
+        kb_detail = self.knowledge_service.find_answer_detail(
+            latest_user_text,
+            threshold=min(self.knowledge_threshold, 0.1),
+        )
+        kb_intent = str(kb_detail.get("intent", "") or "").strip().lower()
+        tags = {str(tag).strip() for tag in (kb_detail.get("tags", []) or []) if str(tag).strip()}
+        if not (kb_detail.get("matched") and (kb_intent == "process" or {"流程", "次数"} & tags)):
+            return None
+
+        kb_answer = str(kb_detail.get("answer", "") or "").strip()
+        kb_answers = [
+            str(x).strip()
+            for x in (kb_detail.get("answers", []) or [])
+            if str(x).strip()
+        ]
+        if kb_answer and kb_answer not in kb_answers:
+            kb_answers.append(kb_answer)
+
+        selected_answer, selected_index, exhausted = self._select_kb_variant_answer(
+            answers=kb_answers,
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+        )
+        answer = selected_answer or kb_answer or (kb_answers[0] if kb_answers else "")
+        if not answer:
+            return None
+
+        self._remember_selected_kb_answer(
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+            answer_text=answer,
+        )
+        return AgentDecision(
+            reply_text=answer,
+            intent="process",
+            route_reason=str(route.get("reason", "unknown") or "unknown"),
+            reply_goal="解答",
+            media_plan="none",
+            reply_source="knowledge",
+            rule_id="PROCESS_PRIORITY",
+            rule_applied=True,
+            kb_match_score=float(kb_detail.get("score", 0.0) or 0.0),
+            kb_match_question=str(kb_detail.get("question", "") or ""),
+            kb_match_mode=f"process_priority_{str(kb_detail.get('mode', '') or 'match')}",
+            kb_item_id=str(kb_detail.get("item_id", "") or ""),
+            kb_variant_total=len(kb_answers),
+            kb_variant_selected_index=selected_index if selected_answer else (-1 if exhausted else 0),
+            kb_variant_fallback_llm=False,
+            kb_confident=True,
         )
 
     def _decide_general_reply(
