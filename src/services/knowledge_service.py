@@ -925,6 +925,9 @@ class KnowledgeService(QObject):
             tail = text[m.end():m.end() + 1]
             if candidate.endswith("区") and tail in ("别", "分"):
                 return ""
+            # 避免把“加盟/联盟”等业务词误判成行政区后缀“盟”。
+            if candidate.endswith("盟") and any(token in candidate for token in ("加盟", "联盟")):
+                return ""
             if any(token in candidate for token in ("什么区", "哪个区", "哪些区")):
                 return ""
             return candidate

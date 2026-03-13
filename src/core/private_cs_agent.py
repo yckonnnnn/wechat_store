@@ -351,6 +351,16 @@ PROCESS_PRIORITY_KEYWORDS = (
     "来几次",
     "几次",
 )
+BUSINESS_BLOCK_PRIORITY_KEYWORDS = (
+    "加盟",
+    "拿货",
+    "代理",
+    "进货",
+    "工厂",
+    "供应商",
+    "培训",
+    "学习",
+)
 REQUIRED_MEDIA_TYPES = ("address_image", "contact_image")
 
 
@@ -645,6 +655,7 @@ class CustomerServiceAgent:
         )
         appointment_kb_decision: Optional[AgentDecision] = None
         process_priority_decision: Optional[AgentDecision] = None
+        business_block_priority_decision: Optional[AgentDecision] = None
         if price_priority_decision is None and self._looks_like_appointment_query(text):
             appointment_kb_decision = self._decide_appointment_priority_reply(
                 latest_user_text=text,
@@ -659,9 +670,22 @@ class CustomerServiceAgent:
                 user_state=user_state,
                 user_id_hash=user_hash,
             )
+        if (
+            price_priority_decision is None
+            and appointment_kb_decision is None
+            and process_priority_decision is None
+        ):
+            business_block_priority_decision = self._decide_business_block_priority_reply(
+                latest_user_text=text,
+                route=route,
+                user_state=user_state,
+                user_id_hash=user_hash,
+            )
 
         if price_priority_decision is not None:
             decision = price_priority_decision
+        elif business_block_priority_decision is not None:
+            decision = business_block_priority_decision
         elif process_priority_decision is not None:
             decision = process_priority_decision
         elif address_text_after_image_decision is not None:
@@ -754,6 +778,9 @@ class CustomerServiceAgent:
         target_store = route.get("target_store", "unknown")
         detected_region = route.get("detected_region", "") or ""
         next_knowledge_reply_count = knowledge_reply_count + (1 if decision.reply_source == "knowledge" else 0)
+        next_price_priority_reply_count = int(session_state.get("price_priority_reply_count", 0) or 0)
+        if decision.rule_id in {"PRICE_PRIORITY", "PRICE_PRIORITY_FALLBACK", "PRICE_PRIORITY_PRIVATE_GUIDE"}:
+            next_price_priority_reply_count += 1
         next_address_text_reply_count_by_store = dict(session_state.get("address_text_reply_count_by_store", {}) or {})
         next_address_contact_reply_count_by_store = dict(session_state.get("address_contact_reply_count_by_store", {}) or {})
         if decision.rule_id == "ADDR_TEXT_AFTER_IMAGE":
@@ -779,6 +806,7 @@ class CustomerServiceAgent:
                 "last_geo_route_reason": route.get("reason", "unknown") if (target_store != "unknown" or detected_region) else session_state.get("last_geo_route_reason", "unknown"),
                 "last_geo_updated_at": now if (target_store != "unknown" or detected_region) else session_state.get("last_geo_updated_at", ""),
                 "knowledge_reply_count": next_knowledge_reply_count,
+                "price_priority_reply_count": next_price_priority_reply_count,
                 "address_text_reply_count_by_store": next_address_text_reply_count_by_store,
                 "address_contact_reply_count_by_store": next_address_contact_reply_count_by_store,
             },
@@ -1581,10 +1609,31 @@ class CustomerServiceAgent:
         user_state: Dict[str, Any],
         user_id_hash: str = "",
     ) -> Optional[AgentDecision]:
-        del conversation_history, session_state
+        del conversation_history
         text = (latest_user_text or "").strip()
         if not self._has_price_priority(text):
             return None
+
+        price_priority_count = int(session_state.get("price_priority_reply_count", 0) or 0)
+        if price_priority_count == 2:
+            return AgentDecision(
+                reply_text="姐姐，具体明细的价位，您可以留个☎️，我加您具体跟您介绍，这样会方便一点～",
+                intent="price",
+                route_reason="price_priority_private_followup",
+                reply_goal="承接联系方式",
+                media_plan="none",
+                reply_source="knowledge",
+                rule_id="PRICE_PRIORITY_PRIVATE_GUIDE",
+                rule_applied=True,
+                kb_match_score=0.0,
+                kb_match_question="",
+                kb_match_mode="price_priority_private_guide",
+                kb_item_id="",
+                kb_variant_total=0,
+                kb_variant_selected_index=-1,
+                kb_variant_fallback_llm=False,
+                kb_confident=True,
+            )
 
         kb_detail = self.knowledge_service.find_answer_detail(text, threshold=self.knowledge_threshold)
         kb_intent = str(kb_detail.get("intent", "") or "").strip().lower()
@@ -1850,6 +1899,72 @@ class CustomerServiceAgent:
             kb_match_score=float(kb_detail.get("score", 0.0) or 0.0),
             kb_match_question=str(kb_detail.get("question", "") or ""),
             kb_match_mode=f"process_priority_{str(kb_detail.get('mode', '') or 'match')}",
+            kb_item_id=str(kb_detail.get("item_id", "") or ""),
+            kb_variant_total=len(kb_answers),
+            kb_variant_selected_index=selected_index if selected_answer else (-1 if exhausted else 0),
+            kb_variant_fallback_llm=False,
+            kb_confident=True,
+        )
+
+    def _looks_like_business_block_query(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(text or "")).lower()
+        if not normalized:
+            return False
+        return any(keyword in normalized for keyword in BUSINESS_BLOCK_PRIORITY_KEYWORDS)
+
+    def _decide_business_block_priority_reply(
+        self,
+        latest_user_text: str,
+        route: Dict[str, Any],
+        user_state: Dict[str, Any],
+        user_id_hash: str = "",
+    ) -> Optional[AgentDecision]:
+        if not self._looks_like_business_block_query(latest_user_text):
+            return None
+
+        kb_detail = self.knowledge_service.find_answer_detail(
+            latest_user_text,
+            threshold=min(self.knowledge_threshold, 0.1),
+        )
+        kb_intent = str(kb_detail.get("intent", "") or "").strip().lower()
+        if kb_intent not in {"franchise", "reseller_block", "factory_cooperation_block", "learn_block"}:
+            return None
+
+        kb_answer = str(kb_detail.get("answer", "") or "").strip()
+        kb_answers = [
+            str(x).strip()
+            for x in (kb_detail.get("answers", []) or [])
+            if str(x).strip()
+        ]
+        if kb_answer and kb_answer not in kb_answers:
+            kb_answers.append(kb_answer)
+
+        selected_answer, selected_index, exhausted = self._select_kb_variant_answer(
+            answers=kb_answers,
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+        )
+        answer = selected_answer or kb_answer or (kb_answers[0] if kb_answers else "")
+        if not answer:
+            return None
+
+        self._remember_selected_kb_answer(
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+            answer_text=answer,
+        )
+        return AgentDecision(
+            reply_text=answer,
+            intent=kb_intent,
+            route_reason=str(route.get("reason", "unknown") or "unknown"),
+            reply_goal="解答",
+            media_plan="none",
+            reply_source="knowledge",
+            rule_id="BUSINESS_BLOCK_PRIORITY",
+            rule_applied=True,
+            kb_match_score=float(kb_detail.get("score", 0.0) or 0.0),
+            kb_match_question=str(kb_detail.get("question", "") or ""),
+            kb_match_mode=f"business_block_priority_{str(kb_detail.get('mode', '') or 'match')}",
             kb_item_id=str(kb_detail.get("item_id", "") or ""),
             kb_variant_total=len(kb_answers),
             kb_variant_selected_index=selected_index if selected_answer else (-1 if exhausted else 0),

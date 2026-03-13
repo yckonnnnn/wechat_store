@@ -1254,6 +1254,37 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertIn("3000", d2.reply_text)
             self.assertIn("4000", d2.reply_text)
 
+    def test_price_priority_third_time_guides_to_private_then_returns_to_price(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, llm = self._build_agent(temp_dir)
+            repository.add(
+                "价格多少？多少钱？价格多少钱？什么价位？",
+                "姐姐，我们是私人定制的假发，根据不同的材质，正常3000、4000、5000、6000都有，具体要看您的头围、脸型和需求方案💗",
+                intent="price",
+                tags=["价格", "预算"],
+                answers=[
+                    "姐姐价格这块主要看材质和您想要的效果～通常在3000、4000、5000、6000都有区间，得结合头围、脸型再定方案😊",
+                    "姐姐我们是按定制方案走的，不同材质价格不一样，大概3000、4000、5000、6000都有，具体要看您适合哪一款🌷",
+                    "姐姐先给您个范围：一般3000、4000、5000、6000都有左右～您把需求跟我说下（长度/发量/风格），我帮您更精准估价😘",
+                ],
+            )
+
+            session_id = "chat_price_private_guide"
+            user_name = "价格引导用户"
+            d1 = agent.decide(session_id, user_name, "价格是多少？", [])
+            d2 = agent.decide(session_id, user_name, "价格呢？", [])
+            d3 = agent.decide(session_id, user_name, "没有具体价格吗？", [])
+            d4 = agent.decide(session_id, user_name, "价位一般在多少，具体一点", [])
+
+            self.assertEqual(d1.rule_id, "PRICE_PRIORITY")
+            self.assertEqual(d2.rule_id, "PRICE_PRIORITY")
+            self.assertEqual(d3.rule_id, "PRICE_PRIORITY_PRIVATE_GUIDE")
+            self.assertIn("留个☎️", d3.reply_text)
+            self.assertEqual(d4.rule_id, "PRICE_PRIORITY")
+            self.assertIn("3000", d4.reply_text)
+            self.assertEqual(llm.calls, 0)
+
     def test_process_priority_handles_single_visit_followup(self):
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)
@@ -1274,6 +1305,23 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d.rule_id, "PROCESS_PRIORITY")
             self.assertIn("2次", d.reply_text)
             self.assertNotIn("一次就可以完成", d.reply_text)
+            self.assertEqual(llm.calls, 0)
+
+    def test_franchise_query_is_not_misclassified_as_out_of_coverage(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, llm = self._build_agent(temp_dir)
+            repository.add(
+                "可以加盟吗？",
+                "姐姐，目前我们这边暂时不考虑加盟哦，谢谢理解～🤍",
+                intent="franchise",
+                tags=["加盟", "合作"],
+            )
+
+            d = agent.decide("chat_franchise", "加盟用户", "可以加盟你们吗？", [])
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertIn("暂时不考虑加盟", d.reply_text)
+            self.assertNotEqual(d.rule_id, "ADDR_OUT_OF_COVERAGE_REMIND_ONLY")
             self.assertEqual(llm.calls, 0)
 
     def test_address_followup_keeps_true_address_residual_question(self):
