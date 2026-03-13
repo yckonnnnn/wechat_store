@@ -78,9 +78,10 @@ SHIPPING_BLOCK_KEYWORDS = (
 SHIPPING_BLOCK_REPLACEMENT = "姐姐我们是到店定制哦"
 ADDRESS_UNSUPPORTED_FALLBACK = "姐姐，您留个联系方式，我来加您并跟您具体沟通"
 MATERIAL_LIBRARY_VIDEO_SENTINEL = "__material_library_video__"
-ADDRESS_FACT_FALLBACK = "姐姐，具体地址，楼层，怎么坐车导航路线，您发☎️，我来添加您，告诉您"
+ADDRESS_FACT_FALLBACK = "姐姐，具体地址，楼层，怎么坐车导航路线，以及价格问题，您发☎️，我来添加您，告诉您"
 ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK = "您发个☎️，我来加您好友，具体给您介绍怎么走，位置在哪里"
 PRICE_FACT_FALLBACK = "姐姐，具体的价格，设计，您可以留个☎️，我来添加您，专门给您详细介绍"
+PRICE_GUARDRAIL_SAFE_REPLY = "姐姐，我们的价格有3000、4000、5000、6000不同档位，具体要根据材质、款式、头围、脸型和需求方案来定。"
 CONTACT_FACT_FALLBACK = "姐姐，您留个☎️，我来主动跟您介绍"
 PHONE_LEAK_BLOCK_FALLBACK = "姐姐，您提供电话，我来联系您，可以给您具体的介绍假发价格，款式，地址位置，坐车导航路线，以及预约事项。❤️"
 USER_PHONE_SUBMITTED_REPLY = "收到啦姐姐，我稍后加您好友，具体跟你详细介绍❤️"
@@ -227,6 +228,32 @@ PRICE_FACT_SPECIFIC_KEYWORDS = (
     "报价",
     "方案",
     "定制费",
+)
+PRICE_LOW_RISK_PHRASES = (
+    "几百",
+    "上千",
+    "一千",
+    "两千",
+    "2000",
+    "2000多",
+    "不到3000",
+    "两三千",
+    "几千左右",
+    "几百到上千",
+)
+INVALID_PRICE_CHANNEL_KEYWORDS = (
+    "小红书",
+    "抖音",
+    "淘宝",
+    "拼多多",
+    "京东",
+    "下单",
+    "拍下",
+    "购物车",
+    "搜索购买",
+    "链接购买",
+    "店铺搜",
+    "线上购买",
 )
 ADDRESS_REPLY_RISK_KEYWORDS = (
     "区",
@@ -2726,10 +2753,9 @@ class CustomerServiceAgent:
         if self._is_contact_fact_risk(text, reply):
             return self._render_guardrail_reply(CONTACT_FACT_FALLBACK)
 
-        if self._contains_low_price_quote(reply):
-            return self._render_guardrail_reply(
-                "姐姐，我们的价格有3000，4000，5000，6000不同价位是根据您的脸型头围来设计❤️"
-            )
+        if self._has_price_priority(text):
+            if self._contains_low_price_quote(reply) or self._contains_invalid_price_channel(reply):
+                return self._render_guardrail_reply(PRICE_GUARDRAIL_SAFE_REPLY)
 
         if self._is_address_fact_risk(text, reply, state, history):
             if self._is_address_unsupported_query(text):
@@ -2764,8 +2790,14 @@ class CustomerServiceAgent:
 
     def _contains_low_price_quote(self, reply_text: str) -> bool:
         normalized_reply = re.sub(r"\s+", "", str(reply_text or "")).lower()
+        if any(token in normalized_reply for token in PRICE_LOW_RISK_PHRASES):
+            return True
         explicit_numbers = [int(num) for num in re.findall(r"(\d{3,6})", normalized_reply)]
         return any(number < 3000 for number in explicit_numbers)
+
+    def _contains_invalid_price_channel(self, reply_text: str) -> bool:
+        normalized_reply = re.sub(r"\s+", "", str(reply_text or "")).lower()
+        return any(token in normalized_reply for token in INVALID_PRICE_CHANNEL_KEYWORDS)
 
     def _is_address_fact_risk(
         self,

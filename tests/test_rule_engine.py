@@ -1310,7 +1310,7 @@ class RuleEngineTestCase(unittest.TestCase):
             print(f"实际发出：{d.reply_text}")
             self.assertEqual(llm.calls, 1)
             self.assertEqual(d.reply_source, "llm")
-            self.assertIn("3000，4000，5000，6000不同价位", d.reply_text)
+            self.assertIn("3000、4000、5000、6000不同档位", d.reply_text)
 
     def test_llm_non_low_price_reply_is_sent_as_is(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1330,6 +1330,41 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(llm.calls, 1)
             self.assertEqual(d.reply_source, "llm")
             self.assertIn("姐姐这个价格要看具体设计方案呢。", d.reply_text)
+
+    def test_llm_price_reply_with_hundreds_is_overridden_by_price_guardrail(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+            llm.reply_text = "姐姐，假发价格根据款式、长度、材质不同，从几百到上千不等💗"
+
+            d = agent._decide_llm_reply(
+                latest_user_text="视频的假发价格",
+                intent="general",
+                route_reason="unknown",
+                conversation_history=[],
+                rule_id="LLM_GENERAL",
+            )
+
+            self.assertEqual(llm.calls, 1)
+            self.assertIn("3000、4000、5000、6000", d.reply_text)
+            self.assertNotIn("几百", d.reply_text)
+
+    def test_llm_price_reply_with_social_channel_is_overridden_by_price_guardrail(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+            llm.reply_text = "姐姐您可以去小红书搜索我们下单，价格会更清楚一些🌹"
+
+            d = agent._decide_llm_reply(
+                latest_user_text="你们价格多少？",
+                intent="general",
+                route_reason="unknown",
+                conversation_history=[],
+                rule_id="LLM_GENERAL",
+            )
+
+            self.assertEqual(llm.calls, 1)
+            self.assertIn("3000、4000、5000、6000", d.reply_text)
+            self.assertNotIn("小红书", d.reply_text)
+            self.assertNotIn("下单", d.reply_text)
 
     def test_llm_address_reply_is_overridden_by_canonical_store_address(self):
         with tempfile.TemporaryDirectory() as td:
