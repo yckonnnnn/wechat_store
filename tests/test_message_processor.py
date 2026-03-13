@@ -692,6 +692,72 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
                 self.assertIn(key, attempt_payload)
                 self.assertIn(key, result_payload)
 
+    def test_media_placeholder_user_message_still_triggers_auto_reply(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserFlow()
+            sessions = SessionManager()
+            agent = DummyAgentFlow(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
+            processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
+
+            payload = {
+                "user_name": "媒体用户",
+                "chat_session_key": "",
+                "chat_session_method": "fallback",
+                "chat_session_fingerprint": "fp_media_placeholder",
+                "messages": [
+                    {"text": "姐姐给您发个视频", "is_user": False, "message_type": "text"},
+                    {"text": "[视频]", "is_user": True, "message_type": "video"},
+                ],
+            }
+
+            processor._on_chat_data(True, payload, auto_reply=True)
+
+            session_id = processor._build_session_id("媒体用户", "", "fp_media_placeholder")
+            session = sessions.get_session(session_id)
+            self.assertIsNotNone(session)
+            self.assertTrue(session.messages)
+            self.assertEqual(session.messages[0]["text"], "[视频]")
+            self.assertTrue(agent.mark_reply_sent_calls)
+            self.assertEqual(agent.mark_reply_sent_calls[-1]["session_id"], session_id)
+
+    def test_unread_preview_image_hint_can_patch_missing_last_user_message(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserFlow()
+            sessions = SessionManager()
+            agent = DummyAgentFlow(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
+            processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
+            processor._pending_unread_hint = {
+                "preview_text": "[图片]",
+                "preview_type": "image",
+                "session_text": "胃不疼 [图片]",
+            }
+
+            payload = {
+                "user_name": "媒体用户",
+                "chat_session_key": "",
+                "chat_session_method": "fallback",
+                "chat_session_fingerprint": "fp_unread_preview_image",
+                "messages": [
+                    {"text": "姐姐，定制假发的价格在3000到6000元之间", "is_user": False, "message_type": "text"},
+                ],
+            }
+
+            processor._on_chat_data(True, payload, auto_reply=True)
+
+            session_id = processor._build_session_id("媒体用户", "", "fp_unread_preview_image")
+            session = sessions.get_session(session_id)
+            self.assertIsNotNone(session)
+            self.assertTrue(session.messages)
+            self.assertEqual(session.messages[0]["text"], "[图片]")
+            self.assertTrue(agent.mark_reply_sent_calls)
+            self.assertEqual(agent.mark_reply_sent_calls[-1]["session_id"], session_id)
+
     def test_retry_contact_image_when_verify_timeout_without_confirm(self):
         with tempfile.TemporaryDirectory() as td:
             memory_store = MemoryStore(Path(td) / "memory.json")

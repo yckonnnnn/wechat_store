@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import ssl
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -75,6 +76,7 @@ class LLMWorker(QThread):
         payload = {
             "model": model,
             "messages": [{"role": "system", "content": self.system_prompt}, *self.messages],
+            "stream": False,
             "temperature": self.DEFAULT_TEMPERATURE,
             "max_tokens": self.max_tokens,
         }
@@ -84,9 +86,12 @@ class LLMWorker(QThread):
             headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=60, context=self._ssl_ctx()) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return data["choices"][0]["message"]["content"]
+        try:
+            with urllib.request.urlopen(req, timeout=60, context=self._ssl_ctx()) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as exc:
+            raise ValueError(self._format_http_error(exc)) from exc
 
     def _call_gemini(self, api_key: str, base_url: str, model: str) -> str:
         url = f"{base_url.rstrip('/')}/v1beta/models/{model}:generateContent?key={api_key}"
@@ -111,11 +116,14 @@ class LLMWorker(QThread):
             headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=60, context=self._ssl_ctx()) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            if "candidates" in data and data["candidates"]:
-                return data["candidates"][0]["content"]["parts"][0]["text"]
-            raise ValueError("Gemini API返回格式错误")
+        try:
+            with urllib.request.urlopen(req, timeout=60, context=self._ssl_ctx()) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                if "candidates" in data and data["candidates"]:
+                    return data["candidates"][0]["content"]["parts"][0]["text"]
+                raise ValueError("Gemini API返回格式错误")
+        except urllib.error.HTTPError as exc:
+            raise ValueError(self._format_http_error(exc)) from exc
 
     def _call_qwen(self, api_key: str, base_url: str, model: str) -> str:
         url = f"{base_url.rstrip('/')}/api/v1/services/aigc/text-generation/generation"
@@ -145,9 +153,33 @@ class LLMWorker(QThread):
             headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=60, context=self._ssl_ctx()) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return data["output"]["text"]
+        try:
+            with urllib.request.urlopen(req, timeout=60, context=self._ssl_ctx()) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data["output"]["text"]
+        except urllib.error.HTTPError as exc:
+            raise ValueError(self._format_http_error(exc)) from exc
+
+    def _format_http_error(self, exc: urllib.error.HTTPError) -> str:
+        detail = ""
+        try:
+            raw = exc.read().decode("utf-8", errors="ignore").strip()
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                    error_obj = parsed.get("error") if isinstance(parsed, dict) else None
+                    if isinstance(error_obj, dict):
+                        detail = error_obj.get("message") or error_obj.get("type") or raw
+                    else:
+                        detail = raw
+                except json.JSONDecodeError:
+                    detail = raw
+        except Exception:
+            detail = ""
+
+        if detail:
+            return f"HTTP {exc.code}: {detail}"
+        return f"HTTP {exc.code}: {exc.reason}"
 
 
 class LLMService(QObject):
@@ -278,7 +310,7 @@ class LLMService(QObject):
                 config=config,
                 messages=[{"role": "user", "content": "ping"}],
                 system_prompt="你是一个专业的假发客服",
-                max_tokens=1,
+                max_tokens=16,
             )
             worker._call_api()
             return True, "连接成功"

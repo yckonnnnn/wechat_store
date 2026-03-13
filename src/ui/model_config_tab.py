@@ -19,9 +19,9 @@ from ..data.config_manager import ConfigManager
 # 模型预设配置
 MODEL_PRESETS = {
     "DeepSeek": {
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "model": "deepseek-v3.2",
-        "doc_url": "https://platform.deepseek.com/docs"
+        "base_url": "https://api.deepseek.com/v1",
+        "model": "deepseek-chat",
+        "doc_url": "https://api-docs.deepseek.com/zh-cn/"
     },
     "阿里千问": {
         "base_url": "https://dashscope.aliyuncs.com",
@@ -234,7 +234,7 @@ class ModelConfigTab(QWidget):
         api_key_layout.setSpacing(8)
 
         api_key_input = QLineEdit()
-        api_key_input.setPlaceholderText("sk-xxxxxxxxxxxxxxxx")
+        api_key_input.setPlaceholderText("sk-xxxxxxx 或 sk-xxxxxxxxxxxxxxxx")
         api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         api_key_layout.addWidget(api_key_input)
 

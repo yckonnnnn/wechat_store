@@ -18,9 +18,9 @@ class ConfigManagerSaveTestCase(unittest.TestCase):
                         "current_model": "DeepSeek",
                         "models": {
                             "DeepSeek": {
-                                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                                "base_url": "https://api.deepseek.com/v1",
                                 "api_key": "sk-old",
-                                "model": "deepseek-v3.2",
+                                "model": "deepseek-chat",
                             }
                         },
                     },
@@ -34,7 +34,7 @@ class ConfigManagerSaveTestCase(unittest.TestCase):
             manager.set_model_config(
                 "DeepSeek",
                 {
-                    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                    "base_url": "https://api.deepseek.com/v1",
                     "api_key": "sk-old",
                     "model": "kimi-k2.5",
                 },
@@ -57,9 +57,9 @@ class ConfigManagerSaveTestCase(unittest.TestCase):
                         "custom_root": {"flag": True},
                         "models": {
                             "DeepSeek": {
-                                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                                "base_url": "https://api.deepseek.com/v1",
                                 "api_key": "sk-old",
-                                "model": "deepseek-v3.2",
+                                "model": "deepseek-chat",
                                 "temperature": 0.3,
                             }
                         },
@@ -74,9 +74,9 @@ class ConfigManagerSaveTestCase(unittest.TestCase):
             manager.set_model_config(
                 "DeepSeek",
                 {
-                    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                    "base_url": "https://api.deepseek.com/v1",
                     "api_key": "sk-old",
-                    "model": "deepseek-v3.2",
+                    "model": "deepseek-chat",
                 },
             )
 

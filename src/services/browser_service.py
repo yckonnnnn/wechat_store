@@ -884,6 +884,71 @@ class BrowserService(QObject):
                 return null;
             }
 
+            function extractSessionPreviewInfo(sessionEl, badgeEl) {
+                if (!sessionEl) {
+                    return { previewText: '', previewType: '' };
+                }
+
+                function containsToken(text, patterns) {
+                    for (var i = 0; i < patterns.length; i++) {
+                        if (patterns[i].test(text)) return true;
+                    }
+                    return false;
+                }
+
+                var text = safeText(sessionEl);
+                var previewText = '';
+                var previewType = '';
+                var normalized = String(text || '').toLowerCase();
+
+                if (containsToken(normalized, [/\[图片\]/, /图片/, /照片/, /photo/, /image/, /img/])) {
+                    previewType = 'image';
+                    previewText = '[图片]';
+                } else if (containsToken(normalized, [/\[视频\]/, /视频/, /video/, /短片/])) {
+                    previewType = 'video';
+                    previewText = '[视频]';
+                } else if (containsToken(normalized, [/\[表情\]/, /表情/, /emoji/, /emoticon/])) {
+                    previewType = 'emoji';
+                    previewText = '[表情]';
+                }
+
+                if (!previewType) {
+                    var descendants = Array.from(sessionEl.querySelectorAll('svg, img, i, em, span, div'));
+                    for (var j = 0; j < descendants.length; j++) {
+                        var node = descendants[j];
+                        if (!isVisible(node) || node === badgeEl) continue;
+                        var token = [
+                            String(node.className || ''),
+                            String((node.getAttribute && node.getAttribute('aria-label')) || ''),
+                            String((node.getAttribute && node.getAttribute('data-testid')) || ''),
+                            String((node.getAttribute && node.getAttribute('title')) || ''),
+                        ].join(' ').toLowerCase();
+                        if (/(avatar|head|profile|portrait)/.test(token)) continue;
+                        if (/(video|play|播放器|视频)/.test(token)) {
+                            previewType = 'video';
+                            previewText = '[视频]';
+                            break;
+                        }
+                        if (/(image|img|pic|photo|图片|照片|preview)/.test(token)) {
+                            previewType = 'image';
+                            previewText = '[图片]';
+                            break;
+                        }
+                        if (/(emoji|emoticon|sticker|expression|face|表情)/.test(token)) {
+                            previewType = 'emoji';
+                            previewText = '[表情]';
+                            break;
+                        }
+                    }
+                }
+
+                return {
+                    previewText: previewText,
+                    previewType: previewType,
+                    sessionText: text
+                };
+            }
+
             function isProbablyNumberBadge(el) {
                 if (!el || !isVisible(el)) return false;
                 var t = safeText(el);
@@ -933,8 +998,10 @@ class BrowserService(QObject):
                     var sessionEl = findClickableAncestor(n);
                     var sessionRect = null;
                     var hasSession = false;
+                    var previewInfo = { previewText: '', previewType: '', sessionText: '' };
                     if (sessionEl && sessionEl.getBoundingClientRect) {
                         sessionRect = sessionEl.getBoundingClientRect();
+                        previewInfo = extractSessionPreviewInfo(sessionEl, n);
                         if (sessionRect) {
                             var tooBig = (sessionRect.width >= window.innerWidth * 0.8) || (sessionRect.height >= window.innerHeight * 0.6);
                             var tooSmall = (sessionRect.width < 120) || (sessionRect.height < 30);
@@ -952,7 +1019,10 @@ class BrowserService(QObject):
                         badgeText: isNum ? safeText(n) : 'dot',
                         red: redInfo,
                         hasSession: hasSession,
-                        sessionRect: sessionRect
+                        sessionRect: sessionRect,
+                        previewText: previewInfo.previewText,
+                        previewType: previewInfo.previewType,
+                        sessionText: previewInfo.sessionText
                     });
 
                     if (debugInfo.candidates.length < 10) {
@@ -1062,6 +1132,9 @@ class BrowserService(QObject):
                         clicked: clicked,
                         badgeText: target.badgeText,
                         totalUnread: candidates.length,
+                        previewText: target.previewText || '',
+                        previewType: target.previewType || '',
+                        sessionText: target.sessionText || '',
                         debug: Object.assign({}, debugInfo, {
                             clickTarget: {
                                 tagName: clickEl.tagName,
@@ -1418,6 +1491,200 @@ class BrowserService(QObject):
 
             function getChatMessages() {
                 var result = { messages: [], userMessages: [], kfMessages: [], debug: [] };
+
+                function isLikelyAvatarNode(node) {
+                    if (!node) return false;
+                    var token = '';
+                    try {
+                        token = [
+                            String(node.className || ''),
+                            String((node.getAttribute && node.getAttribute('src')) || ''),
+                            String((node.getAttribute && node.getAttribute('alt')) || ''),
+                        ].join(' ').toLowerCase();
+                    } catch (e) {}
+                    if (/(avatar|head|profile|portrait)/.test(token)) return true;
+                    var parent = node.parentElement;
+                    if (!parent) return false;
+                    var parentToken = String(parent.className || '').toLowerCase();
+                    return /(avatar|head|profile|portrait)/.test(parentToken);
+                }
+
+                function detectMediaInfo(item) {
+                    if (!item) return null;
+
+                    function hasBackgroundImage(node) {
+                        if (!node) return false;
+                        try {
+                            var style = window.getComputedStyle(node);
+                            var bg = String((style && style.backgroundImage) || '').toLowerCase();
+                            return !!bg && bg !== 'none';
+                        } catch (e) {
+                            return false;
+                        }
+                    }
+
+                    function looksLikeMediaContainer(node) {
+                        if (!node || !isVisible(node)) return false;
+                        if (isLikelyAvatarNode(node)) return false;
+                        var token = '';
+                        try {
+                            token = [
+                                String(node.className || ''),
+                                String(node.id || ''),
+                                String((node.getAttribute && node.getAttribute('data-testid')) || ''),
+                                String((node.getAttribute && node.getAttribute('role')) || ''),
+                                String((node.getAttribute && node.getAttribute('aria-label')) || ''),
+                            ].join(' ').toLowerCase();
+                        } catch (e) {}
+
+                        var rect = null;
+                        try {
+                            rect = node.getBoundingClientRect();
+                        } catch (e) {}
+                        var width = rect && rect.width ? rect.width : 0;
+                        var height = rect && rect.height ? rect.height : 0;
+
+                        if (/(video|play|播放器|视频)/.test(token) && width >= 48 && height >= 48) {
+                            return 'video';
+                        }
+                        if (/(image|img|pic|photo|media|preview|cover|upload|图片|照片)/.test(token) && width >= 72 && height >= 60) {
+                            return 'image';
+                        }
+                        if (hasBackgroundImage(node) && width >= 72 && height >= 60) {
+                            return 'image';
+                        }
+                        return '';
+                    }
+
+                    function hasLargeVisualBlock(root) {
+                        if (!root) return false;
+                        var blocks = Array.from(root.querySelectorAll('div, span, a, section, article'));
+                        for (var b = 0; b < blocks.length; b++) {
+                            var block = blocks[b];
+                            if (!isVisible(block) || isLikelyAvatarNode(block)) continue;
+                            var rect = null;
+                            try {
+                                rect = block.getBoundingClientRect();
+                            } catch (e) {}
+                            var width = rect && rect.width ? rect.width : 0;
+                            var height = rect && rect.height ? rect.height : 0;
+                            if (width < 120 || height < 120) continue;
+
+                            var text = safeText(block);
+                            if (text && text.length > 0) continue;
+
+                            if (hasBackgroundImage(block)) return true;
+
+                            var token = '';
+                            try {
+                                token = [
+                                    String(block.className || ''),
+                                    String(block.id || ''),
+                                    String((block.getAttribute && block.getAttribute('data-testid')) || ''),
+                                    String((block.getAttribute && block.getAttribute('role')) || ''),
+                                    String((block.getAttribute && block.getAttribute('aria-label')) || ''),
+                                ].join(' ').toLowerCase();
+                            } catch (e) {}
+                            if (/(image|img|pic|photo|media|preview|cover|upload|图片|照片|thumb)/.test(token)) {
+                                return true;
+                            }
+
+                            var childMedia = block.querySelector('img, canvas, video');
+                            if (childMedia && !isLikelyAvatarNode(childMedia)) {
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+
+                    var videoNode = item.querySelector(
+                        '.video-msg, [class*="video-msg"], [class*="video_msg"], video, [data-testid*="video"], [class*="play-icon"], [class*="playIcon"]'
+                    );
+                    if (videoNode && !isLikelyAvatarNode(videoNode)) {
+                        return { type: 'video', text: '[视频]' };
+                    }
+
+                    var nodes = Array.from(item.querySelectorAll('img, video, canvas, svg'));
+                    var hasEmoji = false;
+                    var hasImage = false;
+
+                    for (var j = 0; j < nodes.length; j++) {
+                        var node = nodes[j];
+                        if (isLikelyAvatarNode(node)) continue;
+
+                        var rect = null;
+                        try {
+                            rect = node.getBoundingClientRect();
+                        } catch (e) {}
+                        var width = rect && rect.width ? rect.width : 0;
+                        var height = rect && rect.height ? rect.height : 0;
+                        var token = [
+                            String(node.className || ''),
+                            String((node.getAttribute && node.getAttribute('src')) || ''),
+                            String((node.getAttribute && node.getAttribute('alt')) || ''),
+                            String((node.getAttribute && node.getAttribute('aria-label')) || ''),
+                            String((node.getAttribute && node.getAttribute('data-testid')) || ''),
+                        ].join(' ').toLowerCase();
+
+                        if (/(emoji|emoticon|sticker|expression|face)/.test(token)) {
+                            hasEmoji = true;
+                            continue;
+                        }
+
+                        if (node.tagName === 'SVG' && width <= 48 && height <= 48) {
+                            hasEmoji = true;
+                            continue;
+                        }
+
+                        if (width >= 72 && height >= 60) {
+                            hasImage = true;
+                            continue;
+                        }
+
+                        if (node.tagName === 'IMG' && width > 0 && height > 0) {
+                            if (width <= 64 && height <= 64) {
+                                hasEmoji = true;
+                            } else {
+                                hasImage = true;
+                            }
+                        }
+                    }
+
+                    var mediaCandidates = Array.from(item.querySelectorAll('div, span, a, section'));
+                    for (var k = 0; k < mediaCandidates.length; k++) {
+                        var mediaType = looksLikeMediaContainer(mediaCandidates[k]);
+                        if (mediaType === 'video') {
+                            return { type: 'video', text: '[视频]' };
+                        }
+                        if (mediaType === 'image') {
+                            hasImage = true;
+                        }
+                    }
+
+                    if (hasLargeVisualBlock(item)) {
+                        return { type: 'image', text: '[图片]' };
+                    }
+
+                    if (hasImage) return { type: 'image', text: '[图片]' };
+                    if (hasEmoji) return { type: 'emoji', text: '[表情]' };
+                    return null;
+                }
+
+                function extractMessageContent(item) {
+                    var textMsg = item.querySelector('.text-msg');
+                    var text = '';
+                    if (textMsg) {
+                        text = safeText(textMsg);
+                    } else {
+                        text = safeText(item);
+                    }
+
+                    if (text && text.length > 0) {
+                        return { type: 'text', text: text };
+                    }
+
+                    return detectMediaInfo(item);
+                }
                 
                 // 查找聊天消息容器：#chat-scroll-view 或 .chat-scroll-view
                 var chatScrollView = document.getElementById('chat-scroll-view') || document.querySelector('.chat-scroll-view');
@@ -1440,16 +1707,24 @@ class BrowserService(QObject):
                     var isKf = classList.indexOf('justify-end') !== -1;
                     var isUser = !isKf;
                     
-                    // 提取消息文本：从 .text-msg 或整个 item
-                    var textMsg = item.querySelector('.text-msg');
-                    var text = '';
-                    if (textMsg) {
-                        text = safeText(textMsg);
-                    } else {
-                        text = safeText(item);
+                    var content = extractMessageContent(item);
+                    if (!content) {
+                        try {
+                            var itemRect = item.getBoundingClientRect();
+                            result.debug.push(
+                                "跳过消息#" + i +
+                                " class=" + String(item.className || '').slice(0, 120) +
+                                " size=" + Math.round(itemRect.width || 0) + "x" + Math.round(itemRect.height || 0) +
+                                " text=" + safeText(item).slice(0, 60)
+                            );
+                        } catch (e) {
+                            result.debug.push("跳过消息#" + i + "（无法解析结构）");
+                        }
+                        continue;
                     }
+                    var text = content.text || '';
                     
-                    // 过滤空消息和表情
+                    // 过滤空消息
                     if (!text || text.length === 0) continue;
                     if (text.length > 500) continue;
                     
@@ -1460,6 +1735,7 @@ class BrowserService(QObject):
                     
                     var msg = {
                         text: text,
+                        message_type: content.type || 'text',
                         is_user: isUser,
                         is_kf: isKf
                     };

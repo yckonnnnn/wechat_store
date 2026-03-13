@@ -68,7 +68,7 @@ DEFAULT_MODEL_SETTINGS = {
             "model": "qwen-plus"
         },
         "DeepSeek": {
-            "base_url": "https://api.deepseek.com",
+            "base_url": "https://api.deepseek.com/v1",
             "api_key": "",
             "model": "deepseek-chat"
         },

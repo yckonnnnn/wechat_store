@@ -51,6 +51,7 @@ class MessageProcessor(QObject):
 
         self._last_processed_marker = ""
         self._pending_send: Optional[Dict[str, Any]] = None
+        self._pending_unread_hint: Optional[Dict[str, str]] = None
         self._active_session_context: Optional[Dict[str, str]] = None
 
         self._poll_timer = QTimer(self)
@@ -102,6 +103,7 @@ class MessageProcessor(QObject):
         self._poll_inflight = False
         self._processing_reply = False
         self._pending_send = None
+        self._pending_unread_hint = None
         self._active_session_context = None
         self.status_changed.emit("paused_remote")
         self._emit_log("🛑 AI客服已暂停，远程监听中")
@@ -113,6 +115,7 @@ class MessageProcessor(QObject):
         self._poll_inflight = False
         self._processing_reply = False
         self._pending_send = None
+        self._pending_unread_hint = None
         self._active_session_context = None
         self.status_changed.emit("stopped")
         self._emit_log("🛑 AI客服已停止")
@@ -233,7 +236,16 @@ class MessageProcessor(QObject):
 
             payload = self._parse_js_payload(result)
             if payload.get("found") and payload.get("clicked"):
+                self._pending_unread_hint = {
+                    "preview_text": str(payload.get("previewText", "") or ""),
+                    "preview_type": str(payload.get("previewType", "") or ""),
+                    "session_text": str(payload.get("sessionText", "") or ""),
+                }
                 self._emit_log(f"🔔 发现未读({payload.get('badgeText', 'dot')})，已点击进入")
+                if self._pending_unread_hint.get("preview_type") in {"image", "video", "emoji"}:
+                    self._emit_log(
+                        f"🧭 未读预览识别: {self._format_unread_preview_hint(self._pending_unread_hint)}"
+                    )
                 delay_ms = int(getattr(self, "_GRAB_CHAT_AFTER_CLICK_DELAY_MS", 3000) or 0)
                 self._emit_log(f"⏳ 预留{max(0, delay_ms) / 1000:.0f}秒人工介入时间，再抓取聊天记录")
                 QTimer.singleShot(delay_ms, self._grab_and_reply_active_chat)
@@ -261,14 +273,18 @@ class MessageProcessor(QObject):
             return
 
         data = self._parse_js_payload(result)
-        messages = data.get("messages", []) or []
+        messages = list(data.get("messages", []) or [])
+        debug_lines = data.get("debug", []) or []
         user_name = (data.get("user_name") or "未知用户").strip() or "未知用户"
         chat_session_key = (data.get("chat_session_key") or "").strip()
         chat_session_method = (data.get("chat_session_method") or "").strip()
         chat_session_fingerprint = (data.get("chat_session_fingerprint") or "").strip()
+        messages = self._maybe_append_unread_hint_message(messages)
 
         if not messages:
             self._emit_log(f"⚠️ 用户 {user_name} 暂无可读消息")
+            for line in debug_lines[-6:]:
+                self._emit_log(f"🧭 抓取调试: {line}")
             self._reset_cycle()
             return
 
@@ -280,6 +296,8 @@ class MessageProcessor(QObject):
         latest_user_message = self._latest_user_text(messages)
         if not latest_user_message:
             self._emit_log("⏸️ 最后一条不是用户消息，跳过自动回复")
+            for line in debug_lines[-6:]:
+                self._emit_log(f"🧭 抓取调试: {line}")
             self._reset_cycle()
             return
 
@@ -907,6 +925,7 @@ class MessageProcessor(QObject):
         self._poll_inflight = False
         self._processing_reply = False
         self._pending_send = None
+        self._pending_unread_hint = None
         self._active_session_context = None
 
     def _parse_js_payload(self, payload: Any) -> Dict[str, Any]:
@@ -927,6 +946,36 @@ class MessageProcessor(QObject):
         if not messages[-1].get("is_user", False):
             return ""
         return (messages[-1].get("text") or "").strip()
+
+    def _maybe_append_unread_hint_message(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        hint = self._pending_unread_hint or {}
+        preview_type = str(hint.get("preview_type", "") or "").strip().lower()
+        if preview_type not in {"image", "video"}:
+            return messages
+        if messages and messages[-1].get("is_user", False):
+            return messages
+
+        synthetic = {
+            "text": "[图片]" if preview_type == "image" else "[视频]",
+            "message_type": preview_type,
+            "is_user": True,
+            "is_kf": False,
+            "source": "unread_preview",
+        }
+        self._emit_log(f"🧩 使用未读预览补全最后一条用户消息: {synthetic['text']}")
+        return [*messages, synthetic]
+
+    def _format_unread_preview_hint(self, hint: Dict[str, str]) -> str:
+        preview_type = str(hint.get("preview_type", "") or "").strip().lower()
+        mapping = {
+            "image": "图片",
+            "video": "视频",
+            "emoji": "表情",
+        }
+        if preview_type in mapping:
+            return mapping[preview_type]
+        preview_text = str(hint.get("preview_text", "") or "").strip()
+        return preview_text or "未知"
 
     def _build_message_marker(self, user_name: str, latest_user_text: str, messages: List[Dict[str, Any]]) -> str:
         user_count = len([m for m in messages if m.get("is_user")])
@@ -1106,7 +1155,18 @@ class MessageProcessor(QObject):
             if not text:
                 continue
             role = "用户" if msg.get("is_user") else "客服"
-            self._emit_log(f"{role}: {text}")
+            self._emit_log(f"{role}: {self._format_log_message_text(msg)}")
+
+    def _format_log_message_text(self, msg: Dict[str, Any]) -> str:
+        text = str(msg.get("text") or "").strip()
+        message_type = str(msg.get("message_type") or "").strip().lower()
+        if text == "[图片]" or message_type == "image":
+            return "发送了一张图片"
+        if text == "[视频]" or message_type == "video":
+            return "发送了一个视频"
+        if text == "[表情]" or message_type == "emoji":
+            return "发送了一个表情"
+        return text
 
     def _append_media_delivery_event(
         self,
