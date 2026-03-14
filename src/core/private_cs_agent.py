@@ -422,6 +422,10 @@ class AgentDecision:
     kb_polite_guard_reason: str = ""
     is_first_turn_global: bool = False
     first_turn_media_guard_applied: bool = False
+    first_turn_image_items: List[Dict[str, Any]] = field(default_factory=list)
+    first_turn_video_items: List[Dict[str, Any]] = field(default_factory=list)
+    first_turn_text_required: bool = False
+    first_turn_retry_policy: Dict[str, Any] = field(default_factory=dict)
     kb_repeat_rewritten: bool = False
     purchase_both_first_hint_sent: bool = False
     video_trigger_user_count: int = 0
@@ -596,6 +600,7 @@ class CustomerServiceAgent:
         user_name: str,
         latest_user_text: str,
         conversation_history: Optional[List[Dict[str, str]]] = None,
+        first_turn_global_override: Optional[bool] = None,
     ) -> AgentDecision:
         """主决策入口"""
         self.memory_store.prune_expired(ttl_days=self.memory_ttl_days)
@@ -603,7 +608,10 @@ class CustomerServiceAgent:
         user_hash = self._hash_user(user_name or session_id)
         session_state = self.memory_store.get_session_state(session_id, user_hash=user_hash)
         user_state = self.memory_store.get_user_state(user_hash)
-        is_first_turn_global = self.is_user_first_turn_global(user_id_hash=user_hash)
+        if first_turn_global_override is None:
+            is_first_turn_global = self.is_user_first_turn_global(user_id_hash=user_hash)
+        else:
+            is_first_turn_global = bool(first_turn_global_override)
         self._sync_media_state_from_conversation_log(
             session_id=session_id,
             user_hash=user_hash,
@@ -766,11 +774,11 @@ class CustomerServiceAgent:
         decision.media_items = media_items
         decision.media_skip_reason = media_skip_reason
         decision.first_turn_media_guard_applied = False
-        if is_first_turn_global and decision.media_items:
-            decision.media_items = []
-            decision.media_plan = "none"
-            decision.media_skip_reason = "first_turn_global_no_media"
-            decision.first_turn_media_guard_applied = True
+        self._populate_first_turn_media_plan(
+            session_id=session_id,
+            user_name=user_name,
+            decision=decision,
+        )
         if not decision.media_items:
             decision.media_plan = "none"
 
@@ -836,13 +844,6 @@ class CustomerServiceAgent:
         user_state["recent_reply_hashes"] = recent_hashes
 
         session_video = self.summarize_session_video_from_log(session_id=session_id)
-        if self.first_reply_video_enabled and is_first_turn_global and not session_video.get("first_reply_video_sent"):
-            video_item = self._build_video_media_item(trigger_source="first_reply")
-            if video_item:
-                self.memory_store.update_user_state(user_hash, user_state)
-                self.memory_store.save()
-                return video_item
-
         if session_video.get("contact_sent") and not session_video.get("contact_followup_video_sent"):
             user_messages_after_contact = int(session_video.get("user_message_count_after_contact", 0) or 0)
             if user_messages_after_contact >= 2:
@@ -2607,6 +2608,7 @@ class CustomerServiceAgent:
 
     def summarize_user_turns_from_logs(self, user_id_hash: str) -> Dict[str, int]:
         summary = {
+            "event_count": 0,
             "user_message_count": 0,
             "assistant_reply_count": 0,
         }
@@ -2627,6 +2629,7 @@ class CustomerServiceAgent:
                         continue
                     if str(record.get("user_id_hash", "") or "") != user_id_hash:
                         continue
+                    summary["event_count"] += 1
                     event_type = str(record.get("event_type", "") or "")
                     if event_type == "user_message":
                         summary["user_message_count"] += 1
@@ -2638,7 +2641,48 @@ class CustomerServiceAgent:
 
     def is_user_first_turn_global(self, user_id_hash: str) -> bool:
         turns = self.summarize_user_turns_from_logs(user_id_hash=user_id_hash)
-        return int(turns.get("assistant_reply_count", 0) or 0) == 0
+        return int(turns.get("event_count", 0) or 0) == 0
+
+    def _populate_first_turn_media_plan(
+        self,
+        session_id: str,
+        user_name: str,
+        decision: AgentDecision,
+    ) -> None:
+        del user_name
+        decision.first_turn_image_items = []
+        decision.first_turn_video_items = []
+        decision.first_turn_text_required = bool(decision.is_first_turn_global)
+        decision.first_turn_retry_policy = {}
+
+        if not decision.is_first_turn_global:
+            return
+
+        image_items = [
+            dict(item)
+            for item in (decision.media_items or [])
+            if isinstance(item, dict) and str(item.get("type", "") or "") in ("address_image", "contact_image")
+        ]
+        for item in image_items:
+            item["disable_compensation"] = True
+            item["first_turn_media"] = True
+
+        video_items: List[Dict[str, Any]] = []
+        should_attach_first_reply_video = bool(image_items) or bool(self.first_reply_video_enabled)
+        if should_attach_first_reply_video:
+            session_video = self.summarize_session_video_from_log(session_id=session_id)
+            if not session_video.get("first_reply_video_sent"):
+                video_item = self._build_video_media_item(trigger_source="first_reply")
+                if video_item:
+                    video_item["first_turn_media"] = True
+                    video_items.append(video_item)
+
+        decision.first_turn_image_items = image_items
+        decision.first_turn_video_items = video_items
+        decision.first_turn_retry_policy = {
+            "image_retry_once_deferred": True,
+            "video_retry_once_inline": True,
+        }
 
     def summarize_session_video_from_log(self, session_id: str) -> Dict[str, Any]:
         summary = {

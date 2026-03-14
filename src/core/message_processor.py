@@ -279,6 +279,7 @@ class MessageProcessor(QObject):
         chat_session_key = (data.get("chat_session_key") or "").strip()
         chat_session_method = (data.get("chat_session_method") or "").strip()
         chat_session_fingerprint = (data.get("chat_session_fingerprint") or "").strip()
+        messages = self._restrict_media_placeholders_to_unread_context(messages)
         messages = self._maybe_append_unread_hint_message(messages)
 
         if not messages:
@@ -363,6 +364,7 @@ class MessageProcessor(QObject):
             user_name=user_name,
             latest_user_text=latest_user_message,
             conversation_history=history,
+            first_turn_global_override=is_first_turn_global,
         )
 
         self.decision_ready.emit(
@@ -423,6 +425,18 @@ class MessageProcessor(QObject):
                 "kb_contact_trigger_type": str(decision.kb_contact_trigger_type or ""),
                 "is_first_turn_global": bool(decision.is_first_turn_global),
                 "first_turn_media_guard_applied": bool(decision.first_turn_media_guard_applied),
+                "first_turn_image_types": [
+                    str(x.get("type", ""))
+                    for x in (decision.first_turn_image_items or [])
+                    if isinstance(x, dict)
+                ],
+                "first_turn_video_types": [
+                    str(x.get("type", ""))
+                    for x in (decision.first_turn_video_items or [])
+                    if isinstance(x, dict)
+                ],
+                "first_turn_text_required": bool(decision.first_turn_text_required),
+                "first_turn_retry_policy": dict(decision.first_turn_retry_policy or {}),
                 "kb_repeat_rewritten": bool(decision.kb_repeat_rewritten),
                 "purchase_both_first_hint_sent": bool(decision.purchase_both_first_hint_sent),
                 "video_trigger_user_count": int(decision.video_trigger_user_count or 0),
@@ -455,64 +469,94 @@ class MessageProcessor(QObject):
             detail=f"media={decision.media_plan or 'none'}",
         )
 
-        def on_text_sent(success, result):
-            if not success:
-                self._emit_log("❌ 文本发送失败")
-                self.error_occurred.emit("发送文本失败")
-                self._reset_cycle()
-                return
+        media_summary = {"sent_types": [], "failed_types": [], "sent_details": [], "failed_details": []}
+        first_turn_image_items = [dict(x) for x in (decision.first_turn_image_items or []) if isinstance(x, dict)]
+        first_turn_video_items = [dict(x) for x in (decision.first_turn_video_items or []) if isinstance(x, dict)]
+        deferred_media_items: List[Dict[str, Any]] = []
 
-            self._emit_log(f"✅ 文本回复已发送: {decision.reply_text[:80]}")
-            self.sessions.add_message(session_id, decision.reply_text, is_user=False)
-            self.sessions.record_reply(session_id)
-            self.reply_sent.emit(session_id, decision.reply_text)
+        def send_text_and_remaining_media(planned_media_items_after_text: Optional[List[Dict[str, Any]]] = None):
+            planned_media_items = list(planned_media_items_after_text or [])
 
-            extra_video = self.agent.mark_reply_sent(
-                session_id,
-                user_name,
-                decision.reply_text,
-                is_first_turn_global=bool(decision.is_first_turn_global),
-            )
-            extra_medias = [extra_video] if extra_video else []
-            media_queue = self.agent.build_post_text_media_queue(
-                session_id=session_id,
-                user_name=user_name,
-                planned_media_items=list(decision.media_items),
-                extra_media_items=extra_medias,
-            )
-
-            media_summary = {"sent_types": [], "failed_types": [], "sent_details": [], "failed_details": []}
-            if media_queue:
-                self._mark_active_session(
-                    session_id=session_id,
-                    user_name=user_name,
-                    stage="text_sent_wait_media",
-                    detail=f"queued_media={len(media_queue)}",
-                )
-                delay_ms = int(getattr(self, "_MEDIA_SEND_AFTER_TEXT_DELAY_MS", 900) or 0)
-                has_delayed_video = any(
-                    isinstance(item, dict) and str(item.get("type", "") or "") == "delayed_video"
-                    for item in media_queue
-                )
-                if has_delayed_video:
-                    delay_ms += int(getattr(self, "_VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS", 1200) or 0)
-                send_media = lambda: self._send_media_queue(
-                        session_id,
-                        user_name,
-                        media_queue,
-                        decision=decision,
-                        media_summary=media_summary,
-                    )
-                if delay_ms <= 0:
-                    send_media()
+            def on_text_sent(success, result):
+                if not success:
+                    self._emit_log("❌ 文本发送失败")
+                    self.error_occurred.emit("发送文本失败")
+                    self._reset_cycle()
                     return
 
-                QTimer.singleShot(delay_ms, send_media)
-                return
+                self._emit_log(f"✅ 文本回复已发送: {decision.reply_text[:80]}")
+                self.sessions.add_message(session_id, decision.reply_text, is_user=False)
+                self.sessions.record_reply(session_id)
+                self.reply_sent.emit(session_id, decision.reply_text)
 
-            self._send_media_queue(session_id, user_name, media_queue, decision=decision, media_summary=media_summary)
+                extra_video = self.agent.mark_reply_sent(
+                    session_id,
+                    user_name,
+                    decision.reply_text,
+                    is_first_turn_global=bool(decision.is_first_turn_global),
+                )
+                extra_medias = [extra_video] if extra_video else []
+                post_text_extra_items = [*first_turn_video_items, *extra_medias, *deferred_media_items]
+                media_queue = self.agent.build_post_text_media_queue(
+                    session_id=session_id,
+                    user_name=user_name,
+                    planned_media_items=planned_media_items,
+                    extra_media_items=post_text_extra_items,
+                )
 
-        self.browser.send_message(decision.reply_text, on_text_sent)
+                if media_queue:
+                    self._mark_active_session(
+                        session_id=session_id,
+                        user_name=user_name,
+                        stage="text_sent_wait_media",
+                        detail=f"queued_media={len(media_queue)}",
+                    )
+                    delay_ms = int(getattr(self, "_MEDIA_SEND_AFTER_TEXT_DELAY_MS", 900) or 0)
+                    has_delayed_video = any(
+                        isinstance(item, dict) and str(item.get("type", "") or "") == "delayed_video"
+                        for item in media_queue
+                    )
+                    if has_delayed_video:
+                        delay_ms += int(getattr(self, "_VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS", 1200) or 0)
+                    send_media = lambda: self._send_media_queue(
+                            session_id,
+                            user_name,
+                            media_queue,
+                            decision=decision,
+                            media_summary=media_summary,
+                        )
+                    if delay_ms <= 0:
+                        send_media()
+                        return
+
+                    QTimer.singleShot(delay_ms, send_media)
+                    return
+
+                self._send_media_queue(session_id, user_name, media_queue, decision=decision, media_summary=media_summary)
+
+            self.browser.send_message(decision.reply_text, on_text_sent)
+
+        if decision.is_first_turn_global and first_turn_image_items:
+            self._mark_active_session(
+                session_id=session_id,
+                user_name=user_name,
+                stage="first_turn_send_image",
+                detail=f"queued_media={len(first_turn_image_items)}",
+            )
+            self._send_media_queue(
+                session_id,
+                user_name,
+                first_turn_image_items,
+                decision=None,
+                media_summary=media_summary,
+                on_complete=lambda: send_text_and_remaining_media([]),
+                defer_retry_media_types={"address_image", "contact_image"},
+                deferred_retry_items=deferred_media_items,
+            )
+            return
+
+        planned_items_after_text = [] if decision.is_first_turn_global else list(decision.media_items)
+        send_text_and_remaining_media(planned_items_after_text)
 
     def _send_media_queue(
         self,
@@ -521,6 +565,9 @@ class MessageProcessor(QObject):
         media_queue: List[Dict[str, Any]],
         decision: Optional[AgentDecision] = None,
         media_summary: Optional[Dict[str, List[str]]] = None,
+        on_complete: Optional[Callable[[], None]] = None,
+        defer_retry_media_types: Optional[set[str]] = None,
+        deferred_retry_items: Optional[List[Dict[str, Any]]] = None,
     ):
         if not media_queue:
             if decision is not None:
@@ -556,6 +603,9 @@ class MessageProcessor(QObject):
                         "kb_contact_trigger_type": str(decision.kb_contact_trigger_type or ""),
                     },
                 )
+            if on_complete is not None:
+                on_complete()
+                return
             self._reset_cycle()
             return
 
@@ -653,11 +703,59 @@ class MessageProcessor(QObject):
             failure_code = self._extract_failure_code(result)
             detail = self._extract_failure_detail(result)
             compensation_enqueued = False
+            defer_retry_set = set(defer_retry_media_types or set())
             if not success and self._should_retry_media_send(
                 media_type=media_type,
                 result=result,
                 retry_count=retry_count,
             ):
+                retry_item = dict(item)
+                retry_item["_retry_count"] = retry_count + 1
+                if media_type in defer_retry_set and deferred_retry_items is not None:
+                    self._emit_media_ui_log(
+                        media_type,
+                        f"媒体发送未确认，先继续后续流程，尾部重试一次: type={media_type}, failure={failure_code or 'unknown'}",
+                        level="warning",
+                    )
+                    deferred_retry_items.append(retry_item)
+                    self._append_training_event(
+                        session_id=session_id,
+                        user_id_hash=self._build_user_hash(user_name=user_name, session_id=session_id),
+                        event_type="media_result",
+                        user_name=user_name,
+                        payload={
+                            "type": media_type,
+                            "path": media_path,
+                            "target_store": item.get("target_store", ""),
+                            "store_name": item.get("store_name", ""),
+                            "store_address": item.get("store_address", ""),
+                            "detected_region": item.get("detected_region", ""),
+                            "route_reason": item.get("route_reason", ""),
+                            "success": False,
+                            "retry_scheduled": True,
+                            "retry_attempt": retry_count + 1,
+                            "delivery_stage": "retry_deferred",
+                            "failure_code": failure_code,
+                            "compensation_enqueued": False,
+                            "pending_media_id": pending_media_id,
+                            "result": result if isinstance(result, (dict, str, int, float, bool, type(None))) else str(result),
+                        },
+                    )
+                    next_call = lambda: self._send_media_queue(
+                        session_id,
+                        user_name,
+                        media_queue,
+                        decision=decision,
+                        media_summary=media_summary,
+                        on_complete=on_complete,
+                        defer_retry_media_types=defer_retry_media_types,
+                        deferred_retry_items=deferred_retry_items,
+                    )
+                    if media_queue:
+                        QTimer.singleShot(1200, next_call)
+                    else:
+                        next_call()
+                    return
                 self._emit_media_ui_log(
                     media_type,
                     f"媒体发送未确认，准备重试: type={media_type}, failure={failure_code or 'unknown'}",
@@ -698,16 +796,17 @@ class MessageProcessor(QObject):
                         "retry_attempt": retry_count + 1,
                         "compensation_enqueued": False,
                         "failure_code": failure_code,
-                    },
-                )
-                retry_item = dict(item)
-                retry_item["_retry_count"] = retry_count + 1
+                        },
+                    )
                 self._send_media_queue(
                     session_id=session_id,
                     user_name=user_name,
                     media_queue=[retry_item] + list(media_queue),
                     decision=decision,
                     media_summary=media_summary,
+                    on_complete=on_complete,
+                    defer_retry_media_types=defer_retry_media_types,
+                    deferred_retry_items=deferred_retry_items,
                 )
                 return
 
@@ -768,34 +867,50 @@ class MessageProcessor(QObject):
                             "trigger_source": item.get("trigger_source", ""),
                         }
                     )
-                pending_item = self.agent.enqueue_media_compensation(
-                    session_id=session_id,
-                    user_name=user_name,
-                    media_item=item,
-                    failure_code=failure_code,
-                    failure_detail=detail,
-                )
-                compensation_enqueued = bool(pending_item)
-                if compensation_enqueued:
-                    self._emit_media_ui_log(
-                        media_type,
-                        f"媒体进入待补发队列: type={media_type}, failure={failure_code or 'unknown'}",
-                        level="warning",
-                    )
-                    self._append_media_delivery_event(
+                if not bool(item.get("disable_compensation", False)):
+                    pending_item = self.agent.enqueue_media_compensation(
                         session_id=session_id,
                         user_name=user_name,
-                        event_type=self._media_event_name(media_type, "pending_compensation"),
-                        item=pending_item,
-                        payload={
-                            "media_type": media_type,
-                            "delivery_stage": "pending_compensation",
-                            "pending_media_id": str(pending_item.get("pending_media_id", "") or pending_media_id),
-                            "retry_attempt": retry_count,
-                            "compensation_enqueued": True,
-                            "failure_code": failure_code,
-                        },
+                        media_item=item,
+                        failure_code=failure_code,
+                        failure_detail=detail,
                     )
+                    compensation_enqueued = bool(pending_item)
+                    if compensation_enqueued:
+                        self._emit_media_ui_log(
+                            media_type,
+                            f"媒体进入待补发队列: type={media_type}, failure={failure_code or 'unknown'}",
+                            level="warning",
+                        )
+                        self._append_media_delivery_event(
+                            session_id=session_id,
+                            user_name=user_name,
+                            event_type=self._media_event_name(media_type, "pending_compensation"),
+                            item=pending_item,
+                            payload={
+                                "media_type": media_type,
+                                "delivery_stage": "pending_compensation",
+                                "pending_media_id": str(pending_item.get("pending_media_id", "") or pending_media_id),
+                                "retry_attempt": retry_count,
+                                "compensation_enqueued": True,
+                                "failure_code": failure_code,
+                            },
+                        )
+                    else:
+                        self._append_media_delivery_event(
+                            session_id=session_id,
+                            user_name=user_name,
+                            event_type=self._media_event_name(media_type, "failed"),
+                            item=item,
+                            payload={
+                                "media_type": media_type,
+                                "delivery_stage": "failed_terminal",
+                                "pending_media_id": pending_media_id,
+                                "retry_attempt": retry_count,
+                                "compensation_enqueued": False,
+                                "failure_code": failure_code,
+                            },
+                        )
                 else:
                     self._append_media_delivery_event(
                         session_id=session_id,
@@ -846,6 +961,9 @@ class MessageProcessor(QObject):
                         media_queue,
                         decision=decision,
                         media_summary=media_summary,
+                        on_complete=on_complete,
+                        defer_retry_media_types=defer_retry_media_types,
+                        deferred_retry_items=deferred_retry_items,
                     ),
                 )
             else:
@@ -855,6 +973,9 @@ class MessageProcessor(QObject):
                     media_queue,
                     decision=decision,
                     media_summary=media_summary,
+                    on_complete=on_complete,
+                    defer_retry_media_types=defer_retry_media_types,
+                    deferred_retry_items=deferred_retry_items,
                 )
 
         def send_media_after_clear():
@@ -884,7 +1005,7 @@ class MessageProcessor(QObject):
     def _should_retry_media_send(self, media_type: str, result: Any, retry_count: int) -> bool:
         failure_code = self._extract_failure_code(result)
         if media_type in ("contact_image", "address_image"):
-            if retry_count >= 2:
+            if retry_count >= 1:
                 return False
             return failure_code in {
                 "locate_image_button_failed",
@@ -964,6 +1085,27 @@ class MessageProcessor(QObject):
         }
         self._emit_log(f"🧩 使用未读预览补全最后一条用户消息: {synthetic['text']}")
         return [*messages, synthetic]
+
+    def _restrict_media_placeholders_to_unread_context(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        hint = self._pending_unread_hint or {}
+        preview_type = str(hint.get("preview_type", "") or "").strip().lower()
+        if preview_type in {"image", "video", "emoji"}:
+            return list(messages or [])
+
+        filtered: List[Dict[str, Any]] = []
+        for item in list(messages or []):
+            if not isinstance(item, dict):
+                filtered.append(item)
+                continue
+
+            message_type = str(item.get("message_type", "") or "").strip().lower()
+            text = str(item.get("text", "") or "").strip()
+            if message_type in {"image", "video", "emoji"}:
+                continue
+            if text in {"[图片]", "[视频]", "[表情]"}:
+                continue
+            filtered.append(item)
+        return filtered
 
     def _format_unread_preview_hint(self, hint: Dict[str, str]) -> str:
         preview_type = str(hint.get("preview_type", "") or "").strip().lower()

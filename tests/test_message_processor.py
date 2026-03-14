@@ -136,9 +136,9 @@ class DummyAgentFlow:
     def reload_prompt_docs(self):
         return True
 
-    def decide(self, session_id: str, user_name: str, latest_user_text: str, conversation_history=None):
-        del session_id, user_name, latest_user_text, conversation_history
-        return AgentDecision(
+    def decide(self, session_id: str, user_name: str, latest_user_text: str, conversation_history=None, first_turn_global_override=None):
+        del session_id, user_name, latest_user_text, conversation_history, first_turn_global_override
+        decision = AgentDecision(
             reply_text="姐姐我马上帮您安排～🌹",
             intent="purchase",
             route_reason="known_geo_context",
@@ -169,6 +169,9 @@ class DummyAgentFlow:
             purchase_both_first_hint_sent=True,
             video_trigger_user_count=2,
         )
+        decision.first_turn_image_items = [dict(x) for x in decision.media_items]
+        decision.first_turn_text_required = True
+        return decision
 
     def is_user_first_turn_global(self, user_id_hash: str) -> bool:
         del user_id_hash
@@ -203,20 +206,63 @@ class DummyAgentFlow:
 
 
 class DummyAgentFlowFirstReplyVideo(DummyAgentFlow):
-    def mark_reply_sent(self, session_id: str, user_name: str, reply_text: str, *, is_first_turn_global: bool = False):
-        super().mark_reply_sent(
-            session_id,
-            user_name,
-            reply_text,
-            is_first_turn_global=is_first_turn_global,
-        )
-        if not is_first_turn_global:
-            return None
-        return {
-            "type": "delayed_video",
-            "path": "video.mp4",
-            "trigger_source": "first_reply",
-        }
+    def decide(self, session_id: str, user_name: str, latest_user_text: str, conversation_history=None, first_turn_global_override=None):
+        decision = super().decide(session_id, user_name, latest_user_text, conversation_history, first_turn_global_override)
+        decision.first_turn_image_items = [dict(x) for x in decision.media_items]
+        decision.first_turn_video_items = [
+            {
+                "type": "delayed_video",
+                "path": "video.mp4",
+                "trigger_source": "first_reply",
+            }
+        ]
+        return decision
+
+
+class DummyAgentFlowFirstTurnImageAndVideo(DummyAgentFlow):
+    def decide(self, session_id: str, user_name: str, latest_user_text: str, conversation_history=None, first_turn_global_override=None):
+        decision = super().decide(session_id, user_name, latest_user_text, conversation_history, first_turn_global_override)
+        decision.first_turn_image_items = [dict(x) for x in decision.media_items]
+        decision.first_turn_video_items = [
+            {
+                "type": "delayed_video",
+                "path": "video.mp4",
+                "trigger_source": "first_reply",
+            }
+        ]
+        return decision
+
+
+class DummyBrowserFirstTurnSequence(QObject):
+    page_loaded = Signal(bool)
+    url_changed = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.sequence = []
+
+    def find_and_click_first_unread(self, callback):
+        del callback
+
+    def find_and_click_unread_by_usernames(self, user_names, callback):
+        del user_names, callback
+
+    def grab_chat_data(self, callback):
+        del callback
+
+    def send_message(self, text, callback):
+        self.sequence.append("text")
+        del text
+        callback(True, {"ok": True})
+
+    def send_image(self, media_path, callback):
+        self.sequence.append("image")
+        del media_path
+        callback(True, {"ok": True})
+
+    def send_video_from_material_library(self, callback):
+        self.sequence.append("video")
+        callback(True, {"ok": True})
 
 
 class DummyKnowledgeServiceNoMatch:
@@ -717,11 +763,8 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
 
             session_id = processor._build_session_id("媒体用户", "", "fp_media_placeholder")
             session = sessions.get_session(session_id)
-            self.assertIsNotNone(session)
-            self.assertTrue(session.messages)
-            self.assertEqual(session.messages[0]["text"], "[视频]")
-            self.assertTrue(agent.mark_reply_sent_calls)
-            self.assertEqual(agent.mark_reply_sent_calls[-1]["session_id"], session_id)
+            self.assertIsNone(session)
+            self.assertFalse(agent.mark_reply_sent_calls)
 
     def test_unread_preview_image_hint_can_patch_missing_last_user_message(self):
         with tempfile.TemporaryDirectory() as td:
@@ -815,7 +858,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
 
             processor._on_chat_data(True, payload, auto_reply=True)
 
-            self.assertEqual(browser.image_send_calls, 3)
+            self.assertEqual(browser.image_send_calls, 2)
             session_id = processor._build_session_id("补偿用户", "", "fp_comp")
             log_path = processor.conversation_logger._session_file(session_id, user_name="补偿用户")
             lines = [json.loads(x) for x in log_path.read_text(encoding="utf-8").splitlines() if x.strip()]
@@ -971,6 +1014,38 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
 
             self.assertEqual(browser.video_send_calls, 1)
             self.assertEqual(browser.image_send_calls, 1)
+
+    def test_first_turn_image_text_video_sequence_is_ordered(self):
+        app = QCoreApplication.instance() or QCoreApplication([])
+
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserFirstTurnSequence()
+            sessions = SessionManager()
+            agent = DummyAgentFlowFirstTurnImageAndVideo(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
+            processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            payload = {
+                "user_name": "首轮图文视频用户",
+                "chat_session_key": "",
+                "chat_session_method": "fallback",
+                "chat_session_fingerprint": "fp_first_image_video",
+                "messages": [
+                    {"text": "历史客服", "is_user": False},
+                    {"text": "静安寺地址", "is_user": True},
+                ],
+            }
+
+            processor._on_chat_data(True, payload, auto_reply=True)
+
+            loop = QEventLoop()
+            QTimer.singleShot(1400, loop.quit)
+            loop.exec()
+
+            self.assertEqual(browser.sequence, ["image", "text", "video"])
 
     def test_delayed_video_uses_material_library_sender(self):
         with tempfile.TemporaryDirectory() as td:

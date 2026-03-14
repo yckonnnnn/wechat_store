@@ -770,31 +770,47 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d.media_plan, "none")
             self.assertFalse(d.media_items)
 
-    def test_first_turn_global_blocks_contact_image(self):
+    def test_first_turn_global_prepares_contact_image_and_video(self):
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)
             agent, _, _, _ = self._build_agent(temp_dir)
+            agent.set_options(
+                use_knowledge_first=agent.use_knowledge_first,
+                knowledge_threshold=agent.knowledge_threshold,
+                first_reply_video_enabled=True,
+            )
 
             d = agent.decide("chat_first_contact", "用户首轮", "我在门头沟怎么买", [])
             self.assertEqual(d.rule_id, "PURCHASE_CONTACT_FROM_KNOWN_GEO")
             self.assertTrue(d.is_first_turn_global)
-            self.assertTrue(d.first_turn_media_guard_applied)
-            self.assertEqual(d.media_plan, "none")
-            self.assertEqual(d.media_skip_reason, "first_turn_global_no_media")
-            self.assertFalse(d.media_items)
+            self.assertFalse(d.first_turn_media_guard_applied)
+            self.assertEqual(d.media_plan, "contact_image")
+            self.assertTrue(d.media_items)
+            self.assertEqual(len(d.first_turn_image_items), 1)
+            self.assertEqual(d.first_turn_image_items[0].get("type"), "contact_image")
+            self.assertEqual(len(d.first_turn_video_items), 1)
+            self.assertEqual(d.first_turn_video_items[0].get("type"), "delayed_video")
 
-    def test_first_turn_global_blocks_address_image(self):
+    def test_first_turn_global_prepares_address_image_and_video(self):
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)
             agent, _, _, _ = self._build_agent(temp_dir)
+            agent.set_options(
+                use_knowledge_first=agent.use_knowledge_first,
+                knowledge_threshold=agent.knowledge_threshold,
+                first_reply_video_enabled=True,
+            )
 
             d = agent.decide("chat_first_address", "用户首轮地址", "我在门头沟", [])
             self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
             self.assertTrue(d.is_first_turn_global)
-            self.assertTrue(d.first_turn_media_guard_applied)
-            self.assertEqual(d.media_plan, "none")
-            self.assertEqual(d.media_skip_reason, "first_turn_global_no_media")
-            self.assertFalse(d.media_items)
+            self.assertFalse(d.first_turn_media_guard_applied)
+            self.assertEqual(d.media_plan, "address_image")
+            self.assertTrue(d.media_items)
+            self.assertEqual(len(d.first_turn_image_items), 1)
+            self.assertEqual(d.first_turn_image_items[0].get("type"), "address_image")
+            self.assertEqual(len(d.first_turn_video_items), 1)
+            self.assertEqual(d.first_turn_video_items[0].get("type"), "delayed_video")
 
     def test_after_first_turn_allows_media_across_sessions(self):
         with tempfile.TemporaryDirectory() as td:
@@ -816,6 +832,78 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d.rule_id, "PURCHASE_CONTACT_FROM_KNOWN_GEO")
             self.assertEqual(d.media_plan, "contact_image")
             self.assertTrue(d.media_items)
+
+    def test_user_message_log_alone_already_breaks_global_first_turn(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, _, _ = self._build_agent(temp_dir)
+            user_name = "用户仅消息"
+            user_hash = agent._hash_user(user_name)
+
+            (conversations_dir / "seed_user_only_message.jsonl").write_text(
+                json.dumps(
+                    {
+                        "timestamp": "2026-02-27T09:00:00",
+                        "session_id": "seed_user_only_message",
+                        "user_id_hash": user_hash,
+                        "event_type": "user_message",
+                        "reply_source": "",
+                        "rule_id": "",
+                        "model_name": "",
+                        "payload": {"text": "你好"},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            d = agent.decide("chat_next_session_only_message", user_name, "静安寺地址", [])
+            self.assertFalse(d.is_first_turn_global)
+
+    def test_first_turn_override_preserves_first_turn_media_plan(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, _, _ = self._build_agent(temp_dir)
+            user_name = "用户首轮覆盖"
+            user_hash = agent._hash_user(user_name)
+
+            (conversations_dir / "seed_override.jsonl").write_text(
+                json.dumps(
+                    {
+                        "timestamp": "2026-02-27T09:00:00",
+                        "session_id": "seed_override",
+                        "user_id_hash": user_hash,
+                        "event_type": "user_message",
+                        "reply_source": "",
+                        "rule_id": "",
+                        "model_name": "",
+                        "payload": {"text": "你好"},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            agent.set_options(
+                use_knowledge_first=agent.use_knowledge_first,
+                knowledge_threshold=agent.knowledge_threshold,
+                first_reply_video_enabled=True,
+            )
+            d = agent.decide(
+                "chat_override_first_turn",
+                user_name,
+                "我在门头沟",
+                [],
+                first_turn_global_override=True,
+            )
+            self.assertTrue(d.is_first_turn_global)
+            self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
+            self.assertEqual(len(d.first_turn_image_items), 1)
+            self.assertEqual(len(d.first_turn_video_items), 1)
 
     def test_contact_image_frequency_and_whitelist(self):
         with tempfile.TemporaryDirectory() as td:
@@ -972,26 +1060,6 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertFalse(d4.media_items)
             self.assertEqual(d4.media_skip_reason, "contact_image_already_sent")
 
-    def test_shipping_kb_match_first_turn_still_blocked_by_global_media_guard(self):
-        with tempfile.TemporaryDirectory() as td:
-            temp_dir = Path(td)
-            agent, _, repository, _ = self._build_agent(temp_dir)
-            repository.add(
-                "可以邮寄吗",
-                "姐姐，我们是假发私人定制的，您可以加我，我远程给您定制😊",
-                intent="purchase",
-                tags=["邮寄"],
-            )
-
-            d = agent.decide("chat_shipping_first_turn", "用户首轮邮寄", "可以邮寄吗", [])
-            self.assertEqual(d.reply_source, "knowledge")
-            self.assertEqual(d.rule_id, "KB_MATCH_CONTACT_IMAGE")
-            self.assertEqual(d.media_plan, "none")
-            self.assertTrue(d.is_first_turn_global)
-            self.assertTrue(d.first_turn_media_guard_applied)
-            self.assertEqual(d.media_skip_reason, "first_turn_global_no_media")
-            self.assertFalse(d.media_items)
-
     def test_appointment_kb_priority_over_purchase_rule(self):
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)
@@ -1071,10 +1139,15 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertFalse(d4.media_items)
             self.assertEqual(d4.media_skip_reason, "contact_image_already_sent")
 
-    def test_appointment_first_turn_global_guard_blocks_media(self):
+    def test_appointment_first_turn_prepares_contact_image_and_video(self):
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)
             agent, _, repository, _ = self._build_agent(temp_dir)
+            agent.set_options(
+                use_knowledge_first=agent.use_knowledge_first,
+                knowledge_threshold=agent.knowledge_threshold,
+                first_reply_video_enabled=True,
+            )
             repository.add(
                 "怎么预约？如何预约？需要预约吗？",
                 "姐姐，我们是预约制的呢，避免您跑空您看看图上红框框加我预约🌷",
@@ -1085,11 +1158,12 @@ class RuleEngineTestCase(unittest.TestCase):
             d = agent.decide("chat_appoint_first_turn", "用户预约首轮", "怎么预约？", [])
             self.assertEqual(d.reply_source, "knowledge")
             self.assertEqual(d.rule_id, "KB_MATCH_CONTACT_IMAGE")
-            self.assertEqual(d.media_plan, "none")
+            self.assertEqual(d.media_plan, "contact_image")
             self.assertTrue(d.is_first_turn_global)
-            self.assertTrue(d.first_turn_media_guard_applied)
-            self.assertEqual(d.media_skip_reason, "first_turn_global_no_media")
-            self.assertFalse(d.media_items)
+            self.assertFalse(d.first_turn_media_guard_applied)
+            self.assertTrue(d.media_items)
+            self.assertEqual(len(d.first_turn_image_items), 1)
+            self.assertEqual(len(d.first_turn_video_items), 1)
 
     def test_kb_match_without_shipping_keeps_media_none(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1705,14 +1779,9 @@ class RuleEngineTestCase(unittest.TestCase):
                 first_reply_video_enabled=False,
             )
 
-            self.assertIsNone(
-                agent.mark_reply_sent(
-                    "chat_first_reply_off",
-                    user_name,
-                    "首轮回复",
-                    is_first_turn_global=True,
-                )
-            )
+            d = agent.decide("chat_first_reply_off", user_name, "价格多少", [])
+            self.assertTrue(d.is_first_turn_global)
+            self.assertFalse(d.first_turn_video_items)
 
     def test_first_reply_and_contact_followup_videos_can_both_send(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1728,12 +1797,8 @@ class RuleEngineTestCase(unittest.TestCase):
                 first_reply_video_enabled=True,
             )
 
-            first_video = agent.mark_reply_sent(
-                "chat_dual_video",
-                user_name,
-                "首轮回复",
-                is_first_turn_global=True,
-            )
+            d0 = agent.decide("chat_dual_video", user_name, "价格多少", [])
+            first_video = d0.first_turn_video_items[0] if d0.first_turn_video_items else None
             self.assertIsNotNone(first_video)
             self.assertEqual(first_video.get("type"), "delayed_video")
             self.assertEqual(first_video.get("trigger_source"), "first_reply")
@@ -1746,15 +1811,6 @@ class RuleEngineTestCase(unittest.TestCase):
                 ts="2026-02-27T10:00:00",
                 user_id_hash=user_hash,
                 trigger_source="first_reply",
-            )
-
-            self.assertIsNone(
-                agent.mark_reply_sent(
-                    "chat_dual_video",
-                    user_name,
-                    "非首轮回复",
-                    is_first_turn_global=False,
-                )
             )
 
             d1 = agent.decide("chat_dual_video", user_name, "我在黑龙江怎么买", [])
