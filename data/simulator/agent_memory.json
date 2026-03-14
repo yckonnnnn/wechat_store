@@ -1,0 +1,72 @@
+{
+  "version": 4,
+  "updated_at": "2026-03-14T23:25:19.298113",
+  "sessions": {
+    "sim_session": {
+      "session_id": "sim_session",
+      "user_hash": "de81f6891f",
+      "session_fingerprint": "",
+      "first_seen_at": "2026-03-14T23:24:04.447693",
+      "updated_at": "2026-03-14T23:25:19.296746",
+      "address_prompt_count": 0,
+      "sent_address_stores": [
+        "beijing_chaoyang"
+      ],
+      "address_image_sent_count": 1,
+      "address_image_last_sent_at_by_store": {
+        "beijing_chaoyang": "2026-03-14T23:24:06.513411"
+      },
+      "contact_image_sent_count": 0,
+      "contact_image_last_sent_at": "",
+      "contact_warmup": false,
+      "geo_followup_round": 0,
+      "geo_choice_offered": false,
+      "last_geo_pending": false,
+      "last_detected_region": "",
+      "last_target_store": "beijing_chaoyang",
+      "last_geo_route_reason": "beijing_all_district",
+      "last_geo_updated_at": "2026-03-14T23:24:21.049333",
+      "strong_intent_after_both_count": 0,
+      "purchase_both_first_hint_sent": false,
+      "session_video_armed": false,
+      "session_video_sent": false,
+      "session_post_contact_reply_count": 0,
+      "pending_required_media": [],
+      "pending_required_media_updated_at": "2026-03-14T23:24:06.513528",
+      "last_required_media_failure_code": "",
+      "last_required_media_failure_detail": "",
+      "required_media_retry_budget": {},
+      "last_route_reason": "unknown",
+      "last_intent": "general",
+      "last_reply_goal": "解答",
+      "session_user_message_count_after_contact": 0,
+      "knowledge_reply_count": 0,
+      "price_priority_reply_count": 0,
+      "address_text_reply_count_by_store": {
+        "beijing_chaoyang": 1
+      },
+      "address_contact_reply_count_by_store": {
+        "beijing_chaoyang": 1
+      }
+    }
+  },
+  "users": {
+    "de81f6891f": {
+      "user_hash": "de81f6891f",
+      "first_seen_at": "2026-03-14T23:24:04.447723",
+      "updated_at": "2026-03-14T23:25:19.298082",
+      "video_armed": false,
+      "video_sent": false,
+      "post_contact_reply_count": 0,
+      "recent_reply_hashes": [
+        "姐姐您在什么城市区域呀方便告诉我吗我可以帮您针对性推荐门店我们目前北京朝阳1家上海5家静安人广虹口五角场徐汇",
+        "姐姐推荐您去北京朝阳门店我给您发一张位置图您跟着图中圈圈的位置会更直观",
+        "姐姐北京朝阳门店具体位置是朝阳区建外soho东区",
+        "姐姐北京朝阳门店具体位置是朝阳区建外soho东区",
+        "您发个我来加您好友具体给您介绍怎么走位置在哪里",
+        "姐姐您留个方式我来加您好友",
+        "姐姐发根是仿真头皮工艺近看也自然融合"
+      ]
+    }
+  }
+}

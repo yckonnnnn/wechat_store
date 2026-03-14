@@ -333,6 +333,40 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d3.reply_source, "llm")
             self.assertEqual(d3.rule_id, "LLM_FOLLOW_UP")
 
+    def test_address_followup_accepts_house_number_phrases_after_image(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, _, _ = self._build_agent(temp_dir)
+            session_id = "chat_addr_house_number"
+            user_name = "用户门牌号"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_addr_house_number",
+                user_id_hash=user_hash,
+                ts="2026-02-27T09:35:00",
+            )
+
+            d1 = agent.decide(session_id, user_name, "北京店具体位置", [])
+            self.assertEqual(d1.rule_id, "ADDR_STORE_RECOMMEND")
+            agent.mark_media_sent(session_id, user_name, d1.media_items[0], success=True)
+            self._append_media_success_log(
+                conversations_dir=conversations_dir,
+                session_id=session_id,
+                media_type="address_image",
+                media_path=d1.media_items[0]["path"],
+                ts="2026-02-27T10:00:00",
+                user_id_hash=user_hash,
+            )
+
+            d2 = agent.decide(session_id, user_name, "多少号", [])
+            self.assertEqual(d2.rule_id, "ADDR_TEXT_AFTER_IMAGE")
+            self.assertIn("朝阳区建外SOHO东区", d2.reply_text)
+
+            d3 = agent.decide(session_id, user_name, "几号", [])
+            self.assertEqual(d3.rule_id, "ADDR_CONTACT_AFTER_TEXT")
+
     def test_address_query_shanghai_asks_district(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, _, _ = self._build_agent(Path(td))

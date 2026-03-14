@@ -22,7 +22,7 @@ class KnowledgeService(QObject):
     data_imported = Signal(int)     # 数据导入 (count)
     data_exported = Signal(str)     # 数据导出 (file_path)
     search_completed = Signal(list) # 搜索完成 (results)
-    ADDRESS_KEYWORDS = ("地址", "位置", "门店", "店铺", "在哪", "哪里", "怎么去")
+    ADDRESS_KEYWORDS = ("地址", "位置", "门店", "店铺", "在哪", "哪里", "怎么去","那一楼","那一层","多少号", "几号","几楼", "几层","具体位置", "具体地址")
     STORE_DETAILS = {
         "beijing_chaoyang": {
             "city": "beijing",

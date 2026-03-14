@@ -113,6 +113,8 @@ ADDRESS_FACT_QUERY_KEYWORDS = (
     "具体地址",
     "位置",
     "具体位置",
+    "多少号",
+    "几号",
     "门店",
     "店铺",
     "在哪",
@@ -133,6 +135,8 @@ ADDRESS_FOLLOWUP_EXPLICIT_KEYWORDS = (
     "具体地址",
     "位置",
     "具体位置",
+    "多少号",
+    "几号",
     "门店地址",
     "店铺地址",
     "在哪",
@@ -167,6 +171,20 @@ ADDRESS_FOLLOWUP_EXPLICIT_KEYWORDS = (
     "从哪进",
     "停车",
     "停车方便吗",
+)
+ADDRESS_FOLLOWUP_PRIORITY_KEYWORDS = (
+    "多少号",
+    "几号",
+    "具体位置",
+    "具体地址",
+    "哪一栋",
+    "哪栋",
+    "几楼",
+    "在哪一栋",
+    "哪个门",
+    "从哪进",
+    "哪个出口",
+    "几号出口",
 )
 ADDRESS_FOLLOWUP_RESIDUAL_KEYWORDS = (
     "北在哪",
@@ -228,6 +246,10 @@ PRICE_FACT_SPECIFIC_KEYWORDS = (
     "报价",
     "方案",
     "定制费",
+)
+ADDRESS_PRIORITY_OVER_PRICE_KEYWORDS = (
+    "多少号",
+    "几号",
 )
 PRICE_LOW_RISK_PHRASES = (
     "几百",
@@ -1247,6 +1269,9 @@ class CustomerServiceAgent:
         if not normalized:
             return False
 
+        if any(keyword in normalized for keyword in ADDRESS_FOLLOWUP_PRIORITY_KEYWORDS):
+            return True
+
         if any(keyword in normalized for keyword in ADDRESS_FOLLOWUP_BLOCK_KEYWORDS):
             return False
 
@@ -1598,6 +1623,8 @@ class CustomerServiceAgent:
     def _has_price_priority(self, text: str) -> bool:
         normalized = re.sub(r"\s+", "", str(text or "")).lower()
         if not normalized:
+            return False
+        if any(keyword in normalized for keyword in ADDRESS_PRIORITY_OVER_PRICE_KEYWORDS):
             return False
         return any(keyword in normalized for keyword in PRICE_PRIORITY_KEYWORDS)
 
