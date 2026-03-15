@@ -5,6 +5,8 @@
 用法示例：
   python3 scripts/chat_simulator.py --no-llm
   python3 scripts/chat_simulator.py -m "不同价格有什么区别啊？" --no-llm
+  python3 scripts/chat_simulator.py --media image --no-llm
+  python3 scripts/chat_simulator.py --media video --session-id media_debug
   python3 scripts/chat_simulator.py --session-id user_debug_1 --user-name 调试用户
 """
 
@@ -27,6 +29,13 @@ from src.data.memory_store import MemoryStore
 from src.services.knowledge_service import KnowledgeService
 from src.services.llm_service import LLMService
 from src.utils.constants import ENV_FILE, KNOWLEDGE_BASE_FILE, MODEL_SETTINGS_FILE
+
+
+MEDIA_PLACEHOLDER_MAP = {
+    "image": "[图片]",
+    "video": "[视频]",
+    "emoji": "[表情]",
+}
 
 
 class StubLLMService:
@@ -126,6 +135,11 @@ def print_decision(decision, triggered_types: List[str]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="客服 Agent 命令行仿真器")
     parser.add_argument("-m", "--message", help="单次测试消息；不传则进入交互模式")
+    parser.add_argument(
+        "--media",
+        choices=sorted(MEDIA_PLACEHOLDER_MAP.keys()),
+        help="单次测试媒体占位消息：image / video / emoji",
+    )
     parser.add_argument("--session-id", default="sim_session", help="会话 ID（默认 sim_session）")
     parser.add_argument("--user-name", default="sim_user", help="用户名（默认 sim_user）")
     parser.add_argument("--no-llm", action="store_true", help="禁用真实 LLM，使用本地占位回复")
@@ -213,11 +227,18 @@ def main() -> int:
         if len(history) > 20:
             del history[:-20]
 
-    if args.message:
-        run_once(args.message)
+    initial_message = ""
+    if args.media:
+        initial_message = MEDIA_PLACEHOLDER_MAP[str(args.media)]
+    elif args.message:
+        initial_message = str(args.message)
+
+    if initial_message:
+        run_once(initial_message)
         return 0
 
     print("进入交互模式。输入 /exit 退出，输入 /reset 清空当前会话上下文。")
+    print("媒体快捷命令：/image 发送[图片]，/video 发送[视频]，/emoji 发送[表情]。")
     while True:
         try:
             text = input("\n你: ").strip()
@@ -232,6 +253,15 @@ def main() -> int:
         if text == "/reset":
             history.clear()
             print("当前会话上下文已清空。")
+            continue
+        if text in {"/image", "/img"}:
+            run_once(MEDIA_PLACEHOLDER_MAP["image"])
+            continue
+        if text in {"/video", "/vid"}:
+            run_once(MEDIA_PLACEHOLDER_MAP["video"])
+            continue
+        if text in {"/emoji", "/emj"}:
+            run_once(MEDIA_PLACEHOLDER_MAP["emoji"])
             continue
         run_once(text)
 

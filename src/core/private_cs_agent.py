@@ -87,6 +87,27 @@ PHONE_LEAK_BLOCK_FALLBACK = "姐姐，您提供电话，我来联系您，可以
 USER_PHONE_SUBMITTED_REPLY = "收到啦姐姐，我稍后加您好友，具体跟你详细介绍❤️"
 MA_TEACHER_ROLE_FALLBACK = "姐姐，马老师是做短视频拍摄的，暂时不负责做头发、剪头和假发处理哦。🥰"
 MA_TEACHER_DIRECT_QUERY_FALLBACK = "姐姐，马老师是做短视频拍摄的，暂时无法安排🥰"
+IMAGE_MEDIA_REPLY_POOL = (
+    "姐姐，图片上的这款发型价位大概在3000～6000元不等，具体呢需要根据头围进行定制，所以价格会有不同❤️",
+    "姐姐，图片里这款一般是在3000～6000元这个区间哦，具体还是要结合您的头围和定制需求来看❤️",
+    "姐姐，您发的图片这款大概是3000～6000元不等，具体价格要按头围和定制方案来定哦❤️",
+    "姐姐，图片上的这款发型通常在3000～6000元之间，具体会根据头围和想做的效果有所不同❤️",
+    "姐姐，图片里这一款大概是在3000～6000元不等，具体还要根据头围和定制细节来定呢❤️",
+)
+VIDEO_MEDIA_REPLY_POOL = (
+    "姐姐，视频上的这款发型价位大概在3000～6000元不等，具体呢需要根据头围进行定制，所以价格会有不同❤️",
+    "姐姐，视频里这款一般是在3000～6000元这个区间哦，具体还是要结合您的头围和定制需求来看❤️",
+    "姐姐，您发的视频这款大概是3000～6000元不等，具体价格要按头围和定制方案来定哦❤️",
+    "姐姐，视频上的这款发型通常在3000～6000元之间，具体会根据头围和想做的效果有所不同❤️",
+    "姐姐，视频里这一款大概是在3000～6000元不等，具体还要根据头围和定制细节来定呢❤️",
+)
+EMOJI_MEDIA_REPLY_POOL = (
+    "姐姐，关于假发的问题，您可以随时问我🌹",
+    "姐姐，假发这块您有任何想了解的都可以直接问我呀❤️",
+    "姐姐，您要是想了解假发的价格、款式或者到店问题，都可以随时问我哦🌷",
+    "姐姐，关于假发这边您尽管问我，我一直都在呢💐",
+    "姐姐，假发有什么想咨询的，您直接跟我说就可以啦🥰",
+)
 ADDRESS_UNSUPPORTED_QUERY_KEYWORDS = (
     "怎么去",
     "怎么走",
@@ -2015,6 +2036,15 @@ class CustomerServiceAgent:
         kb_blocked_by_polite_guard = False
         kb_polite_guard_reason = ""
 
+        media_placeholder_decision = self._decide_media_placeholder_reply(
+            latest_user_text=latest_user_text,
+            route_reason=route_reason,
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+        )
+        if media_placeholder_decision is not None:
+            return media_placeholder_decision
+
         if intent == "contact":
             if contact_sent:
                 prompt_count = int(session_state.get("contact_followup_prompt_count", 0) or 0)
@@ -2157,6 +2187,100 @@ class CustomerServiceAgent:
             kb_blocked_by_polite_guard=kb_blocked_by_polite_guard,
             kb_polite_guard_reason=kb_polite_guard_reason,
         )
+
+    def _decide_media_placeholder_reply(
+        self,
+        latest_user_text: str,
+        route_reason: str,
+        user_state: Dict[str, Any],
+        user_id_hash: str = "",
+    ) -> Optional[AgentDecision]:
+        text = re.sub(r"\s+", "", str(latest_user_text or ""))
+        if text == "[图片]":
+            reply_text = self._select_media_placeholder_reply(
+                pool=list(IMAGE_MEDIA_REPLY_POOL),
+                user_state=user_state,
+                user_id_hash=user_id_hash,
+            )
+            return AgentDecision(
+                reply_text=reply_text,
+                intent="price",
+                route_reason="media_image_price_reply",
+                reply_goal="解答",
+                media_plan="none",
+                reply_source="knowledge",
+                rule_id="MEDIA_IMAGE_REPLY",
+                rule_applied=True,
+                kb_variant_total=len(IMAGE_MEDIA_REPLY_POOL),
+                kb_variant_selected_index=-1,
+                kb_variant_fallback_llm=False,
+                kb_confident=True,
+            )
+        if text == "[视频]":
+            reply_text = self._select_media_placeholder_reply(
+                pool=list(VIDEO_MEDIA_REPLY_POOL),
+                user_state=user_state,
+                user_id_hash=user_id_hash,
+            )
+            return AgentDecision(
+                reply_text=reply_text,
+                intent="price",
+                route_reason="media_video_price_reply",
+                reply_goal="解答",
+                media_plan="none",
+                reply_source="knowledge",
+                rule_id="MEDIA_VIDEO_REPLY",
+                rule_applied=True,
+                kb_variant_total=len(VIDEO_MEDIA_REPLY_POOL),
+                kb_variant_selected_index=-1,
+                kb_variant_fallback_llm=False,
+                kb_confident=True,
+            )
+        if text == "[表情]":
+            reply_text = self._select_media_placeholder_reply(
+                pool=list(EMOJI_MEDIA_REPLY_POOL),
+                user_state=user_state,
+                user_id_hash=user_id_hash,
+            )
+            return AgentDecision(
+                reply_text=reply_text,
+                intent="general",
+                route_reason="media_emoji_reply",
+                reply_goal="解答",
+                media_plan="none",
+                reply_source="knowledge",
+                rule_id="MEDIA_EMOJI_REPLY",
+                rule_applied=True,
+                kb_variant_total=len(EMOJI_MEDIA_REPLY_POOL),
+                kb_variant_selected_index=-1,
+                kb_variant_fallback_llm=False,
+                kb_confident=True,
+            )
+        return None
+
+    def _select_media_placeholder_reply(
+        self,
+        pool: List[str],
+        user_state: Dict[str, Any],
+        user_id_hash: str = "",
+    ) -> str:
+        selected_answer, _selected_index, exhausted = self._select_kb_variant_answer(
+            answers=pool,
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+        )
+        reply_text = selected_answer or (pool[0] if pool else "")
+        if not reply_text and pool:
+            reply_text = pool[0]
+        if exhausted and pool:
+            reply_text = random.choice(pool)
+        if reply_text:
+            self._remember_selected_kb_answer(
+                user_state=user_state,
+                user_id_hash=user_id_hash,
+                answer_text=reply_text,
+            )
+        return reply_text
 
     def _decide_llm_reply(
         self,

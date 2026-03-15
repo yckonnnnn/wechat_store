@@ -89,9 +89,14 @@ class RuleEngineTestCase(unittest.TestCase):
         kb_file.write_text("[]", encoding="utf-8")
 
         memory_path = temp_dir / "memory.json"
+        route_alias_path = temp_dir / "shanghai_route_aliases.json"
 
         repository = KnowledgeRepository(kb_file)
-        knowledge_service = KnowledgeService(repository, address_config_path=Path("config") / "address.json")
+        knowledge_service = KnowledgeService(
+            repository,
+            address_config_path=Path("config") / "address.json",
+            shanghai_route_alias_path=route_alias_path,
+        )
         llm_service = DummyLLMService()
         memory_store = MemoryStore(memory_path)
 
@@ -199,7 +204,11 @@ class RuleEngineTestCase(unittest.TestCase):
             kb_file = Path(td) / "knowledge.json"
             kb_file.write_text("[]", encoding="utf-8")
             repository = KnowledgeRepository(kb_file)
-            service = KnowledgeService(repository, address_config_path=Path("config") / "address.json")
+            service = KnowledgeService(
+                repository,
+                address_config_path=Path("config") / "address.json",
+                shanghai_route_alias_path=Path(td) / "shanghai_route_aliases.json",
+            )
 
             hebei_route = service.resolve_store_recommendation("我在河北")
             self.assertEqual(hebei_route.get("target_store"), "beijing_chaoyang")
@@ -234,6 +243,14 @@ class RuleEngineTestCase(unittest.TestCase):
 
             normal_price_route = service.resolve_store_recommendation("不同价格有什么区别啊？")
             self.assertEqual(normal_price_route.get("reason"), "unknown")
+
+            route_alias_jingan = service.resolve_store_recommendation("常德路长寿路地址能发一下吗？")
+            self.assertEqual(route_alias_jingan.get("target_store"), "sh_jingan")
+            self.assertEqual(route_alias_jingan.get("reason"), "sh_route_alias:常德路")
+
+            route_alias_renmin = service.resolve_store_recommendation("汉口路地址发一下")
+            self.assertEqual(route_alias_renmin.get("target_store"), "sh_renmin")
+            self.assertEqual(route_alias_renmin.get("reason"), "sh_route_alias:汉口路")
 
     def test_not_in_shanghai_or_beijing_should_not_fallback_to_llm(self):
         with tempfile.TemporaryDirectory() as td:
@@ -2474,6 +2491,42 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
             self.assertEqual(d.media_plan, "address_image")
             self.assertTrue(d.media_items)
+
+    def test_media_image_placeholder_uses_fixed_price_reply_pool(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+            d = agent.decide("chat_media_image", "媒体图片用户", "[图片]", [])
+            self.assertEqual(d.rule_id, "MEDIA_IMAGE_REPLY")
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertIn("3000～6000元", d.reply_text)
+            self.assertEqual(llm.calls, 0)
+
+    def test_media_video_placeholder_uses_fixed_price_reply_pool(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+            d = agent.decide("chat_media_video", "媒体视频用户", "[视频]", [])
+            self.assertEqual(d.rule_id, "MEDIA_VIDEO_REPLY")
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertIn("3000～6000元", d.reply_text)
+            self.assertEqual(llm.calls, 0)
+
+    def test_media_emoji_placeholder_uses_fixed_reply(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+            d = agent.decide("chat_media_emoji", "媒体表情用户", "[表情]", [])
+            self.assertEqual(d.rule_id, "MEDIA_EMOJI_REPLY")
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertIn(
+                d.reply_text,
+                {
+                    "姐姐，关于假发的问题，您可以随时问我🌹",
+                    "姐姐，假发这块您有任何想了解的都可以直接问我呀❤️",
+                    "姐姐，您要是想了解假发的价格、款式或者到店问题，都可以随时问我哦🌷",
+                    "姐姐，关于假发这边您尽管问我，我一直都在呢💐",
+                    "姐姐，假发有什么想咨询的，您直接跟我说就可以啦🥰",
+                },
+            )
+            self.assertEqual(llm.calls, 0)
 
 
 if __name__ == "__main__":

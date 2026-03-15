@@ -5,11 +5,13 @@
 
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Set
 from PySide6.QtCore import QObject, Signal
 
 from ..data.knowledge_repository import KnowledgeRepository, KnowledgeItem
+from ..utils.constants import SHANGHAI_ROUTE_ALIAS_FILE
 
 
 class KnowledgeService(QObject):
@@ -23,6 +25,22 @@ class KnowledgeService(QObject):
     data_exported = Signal(str)     # 数据导出 (file_path)
     search_completed = Signal(list) # 搜索完成 (results)
     ADDRESS_KEYWORDS = ("地址", "位置", "门店", "店铺", "在哪", "哪里", "怎么去","那一楼","那一层","多少号", "几号","几楼", "几层","具体位置", "具体地址")
+    DEFAULT_SHANGHAI_ROUTE_ALIAS_ROWS = [
+        {"keyword": "常德路", "target_store": "sh_jingan", "note": "静安高频路名"},
+        {"keyword": "长寿路", "target_store": "sh_jingan", "note": "静安高频路名"},
+        {"keyword": "愚园路", "target_store": "sh_jingan", "note": "静安门店所在路名"},
+        {"keyword": "豫园路", "target_store": "sh_jingan", "note": "用户常见错别字，归到静安门店"},
+        {"keyword": "汉中路", "target_store": "sh_renmin", "note": "人广附近高频路名"},
+        {"keyword": "汉口路", "target_store": "sh_renmin", "note": "人民广场门店所在路名"},
+        {"keyword": "中百一店", "target_store": "sh_renmin", "note": "人民广场高频地标"},
+        {"keyword": "上海南京路", "target_store": "sh_renmin", "note": "人民广场高频商圈问法"},
+        {"keyword": "南京路", "target_store": "sh_renmin", "note": "人民广场高频商圈问法"},
+        {"keyword": "西芷中路", "target_store": "sh_renmin", "note": "用户常见错别字，归到人民广场门店"},
+        {"keyword": "西藏中路", "target_store": "sh_renmin", "note": "人民广场高频路名"},
+        {"keyword": "花园路", "target_store": "sh_hongkou", "note": "虹口门店所在路名"},
+        {"keyword": "政通路", "target_store": "sh_wujiaochang", "note": "五角场门店所在路名"},
+        {"keyword": "漕溪北路", "target_store": "sh_xuhui", "note": "徐汇门店所在路名"},
+    ]
     STORE_DETAILS = {
         "beijing_chaoyang": {
             "city": "beijing",
@@ -125,16 +143,25 @@ class KnowledgeService(QObject):
         "浙江省": "浙江",
     }
 
-    def __init__(self, repository: KnowledgeRepository, address_config_path: Optional[Path] = None):
+    def __init__(
+        self,
+        repository: KnowledgeRepository,
+        address_config_path: Optional[Path] = None,
+        shanghai_route_alias_path: Optional[Path] = None,
+    ):
         super().__init__()
         self.repository = repository
         self.address_config_path = address_config_path or (Path("config") / "address.json")
+        self.shanghai_route_alias_path = shanghai_route_alias_path or SHANGHAI_ROUTE_ALIAS_FILE
         self._address_region_tokens: Set[str] = set()
         self._address_token_to_canonical: Dict[str, str] = {}
+        self._shanghai_route_alias_rows: List[Dict[str, str]] = []
+        self._shanghai_route_alias_pairs: List[Tuple[str, str, str]] = []
 
         # 连接仓库信号
         self.repository.data_changed.connect(self._on_data_changed)
         self.reload_address_config()
+        self.reload_shanghai_route_aliases()
 
     def _on_data_changed(self):
         """数据变更处理"""
@@ -163,6 +190,90 @@ class KnowledgeService(QObject):
         except Exception:
             self._address_region_tokens = set()
             self._address_token_to_canonical = {}
+
+    def reload_shanghai_route_aliases(self) -> None:
+        rows: List[Dict[str, str]] = []
+        try:
+            if self.shanghai_route_alias_path.exists():
+                loaded = json.loads(self.shanghai_route_alias_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    loaded = loaded.get("mappings", [])
+                if isinstance(loaded, list):
+                    rows = self._normalize_shanghai_route_alias_rows(loaded)
+        except Exception:
+            rows = []
+
+        if not rows:
+            rows = self._normalize_shanghai_route_alias_rows(self.DEFAULT_SHANGHAI_ROUTE_ALIAS_ROWS)
+
+        self._shanghai_route_alias_rows = rows
+        self._shanghai_route_alias_pairs = sorted(
+            [
+                (
+                    str(item.get("keyword", "") or "").strip(),
+                    str(item.get("target_store", "") or "").strip(),
+                    str(item.get("note", "") or "").strip(),
+                )
+                for item in rows
+                if str(item.get("keyword", "") or "").strip()
+                and str(item.get("target_store", "") or "").strip() in self.STORE_DETAILS
+            ],
+            key=lambda item: len(item[0]),
+            reverse=True,
+        )
+
+    def get_shanghai_route_alias_rows(self) -> List[Dict[str, str]]:
+        return [dict(item) for item in self._shanghai_route_alias_rows]
+
+    def get_shanghai_store_options(self) -> List[Tuple[str, str]]:
+        return [
+            ("sh_jingan", "上海静安门店"),
+            ("sh_renmin", "上海人民广场门店"),
+            ("sh_hongkou", "上海虹口门店"),
+            ("sh_wujiaochang", "上海五角场门店"),
+            ("sh_xuhui", "上海徐汇门店"),
+        ]
+
+    def save_shanghai_route_alias_rows(self, rows: List[Dict[str, str]]) -> None:
+        normalized_rows = self._normalize_shanghai_route_alias_rows(rows)
+        self.shanghai_route_alias_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": 1,
+            "updated_at": datetime.now().isoformat(),
+            "mappings": normalized_rows,
+        }
+        self.shanghai_route_alias_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self.reload_shanghai_route_aliases()
+
+    def reset_shanghai_route_alias_rows(self) -> None:
+        self.save_shanghai_route_alias_rows(self.DEFAULT_SHANGHAI_ROUTE_ALIAS_ROWS)
+
+    def _normalize_shanghai_route_alias_rows(self, rows: List[Dict[str, object]]) -> List[Dict[str, str]]:
+        normalized_rows: List[Dict[str, str]] = []
+        seen_keywords: Set[str] = set()
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            keyword = str(row.get("keyword", "") or "").strip()
+            target_store = str(row.get("target_store", "") or "").strip()
+            note = str(row.get("note", "") or "").strip()
+            if not keyword or target_store not in self.STORE_DETAILS:
+                continue
+            normalized_key = re.sub(r"\s+", "", keyword).lower()
+            if not normalized_key or normalized_key in seen_keywords:
+                continue
+            seen_keywords.add(normalized_key)
+            normalized_rows.append(
+                {
+                    "keyword": keyword,
+                    "target_store": target_store,
+                    "note": note,
+                }
+            )
+        return normalized_rows
 
     def _register_region_name(self, name: str, canonical: str) -> None:
         for token in self._expand_region_tokens(name):
@@ -750,6 +861,15 @@ class KnowledgeService(QObject):
             return False
         return any(keyword in normalized for keyword in self.PURCHASE_INTENT_KEYWORDS)
 
+    def _match_shanghai_route_alias(self, text: str) -> Optional[Tuple[str, str]]:
+        normalized_text = re.sub(r"\s+", "", str(text or ""))
+        if not normalized_text:
+            return None
+        for keyword, target_store, _note in self._shanghai_route_alias_pairs:
+            if keyword and keyword in normalized_text:
+                return keyword, target_store
+        return None
+
     def resolve_store_recommendation(self, user_text: str) -> dict:
         """根据用户地理位置解析推荐门店（仅路由，不生成文案）"""
         text = (user_text or "").strip()
@@ -799,6 +919,13 @@ class KnowledgeService(QObject):
         for district, store_key in self.SHANGHAI_DISTRICT_STORE_MAP.items():
             if district in text:
                 return self._build_route(store_key, f"sh_district_map:{district}")
+
+        route_alias = self._match_shanghai_route_alias(text)
+        if route_alias:
+            keyword, store_key = route_alias
+            route = self._build_route(store_key, f"sh_route_alias:{keyword}")
+            route["detected_region"] = "上海"
+            return route
 
         # 只说上海未带区：追问区，不直接给门店
         if not neg_shanghai and "上海" in text:

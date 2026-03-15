@@ -24,7 +24,7 @@ class ConfigManager(QObject):
         self._default_settings = {
             "version": 1,
             "updated_at": "",
-            "current_model": "ChatGPT",
+            "current_model": "DeepSeek",
             "agent": {
                 "first_reply_video_enabled": False,
             },
@@ -178,7 +178,7 @@ class ConfigManager(QObject):
 
     def get_current_model(self) -> str:
         """获取当前选中的模型名称"""
-        return self._settings.get("current_model", "ChatGPT")
+        return self._settings.get("current_model", "DeepSeek")
 
     def set_current_model(self, model_name: str) -> None:
         """设置当前选中的模型"""

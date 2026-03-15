@@ -863,6 +863,27 @@ class BrowserService(QObject):
                 return null;
             }
 
+            function isActiveSessionItem(el) {
+                if (!el) return false;
+                var cur = el;
+                for (var i = 0; i < 6 && cur; i++) {
+                    try {
+                        var token = [
+                            String(cur.className || ''),
+                            String((cur.getAttribute && cur.getAttribute('aria-current')) || ''),
+                            String((cur.getAttribute && cur.getAttribute('aria-selected')) || ''),
+                            String((cur.getAttribute && cur.getAttribute('data-active')) || ''),
+                            String((cur.getAttribute && cur.getAttribute('data-selected')) || ''),
+                        ].join(' ').toLowerCase();
+                        if (/(active|current|selected|select|focus|focused|aria-current|true)/.test(token)) {
+                            return true;
+                        }
+                    } catch (e) {}
+                    cur = cur.parentElement;
+                }
+                return false;
+            }
+
             function findSessionListItem(badgeEl) {
                 // 从徽标向上查找真正的会话列表项（通常包含用户名和预览）
                 var cur = badgeEl;
@@ -1092,44 +1113,48 @@ class BrowserService(QObject):
                 // 如果能找到合理的会话容器，优先点击容器；否则才点击徽标
                 var sessionClickEl = findClickableAncestor(bestEl);
                 var clickEl = sessionClickEl ? sessionClickEl : bestEl;
+                var alreadyActive = !!isActiveSessionItem(clickEl);
                 if (clickEl && clickEl.scrollIntoView) {
                     try { clickEl.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
                 }
                 if (clickEl) {
                     var clicked = false;
-                    try {
-                        // 方式1：直接点击会话项（参考 hari_main.py）
-                        clickEl.click();
-                        clicked = true;
-                    } catch (e1) {
-                        // 方式2：基于坐标的点击（会话项中心）
-                        var rect = clickEl.getBoundingClientRect();
-                        var centerX = rect.left + rect.width / 2;
-                        var centerY = rect.top + rect.height / 2;
+                    if (!alreadyActive) {
                         try {
-                            var targetEl = document.elementFromPoint(centerX, centerY);
-                            if (targetEl) {
-                                targetEl.click();
-                                clicked = true;
-                            }
-                        } catch (e2) {}
+                            // 方式1：直接点击会话项（参考 hari_main.py）
+                            clickEl.click();
+                            clicked = true;
+                        } catch (e1) {
+                            // 方式2：基于坐标的点击（会话项中心）
+                            var rect = clickEl.getBoundingClientRect();
+                            var centerX = rect.left + rect.width / 2;
+                            var centerY = rect.top + rect.height / 2;
+                            try {
+                                var targetEl = document.elementFromPoint(centerX, centerY);
+                                if (targetEl) {
+                                    targetEl.click();
+                                    clicked = true;
+                                }
+                            } catch (e2) {}
+                        }
+                        // 方式3：模拟鼠标事件
+                        try {
+                            var rect = clickEl.getBoundingClientRect();
+                            var centerX = rect.left + rect.width / 2;
+                            var centerY = rect.top + rect.height / 2;
+                            var downEvt = new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: centerX, clientY: centerY });
+                            var upEvt = new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: centerX, clientY: centerY });
+                            var clickEvt = new MouseEvent('click', { bubbles: true, cancelable: true, clientX: centerX, clientY: centerY });
+                            clickEl.dispatchEvent(downEvt);
+                            clickEl.dispatchEvent(upEvt);
+                            clickEl.dispatchEvent(clickEvt);
+                            clicked = true;
+                        } catch (e3) {}
                     }
-                    // 方式3：模拟鼠标事件
-                    try {
-                        var rect = clickEl.getBoundingClientRect();
-                        var centerX = rect.left + rect.width / 2;
-                        var centerY = rect.top + rect.height / 2;
-                        var downEvt = new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: centerX, clientY: centerY });
-                        var upEvt = new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: centerX, clientY: centerY });
-                        var clickEvt = new MouseEvent('click', { bubbles: true, cancelable: true, clientX: centerX, clientY: centerY });
-                        clickEl.dispatchEvent(downEvt);
-                        clickEl.dispatchEvent(upEvt);
-                        clickEl.dispatchEvent(clickEvt);
-                        clicked = true;
-                    } catch (e3) {}
                     return JSON.stringify({
                         found: true,
-                        clicked: clicked,
+                        clicked: clicked || alreadyActive,
+                        activeMatched: alreadyActive,
                         badgeText: target.badgeText,
                         totalUnread: candidates.length,
                         previewText: target.previewText || '',

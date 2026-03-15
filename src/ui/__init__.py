@@ -6,8 +6,9 @@ from .main_window import MainWindow
 from .left_panel import LeftPanel
 from .browser_tab import BrowserTab
 from .crm_manager_tab import CRMManagerTab
+from .shanghai_address_mapping_tab import ShanghaiAddressMappingTab
 from .knowledge_tab import KnowledgeTab
 from .model_config_tab import ModelConfigTab
 from .agent_status_tab import AgentStatusTab
 
-__all__ = ['MainWindow', 'LeftPanel', 'BrowserTab', 'KnowledgeTab', 'ModelConfigTab', 'AgentStatusTab', 'CRMManagerTab']
+__all__ = ['MainWindow', 'LeftPanel', 'BrowserTab', 'KnowledgeTab', 'ModelConfigTab', 'AgentStatusTab', 'CRMManagerTab', 'ShanghaiAddressMappingTab']

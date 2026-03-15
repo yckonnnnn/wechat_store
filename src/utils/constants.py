@@ -40,6 +40,7 @@ USER_DATA_DIR = get_user_data_dir()
 # 运行时配置存储在用户数据目录，业务配置使用项目目录
 MODEL_SETTINGS_FILE = USER_DATA_DIR / "model_settings.json"
 AGENT_MEMORY_FILE = USER_DATA_DIR / "agent_memory.json"
+SHANGHAI_ROUTE_ALIAS_FILE = USER_DATA_DIR / "shanghai_route_aliases.json"
 KNOWLEDGE_BASE_FILE = PROJECT_ROOT / "config" / "knowledge_base.json"
 REMOTE_CONTROL_FILE = PROJECT_ROOT / "config" / "remote_control.json"
 ENV_FILE = PROJECT_ROOT / ".env"

@@ -50,6 +50,7 @@ class MessageProcessor(QObject):
         self._processing_reply = False
 
         self._last_processed_marker = ""
+        self._recent_processed_media_markers: List[str] = []
         self._pending_send: Optional[Dict[str, Any]] = None
         self._pending_unread_hint: Optional[Dict[str, str]] = None
         self._active_session_context: Optional[Dict[str, str]] = None
@@ -240,8 +241,12 @@ class MessageProcessor(QObject):
                     "preview_text": str(payload.get("previewText", "") or ""),
                     "preview_type": str(payload.get("previewType", "") or ""),
                     "session_text": str(payload.get("sessionText", "") or ""),
+                    "badge_text": str(payload.get("badgeText", "") or ""),
                 }
-                self._emit_log(f"🔔 发现未读({payload.get('badgeText', 'dot')})，已点击进入")
+                if payload.get("activeMatched"):
+                    self._emit_log(f"🔔 当前会话检测到未读({payload.get('badgeText', 'dot')})")
+                else:
+                    self._emit_log(f"🔔 发现未读({payload.get('badgeText', 'dot')})，已点击进入")
                 if self._pending_unread_hint.get("preview_type") in {"image", "video", "emoji"}:
                     self._emit_log(
                         f"🧭 未读预览识别: {self._format_unread_preview_hint(self._pending_unread_hint)}"
@@ -303,12 +308,12 @@ class MessageProcessor(QObject):
             return
 
         marker = self._build_message_marker(user_name, latest_user_message, messages)
-        if marker == self._last_processed_marker:
+        if self._is_duplicate_marker(marker, latest_user_message):
             self._emit_log("⏸️ 检测到重复消息，跳过")
             self._reset_cycle()
             return
 
-        self._last_processed_marker = marker
+        self._remember_processed_marker(marker, latest_user_message)
         self.message_received.emit({"user_name": user_name, "text": latest_user_message})
 
         session_id = self._build_session_id(
@@ -355,7 +360,7 @@ class MessageProcessor(QObject):
                 user_hash=user_hash,
                 command=remote_command,
             )
-            self._last_processed_marker = marker
+            self._remember_processed_marker(marker, latest_user_message)
             return
 
         history = self._convert_history(messages)
@@ -1120,9 +1125,42 @@ class MessageProcessor(QObject):
         return preview_text or "未知"
 
     def _build_message_marker(self, user_name: str, latest_user_text: str, messages: List[Dict[str, Any]]) -> str:
+        media_marker = self._build_media_message_marker(user_name=user_name, latest_user_text=latest_user_text)
+        if media_marker:
+            return media_marker
         user_count = len([m for m in messages if m.get("is_user")])
         raw = f"{user_name}|{latest_user_text}|{user_count}"
         return self._hash_id(raw)
+
+    def _build_media_message_marker(self, user_name: str, latest_user_text: str) -> str:
+        normalized = str(latest_user_text or "").strip()
+        if normalized not in {"[图片]", "[视频]"}:
+            return ""
+        hint = self._pending_unread_hint or {}
+        preview_type = str(hint.get("preview_type", "") or "").strip().lower()
+        if preview_type not in {"image", "video"}:
+            return ""
+        session_text = str(hint.get("session_text", "") or "").strip()
+        preview_text = str(hint.get("preview_text", "") or "").strip()
+        badge_text = str(hint.get("badge_text", "") or "").strip()
+        raw = f"media|{user_name}|{preview_type}|{preview_text}|{session_text}|{badge_text}"
+        return self._hash_id(raw)
+
+    def _is_duplicate_marker(self, marker: str, latest_user_text: str) -> bool:
+        normalized = str(latest_user_text or "").strip()
+        if normalized in {"[图片]", "[视频]"}:
+            return marker in self._recent_processed_media_markers
+        return marker == self._last_processed_marker
+
+    def _remember_processed_marker(self, marker: str, latest_user_text: str) -> None:
+        normalized = str(latest_user_text or "").strip()
+        if normalized in {"[图片]", "[视频]"}:
+            if marker:
+                self._recent_processed_media_markers.append(marker)
+                if len(self._recent_processed_media_markers) > 10:
+                    self._recent_processed_media_markers = self._recent_processed_media_markers[-10:]
+            return
+        self._last_processed_marker = marker
 
     def _convert_history(self, messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         history: List[Dict[str, str]] = []

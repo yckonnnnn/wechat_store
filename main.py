@@ -94,7 +94,7 @@ def init_user_configs():
 def main():
     """主函数"""
     app = QApplication(sys.argv)
-    app.setApplicationName("AI 智能客服系统")
+    app.setApplicationName("AI 智能客服系统version1.1")
     app.setApplicationVersion("2.0.0")
 
     setup_signal_handlers(app)

@@ -801,6 +801,82 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             self.assertTrue(agent.mark_reply_sent_calls)
             self.assertEqual(agent.mark_reply_sent_calls[-1]["session_id"], session_id)
 
+    def test_unread_preview_same_image_marker_still_dedupes(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserFlow()
+            sessions = SessionManager()
+            agent = DummyAgentFlow(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
+            processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
+
+            payload = {
+                "user_name": "媒体用户",
+                "chat_session_key": "",
+                "chat_session_method": "fallback",
+                "chat_session_fingerprint": "fp_unread_preview_image_repeat",
+                "messages": [
+                    {"text": "历史客服", "is_user": False, "message_type": "text"},
+                ],
+            }
+
+            processor._pending_unread_hint = {
+                "preview_text": "[图片]",
+                "preview_type": "image",
+                "session_text": "胃不疼 [图片]",
+                "badge_text": "1",
+            }
+            processor._on_chat_data(True, payload, auto_reply=True)
+            first_calls = len(agent.mark_reply_sent_calls)
+
+            processor._pending_unread_hint = {
+                "preview_text": "[图片]",
+                "preview_type": "image",
+                "session_text": "胃不疼 [图片]",
+                "badge_text": "1",
+            }
+            processor._on_chat_data(True, payload, auto_reply=True)
+            self.assertEqual(len(agent.mark_reply_sent_calls), first_calls)
+
+    def test_unread_preview_different_image_marker_does_not_get_swallowed(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserFlow()
+            sessions = SessionManager()
+            agent = DummyAgentFlow(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
+            processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
+
+            payload = {
+                "user_name": "媒体用户",
+                "chat_session_key": "",
+                "chat_session_method": "fallback",
+                "chat_session_fingerprint": "fp_unread_preview_image_repeat",
+                "messages": [
+                    {"text": "历史客服", "is_user": False, "message_type": "text"},
+                ],
+            }
+
+            processor._pending_unread_hint = {
+                "preview_text": "[图片]",
+                "preview_type": "image",
+                "session_text": "胃不疼 [图片]",
+                "badge_text": "1",
+            }
+            processor._on_chat_data(True, payload, auto_reply=True)
+            first_calls = len(agent.mark_reply_sent_calls)
+
+            processor._pending_unread_hint = {
+                "preview_text": "[图片]",
+                "preview_type": "image",
+                "session_text": "胃不疼 [图片] 15:44",
+                "badge_text": "1",
+            }
+            processor._on_chat_data(True, payload, auto_reply=True)
+            self.assertEqual(len(agent.mark_reply_sent_calls), first_calls + 1)
+
     def test_retry_contact_image_when_verify_timeout_without_confirm(self):
         with tempfile.TemporaryDirectory() as td:
             memory_store = MemoryStore(Path(td) / "memory.json")
