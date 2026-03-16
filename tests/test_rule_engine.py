@@ -591,6 +591,53 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d.reply_source, "knowledge")
             self.assertIn("3～5年", d.reply_text)
 
+    def test_service_hours_short_query_does_not_get_treated_as_follow_up(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, repository, llm = self._build_agent(Path(td))
+            llm.reply_text = "姐姐，我们全年都营业，每天上午。😘"
+            repository.add(
+                question="你们上班时间是几点？营业时间？",
+                answer="姐姐我们是全年无休，营业时间是上午9:30～下午6:00哦🤍",
+                intent="service_hours",
+                tags=["服务", "营业时间", "咨询"],
+                answers=[
+                    "姐姐我们是全年无休，营业时间是上午9:30～下午6:00哦🤍",
+                    "姐姐营业时间是上午9:30～下午6:00🤍",
+                ],
+            )
+            repository.save()
+
+            d = agent.decide("chat_service_hours_short", "用户营业时间", "营业时间", [])
+
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertEqual(d.rule_id, "KB_MATCH")
+            self.assertIn("9:30", d.reply_text)
+            self.assertEqual(llm.calls, 0)
+
+    def test_service_hours_medium_confidence_match_still_returns_knowledge(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, repository, llm = self._build_agent(Path(td))
+            llm.reply_text = "姐姐我们是全年无休，营业时间是上午。🌺"
+            repository.add(
+                question="你们上班时间是几点？营业时间？",
+                answer="姐姐我们是全年无休，营业时间是上午9:30～下午6:00哦🤍",
+                intent="service_hours",
+                tags=["服务", "营业时间", "咨询"],
+                answers=[
+                    "姐姐我们是全年无休，营业时间是上午9:30～下午6:00哦🤍",
+                    "姐姐全年都在营业，上午9:30～下午6:00,放心来咨询哦🤍",
+                ],
+            )
+            repository.save()
+
+            d = agent.decide("chat_service_hours_medium", "用户营业时间", "你们营业时间是？", [])
+
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertEqual(d.rule_id, "KB_MATCH")
+            self.assertIn("9:30", d.reply_text)
+            self.assertGreater(d.kb_match_score, 0.5)
+            self.assertEqual(llm.calls, 0)
+
     def test_address_index_prefers_store_targets_metadata_even_without_district_filename(self):
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)

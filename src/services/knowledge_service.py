@@ -694,6 +694,12 @@ class KnowledgeService(QObject):
 
         normalized = re.sub(r"[，。！？、,.!?~\s]+", "", normalized)
         normalized = normalized.replace("是多少", "多少").replace("什么价格", "价格多少")
+        normalized = normalized.replace("服务时间", "营业时间")
+        normalized = normalized.replace("上班几点", "上班时间")
+        normalized = normalized.replace("几点下班", "营业时间")
+        normalized = normalized.replace("几点营业", "营业时间")
+        normalized = normalized.replace("几点上班", "上班时间")
+        normalized = normalized.replace("营业到几点", "营业时间")
         return normalized
 
     def _find_answer_by_intent_hint_detail(self, query: str, raw_query: str = "") -> Dict[str, object]:
@@ -714,6 +720,8 @@ class KnowledgeService(QObject):
             }
 
         intents: List[str] = []
+        if any(k in text for k in ("营业时间", "服务时间", "上班时间", "上班几点", "几点上班", "几点下班", "几点营业", "营业到几点")):
+            intents.append("service_hours")
         if any(k in text for k in self.PRICE_KEYWORDS):
             intents.append("price")
         if self.is_address_query(text):

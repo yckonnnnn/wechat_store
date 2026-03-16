@@ -1,0 +1,56 @@
+{
+  "version": 4,
+  "updated_at": "2026-03-16T16:25:56.311406",
+  "sessions": {
+    "sim": {
+      "session_id": "sim",
+      "user_hash": "de81f6891f",
+      "session_fingerprint": "",
+      "first_seen_at": "2026-03-16T16:20:49.103668",
+      "updated_at": "2026-03-16T16:25:56.311331",
+      "address_prompt_count": 0,
+      "sent_address_stores": [],
+      "address_image_sent_count": 0,
+      "address_image_last_sent_at_by_store": {},
+      "contact_image_sent_count": 0,
+      "contact_image_last_sent_at": "",
+      "contact_warmup": false,
+      "geo_followup_round": 0,
+      "geo_choice_offered": false,
+      "last_geo_pending": false,
+      "last_detected_region": "",
+      "last_target_store": "",
+      "last_geo_route_reason": "unknown",
+      "last_geo_updated_at": "",
+      "strong_intent_after_both_count": 0,
+      "purchase_both_first_hint_sent": false,
+      "session_video_armed": false,
+      "session_video_sent": false,
+      "session_post_contact_reply_count": 0,
+      "pending_required_media": [],
+      "pending_required_media_updated_at": "",
+      "last_required_media_failure_code": "",
+      "last_required_media_failure_detail": "",
+      "required_media_retry_budget": {},
+      "last_route_reason": "unknown",
+      "last_intent": "general",
+      "last_reply_goal": "解答",
+      "session_user_message_count_after_contact": 0,
+      "knowledge_reply_count": 7,
+      "price_priority_reply_count": 0,
+      "address_text_reply_count_by_store": {},
+      "address_contact_reply_count_by_store": {}
+    }
+  },
+  "users": {
+    "de81f6891f": {
+      "user_hash": "de81f6891f",
+      "first_seen_at": "2026-03-16T16:20:49.103817",
+      "updated_at": "2026-03-16T16:20:49.103817",
+      "video_armed": false,
+      "video_sent": false,
+      "post_contact_reply_count": 0,
+      "recent_reply_hashes": []
+    }
+  }
+}

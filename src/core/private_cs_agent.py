@@ -108,6 +108,18 @@ EMOJI_MEDIA_REPLY_POOL = (
     "姐姐，关于假发这边您尽管问我，我一直都在呢💐",
     "姐姐，假发有什么想咨询的，您直接跟我说就可以啦🥰",
 )
+SERVICE_HOURS_PRIORITY_KEYWORDS = (
+    "服务时间",
+    "营业时间",
+    "上班时间",
+    "上班几点",
+    "几点营业",
+    "几点上班",
+    "营业到几点",
+    "几点下班",
+    "开门时间",
+    "关门时间",
+)
 ADDRESS_UNSUPPORTED_QUERY_KEYWORDS = (
     "怎么去",
     "怎么走",
@@ -1720,6 +1732,9 @@ class CustomerServiceAgent:
         """检测是否为追问，根据用户选择的策略"""
         text_stripped = text.strip()
 
+        if any(keyword in text_stripped for keyword in SERVICE_HOURS_PRIORITY_KEYWORDS):
+            return False
+
         # 场景1：简短回复（<10字符）
         if len(text_stripped) < 10:
             return True
@@ -2288,9 +2303,16 @@ class CustomerServiceAgent:
             kb_blocked_by_polite_guard = bool(kb_detail.get("blocked_by_polite_guard", False))
             kb_polite_guard_reason = str(kb_detail.get("polite_guard_reason", "") or "")
             if kb_detail.get("matched"):
+                kb_intent = str(kb_detail.get("intent", "") or "").strip().lower()
+                kb_tags = {
+                    str(tag).strip()
+                    for tag in (kb_detail.get("tags", []) or [])
+                    if str(tag).strip()
+                }
+                force_direct_kb = kb_intent == "service_hours" or "营业时间" in kb_tags
                 # 场景4：低置信度（0.5-0.7）走 LLM
                 confidence = kb_detail.get("confidence", "high")
-                if confidence in ["low", "medium"]:
+                if confidence in ["low", "medium"] and not force_direct_kb:
                     # 使用知识库答案作为参考，但让 LLM 结合上下文重新生成
                     return self._decide_llm_reply(
                         latest_user_text=latest_user_text,
