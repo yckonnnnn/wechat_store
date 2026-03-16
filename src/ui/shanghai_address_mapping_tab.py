@@ -11,6 +11,7 @@ from typing import Dict, List
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QCheckBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -39,6 +40,7 @@ class ShanghaiAddressMappingTab(QWidget):
         self.current_page = 1
         self._all_rows: List[Dict[str, str]] = []
         self._row_widgets: List[Dict[str, object]] = []
+        self._selected_row_indexes: set[int] = set()
         self._setup_ui()
         self.reload_rows()
 
@@ -109,6 +111,18 @@ class ShanghaiAddressMappingTab(QWidget):
         self.import_btn.clicked.connect(self.import_rows_json)
         toolbar_layout.addWidget(self.import_btn)
 
+        self.select_all_btn = QPushButton("全选")
+        self.select_all_btn.setObjectName("Secondary")
+        self.select_all_btn.setCursor(Qt.PointingHandCursor)
+        self.select_all_btn.clicked.connect(self._select_all_rows)
+        toolbar_layout.addWidget(self.select_all_btn)
+
+        self.delete_selected_btn = QPushButton("删除选中")
+        self.delete_selected_btn.setObjectName("Secondary")
+        self.delete_selected_btn.setCursor(Qt.PointingHandCursor)
+        self.delete_selected_btn.clicked.connect(self._remove_selected_rows)
+        toolbar_layout.addWidget(self.delete_selected_btn)
+
         toolbar_layout.addStretch()
 
         self.stats_label = QLabel("共 0 条")
@@ -122,7 +136,7 @@ class ShanghaiAddressMappingTab(QWidget):
         header_layout2 = QHBoxLayout(header_row)
         header_layout2.setContentsMargins(20, 14, 20, 14)
         header_layout2.setSpacing(16)
-        for text, stretch in (("关键词/路名", 2), ("推荐门店", 2), ("备注", 3), ("操作", 1)):
+        for text, stretch in (("选择", 0), ("关键词/路名", 2), ("推荐门店", 2), ("备注", 3), ("操作", 1)):
             label = QLabel(text)
             label.setStyleSheet("color: #f97316; font-size: 13px; font-weight: 700;")
             header_layout2.addWidget(label, stretch)
@@ -199,6 +213,13 @@ class ShanghaiAddressMappingTab(QWidget):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(16)
 
+        select_checkbox = QCheckBox()
+        select_checkbox.setChecked(row_index in self._selected_row_indexes)
+        select_checkbox.stateChanged.connect(
+            lambda state, idx=row_index: self._set_row_selected(idx, state == Qt.CheckState.Checked.value)
+        )
+        layout.addWidget(select_checkbox, 0, Qt.AlignCenter)
+
         keyword_input = QLineEdit()
         keyword_input.setPlaceholderText("例如：常德路、汉口路、静安寺")
         keyword_input.setText(str(row.get("keyword", "") or ""))
@@ -226,6 +247,7 @@ class ShanghaiAddressMappingTab(QWidget):
             {
                 "row_index": row_index,
                 "wrap": wrap,
+                "selected": select_checkbox,
                 "keyword": keyword_input,
                 "target_store": store_combo,
                 "note": note_input,
@@ -235,6 +257,7 @@ class ShanghaiAddressMappingTab(QWidget):
 
     def _add_empty_row(self):
         self._sync_current_page_to_model()
+        self._selected_row_indexes = {idx + 1 for idx in self._selected_row_indexes}
         self._all_rows.insert(0, {"keyword": "", "target_store": "", "note": ""})
         self.current_page = 1
         self._render_current_page()
@@ -253,6 +276,48 @@ class ShanghaiAddressMappingTab(QWidget):
         self._sync_current_page_to_model()
         if 0 <= row_index < len(self._all_rows):
             self._all_rows.pop(row_index)
+            self._selected_row_indexes = {
+                idx if idx < row_index else idx - 1
+                for idx in self._selected_row_indexes
+                if idx != row_index
+            }
+        self.current_page = min(self.current_page, self._get_total_pages())
+        self._render_current_page()
+
+    def _set_row_selected(self, row_index: int, selected: bool) -> None:
+        if selected:
+            self._selected_row_indexes.add(row_index)
+        else:
+            self._selected_row_indexes.discard(row_index)
+        self._refresh_state()
+
+    def _select_all_rows(self):
+        self._sync_current_page_to_model()
+        self._selected_row_indexes = set(range(len(self._all_rows)))
+        self._render_current_page()
+
+    def _remove_selected_rows(self):
+        self._sync_current_page_to_model()
+        if not self._selected_row_indexes:
+            QMessageBox.information(self, "未选择", "请先勾选需要删除的上海地址映射。")
+            return
+
+        selected_count = len(self._selected_row_indexes)
+        reply = QMessageBox.question(
+            self,
+            "确认删除",
+            f"确定删除选中的 {selected_count} 条上海地址映射吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self._all_rows = [
+            row for idx, row in enumerate(self._all_rows)
+            if idx not in self._selected_row_indexes
+        ]
+        self._selected_row_indexes.clear()
         self.current_page = min(self.current_page, self._get_total_pages())
         self._render_current_page()
 
@@ -323,12 +388,15 @@ class ShanghaiAddressMappingTab(QWidget):
         self.stats_label.setText(f"共 {count} 条")
         self.empty_label.setVisible(count == 0)
         self.scroll_area.setVisible(count > 0)
+        self.select_all_btn.setEnabled(count > 0)
+        self.delete_selected_btn.setEnabled(bool(self._selected_row_indexes))
         self._render_pagination()
 
     def reload_rows(self):
         self.knowledge_service.reload_shanghai_route_aliases()
         rows = self.knowledge_service.get_shanghai_route_alias_rows()
         self._all_rows = [dict(row) for row in rows]
+        self._selected_row_indexes.clear()
         self.current_page = 1
         self._render_current_page()
         self.log_message.emit(f"✅ 上海地址映射已加载: {len(rows)} 条")

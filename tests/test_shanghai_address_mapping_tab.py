@@ -121,6 +121,50 @@ class ShanghaiAddressMappingTabTestCase(unittest.TestCase):
 
         tab.deleteLater()
 
+    def test_select_all_marks_rows_across_pages(self):
+        tab, _service = self._create_tab(24)
+
+        tab._select_all_rows()
+
+        self.assertEqual(len(tab._selected_row_indexes), 24)
+        self.assertTrue(tab.delete_selected_btn.isEnabled())
+        self.assertTrue(all(row["selected"].isChecked() for row in tab._row_widgets))
+
+        tab._go_to_page(3)
+
+        self.assertEqual(len(tab._row_widgets), 4)
+        self.assertTrue(all(row["selected"].isChecked() for row in tab._row_widgets))
+
+        tab.deleteLater()
+
+    def test_delete_selected_rows_removes_selected_across_pages(self):
+        tab, _service = self._create_tab(24)
+
+        tab._selected_row_indexes = {0, 10, 23}
+        tab._refresh_state()
+        with patch("src.ui.shanghai_address_mapping_tab.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+            tab._remove_selected_rows()
+
+        self.assertEqual(len(tab._all_rows), 21)
+        self.assertEqual(tab._selected_row_indexes, set())
+        self.assertEqual(tab._all_rows[0]["keyword"], "路名2")
+        self.assertFalse(any(row["keyword"] == "路名11" for row in tab._all_rows))
+        self.assertFalse(any(row["keyword"] == "路名24" for row in tab._all_rows))
+
+        tab.deleteLater()
+
+    def test_reload_rows_clears_selected_rows(self):
+        tab, _service = self._create_tab(12)
+
+        tab._selected_row_indexes = {0, 1, 10}
+        tab._refresh_state()
+        tab.reload_rows()
+
+        self.assertEqual(tab._selected_row_indexes, set())
+        self.assertFalse(tab.delete_selected_btn.isEnabled())
+
+        tab.deleteLater()
+
     def test_save_rows_keeps_global_order(self):
         tab, service = self._create_tab(12)
 

@@ -89,7 +89,7 @@ class KnowledgeService(QObject):
     }
     SHANGHAI_DISTRICT_STORE_MAP = {
         "闵行": "sh_xuhui",
-        "长宁": "sh_jingan",
+        "长宁": "sh_renmin",
         "静安寺": "sh_jingan",
         "虹口": "sh_hongkou",
         "杨浦": "sh_wujiaochang",
