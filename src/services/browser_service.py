@@ -1301,6 +1301,84 @@ class BrowserService(QObject):
         """
         self.run_javascript(script, callback)
 
+    def find_and_click_chat_by_username(self, user_name: str, callback: Callable):
+        target_name = str(user_name or "").strip()
+        if not target_name:
+            callback(True, {"found": False, "clicked": False, "reason": "empty_user_name"})
+            return
+        name_json = json.dumps(target_name, ensure_ascii=False)
+        script = f"""
+        (function() {{
+            var targetName = {name_json};
+            function safeText(el) {{ return (el && (el.textContent || el.innerText) || "").trim(); }}
+            function isVisible(el) {{
+                if (!el) return false;
+                var style = window.getComputedStyle(el);
+                if (!style) return false;
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                var rect = el.getBoundingClientRect();
+                if (!rect || rect.width < 3 || rect.height < 3) return false;
+                return true;
+            }}
+            function findClickableAncestor(el) {{
+                var cur = el;
+                for (var i = 0; i < 12 && cur; i++) {{
+                    var tag = (cur.tagName || '').toUpperCase();
+                    var role = (cur.getAttribute && cur.getAttribute('role')) ? cur.getAttribute('role') : '';
+                    if (tag === 'LI' || role === 'listitem') return cur;
+                    try {{
+                        var did = cur.getAttribute && (cur.getAttribute('data-id') || cur.getAttribute('data-session-id') || cur.getAttribute('data-chat-id'));
+                        if (did) return cur;
+                    }} catch (e) {{}}
+                    cur = cur.parentElement;
+                }}
+                return null;
+            }}
+
+            var allNodes = Array.from(document.querySelectorAll('span,div,strong,b'));
+            var candidates = [];
+            for (var i = 0; i < allNodes.length; i++) {{
+                var node = allNodes[i];
+                if (!isVisible(node)) continue;
+                var text = safeText(node);
+                if (!text || text.indexOf(targetName) === -1) continue;
+                var sessionEl = findClickableAncestor(node);
+                if (!sessionEl || !isVisible(sessionEl)) continue;
+                var sessionText = safeText(sessionEl);
+                if (!sessionText || sessionText.indexOf(targetName) === -1) continue;
+                var rect = sessionEl.getBoundingClientRect();
+                candidates.push({{
+                    top: rect.top,
+                    element: sessionEl
+                }});
+            }}
+            if (!candidates.length) {{
+                return JSON.stringify({{ found: false, clicked: false, reason: 'no_matching_session' }});
+            }}
+            candidates.sort(function(a, b) {{ return a.top - b.top; }});
+            var target = candidates[0].element;
+            try {{ target.scrollIntoView({{ block: 'center', inline: 'nearest' }}); }} catch (e) {{}}
+            var clicked = false;
+            try {{ target.click(); clicked = true; }} catch (e1) {{}}
+            if (!clicked) {{
+                try {{
+                    var rect = target.getBoundingClientRect();
+                    var centerX = rect.left + rect.width / 2;
+                    var centerY = rect.top + rect.height / 2;
+                    var clickEvt = new MouseEvent('click', {{ bubbles: true, cancelable: true, clientX: centerX, clientY: centerY }});
+                    target.dispatchEvent(clickEvt);
+                    clicked = true;
+                }} catch (e2) {{}}
+            }}
+            return JSON.stringify({{
+                found: true,
+                clicked: clicked,
+                matchedName: targetName
+            }});
+        }})()
+        """
+        self.run_javascript(script, callback)
+
     def enter_session(self, element_info: dict, callback: Callable = None):
         """点击进入会话
 

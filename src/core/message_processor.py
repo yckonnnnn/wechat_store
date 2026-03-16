@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -24,6 +25,9 @@ class MessageProcessor(QObject):
     _GRAB_CHAT_AFTER_CLICK_DELAY_MS = 3000
     _MEDIA_SEND_AFTER_TEXT_DELAY_MS = 900
     _VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 1200
+    _STALE_FOLLOWUP_AFTER_SECONDS = 120
+    _STALE_FOLLOWUP_GRAB_DELAY_MS = 800
+    _STALE_FOLLOWUP_TEXT = "姐姐，请添加我好友，我会发详细定位还有乘车路线给您～♥️"
 
     status_changed = Signal(str)
     log_message = Signal(str)
@@ -53,6 +57,8 @@ class MessageProcessor(QObject):
         self._recent_processed_media_markers: List[str] = []
         self._pending_send: Optional[Dict[str, Any]] = None
         self._pending_unread_hint: Optional[Dict[str, str]] = None
+        self._pending_stale_followup: Optional[Dict[str, str]] = None
+        self._last_stale_followup_status = ""
         self._active_session_context: Optional[Dict[str, str]] = None
 
         self._poll_timer = QTimer(self)
@@ -218,7 +224,7 @@ class MessageProcessor(QObject):
                 QTimer.singleShot(600, self._grab_remote_control_chat)
                 return
 
-            self._reset_cycle()
+            self._check_stale_replied_sessions()
 
         self.browser.find_and_click_unread_by_usernames(sorted(self._remote_control_users), on_result)
 
@@ -256,7 +262,7 @@ class MessageProcessor(QObject):
                 QTimer.singleShot(delay_ms, self._grab_and_reply_active_chat)
                 return
 
-            self._reset_cycle()
+            self._check_stale_replied_sessions()
 
         self.browser.find_and_click_first_unread(on_result)
 
@@ -270,6 +276,139 @@ class MessageProcessor(QObject):
     def grab_and_display_chat_history(self, auto_reply: bool = True):
         """手动抓取聊天记录（抓取测试按钮使用）"""
         self.browser.grab_chat_data(lambda success, result: self._on_chat_data(success, result, auto_reply=auto_reply))
+
+    def _check_stale_replied_sessions(self):
+        candidate, reason = self._find_stale_followup_candidate()
+        if not candidate:
+            self._emit_stale_followup_status(reason or "当前没有可触发的2分钟结尾话术候选")
+            self._reset_cycle()
+            return
+
+        self._emit_stale_followup_status(f"发现2分钟结尾话术候选: {str(candidate.get('user_name', '') or '').strip()}")
+        user_name = str(candidate.get("user_name", "") or "").strip()
+        if not user_name:
+            self._reset_cycle()
+            return
+
+        find_chat = getattr(self.browser, "find_and_click_chat_by_username", None)
+        if not callable(find_chat):
+            self._emit_log("⚠️ 浏览器不支持按用户名切换会话，跳过2分钟结尾话术")
+            self._reset_cycle()
+            return
+
+        def on_result(success, result):
+            if not success:
+                self._emit_log(f"⚠️ 2分钟结尾话术切换会话失败: {user_name}")
+                self._reset_cycle()
+                return
+
+            payload = self._parse_js_payload(result)
+            if not payload.get("found") or not payload.get("clicked"):
+                self._emit_log(f"⚠️ 未定位到超时会话: {user_name}")
+                self._reset_cycle()
+                return
+
+            self._pending_stale_followup = candidate
+            self._mark_active_session(
+                session_id=str(candidate.get("session_id", "") or ""),
+                user_name=user_name,
+                stage="stale_followup_locked",
+                detail="等待抓取确认",
+            )
+            delay_ms = int(getattr(self, "_STALE_FOLLOWUP_GRAB_DELAY_MS", 800) or 0)
+            if delay_ms <= 0:
+                self._grab_stale_followup_chat()
+                return
+            QTimer.singleShot(delay_ms, self._grab_stale_followup_chat)
+
+        find_chat(user_name, on_result)
+
+    def _grab_stale_followup_chat(self):
+        if not self._running:
+            self._reset_cycle()
+            return
+        self.browser.grab_chat_data(self._on_stale_followup_chat_data)
+
+    def _on_stale_followup_chat_data(self, success: bool, result: Any):
+        candidate = dict(self._pending_stale_followup or {})
+        if not success or not candidate:
+            self._reset_cycle()
+            return
+
+        data = self._parse_js_payload(result)
+        messages = list(data.get("messages", []) or [])
+        user_name = (data.get("user_name") or candidate.get("user_name") or "").strip()
+        if not user_name:
+            self._reset_cycle()
+            return
+
+        latest_user_message = self._latest_user_text(messages)
+        if latest_user_message:
+            self._emit_log(f"⏸️ 用户 {user_name} 已有新消息，取消2分钟结尾话术")
+            self._pending_stale_followup = None
+            self._reset_cycle()
+            return
+
+        session_id = self._build_session_id(
+            user_name=user_name,
+            chat_session_key=(data.get("chat_session_key") or "").strip(),
+            chat_session_fingerprint=(data.get("chat_session_fingerprint") or "").strip(),
+        )
+        user_hash = str(candidate.get("user_hash", "") or self._build_user_hash(user_name=user_name, session_id=session_id))
+        self._send_stale_followup_message(session_id=session_id, user_name=user_name, user_hash=user_hash)
+
+    def _send_stale_followup_message(self, session_id: str, user_name: str, user_hash: str):
+        reply_text = str(getattr(self, "_STALE_FOLLOWUP_TEXT", self._STALE_FOLLOWUP_TEXT))
+        self._processing_reply = True
+        self._mark_active_session(
+            session_id=session_id,
+            user_name=user_name,
+            stage="stale_followup_send",
+            detail="发送固定结尾话术",
+        )
+
+        def on_sent(success, result):
+            del result
+            if not success:
+                self._emit_log(f"❌ 2分钟结尾话术发送失败: {user_name}")
+                self._reset_cycle()
+                return
+
+            self.sessions.get_or_create_session(session_id=session_id, user_name=user_name)
+            self.sessions.add_message(session_id, reply_text, is_user=False, user_name=user_name)
+            self.sessions.record_reply(session_id)
+            self.reply_sent.emit(session_id, reply_text)
+            self._append_training_event(
+                session_id=session_id,
+                user_id_hash=user_hash,
+                event_type="stale_followup_sent",
+                user_name=user_name,
+                reply_source="stale_followup",
+                rule_id="STALE_FOLLOWUP",
+                payload={"text": reply_text, "user_name": user_name},
+            )
+            self._append_training_event(
+                session_id=session_id,
+                user_id_hash=user_hash,
+                event_type="assistant_reply",
+                user_name=user_name,
+                reply_source="stale_followup",
+                rule_id="STALE_FOLLOWUP",
+                payload={
+                    "text": reply_text,
+                    "intent": "stale_followup",
+                    "route_reason": "stale_followup",
+                    "round_media_sent": False,
+                    "round_media_sent_types": [],
+                    "round_media_failed_types": [],
+                    "round_media_sent_details": [],
+                },
+            )
+            self._emit_log(f"✅ 已发送2分钟结尾话术: {user_name}")
+            self._pending_stale_followup = None
+            self._reset_cycle()
+
+        self.browser.send_message(reply_text, on_sent)
 
     def _on_chat_data(self, success: bool, result: Any, auto_reply: bool):
         if not success:
@@ -1052,6 +1191,7 @@ class MessageProcessor(QObject):
         self._processing_reply = False
         self._pending_send = None
         self._pending_unread_hint = None
+        self._pending_stale_followup = None
         self._active_session_context = None
 
     def _parse_js_payload(self, payload: Any) -> Dict[str, Any]:
@@ -1229,6 +1369,128 @@ class MessageProcessor(QObject):
     def _build_user_hash(self, user_name: str, session_id: str) -> str:
         base = (user_name or "").strip() or session_id
         return self._hash_id(base)
+
+    def _emit_stale_followup_status(self, message: str) -> None:
+        text = str(message or "").strip()
+        if not text or text == self._last_stale_followup_status:
+            return
+        self._last_stale_followup_status = text
+        self._emit_log(f"🕒 {text}")
+
+    def _find_stale_followup_candidate(self) -> tuple[Optional[Dict[str, str]], str]:
+        root_dir = getattr(self.conversation_logger, "root_dir", None)
+        if not isinstance(root_dir, Path) or not root_dir.exists():
+            return None, "暂无会话日志，跳过2分钟结尾话术"
+
+        now = datetime.now()
+        by_user: Dict[str, Dict[str, Any]] = {}
+        for log_path in sorted(root_dir.glob("*.jsonl")):
+            try:
+                rows = [x for x in log_path.read_text(encoding="utf-8").splitlines() if x.strip()]
+            except Exception:
+                continue
+
+            for row in rows:
+                try:
+                    record = json.loads(row)
+                except Exception:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+
+                event_type = str(record.get("event_type", "") or "")
+                if event_type not in {"user_message", "assistant_reply", "stale_followup_sent"}:
+                    continue
+
+                user_hash = str(record.get("user_id_hash", "") or "").strip()
+                if not user_hash:
+                    continue
+
+                timestamp = self._parse_iso_ts(str(record.get("timestamp", "") or ""))
+                if timestamp is None:
+                    continue
+
+                payload = record.get("payload", {}) if isinstance(record.get("payload", {}), dict) else {}
+                user_name = str(payload.get("user_name", "") or "").strip()
+                session_id = str(record.get("session_id", "") or "")
+                summary = by_user.setdefault(
+                    user_hash,
+                    {
+                        "user_hash": user_hash,
+                        "user_name": user_name,
+                        "session_id": session_id,
+                        "last_event_type": "",
+                        "last_event_at": None,
+                        "last_assistant_at": None,
+                        "last_assistant_session_id": "",
+                        "has_stale_followup": False,
+                    },
+                )
+                if user_name:
+                    summary["user_name"] = user_name
+                if session_id:
+                    summary["session_id"] = session_id
+                if event_type == "stale_followup_sent" or str(record.get("rule_id", "") or "") == "STALE_FOLLOWUP":
+                    summary["has_stale_followup"] = True
+                if summary["last_event_at"] is None or timestamp > summary["last_event_at"]:
+                    summary["last_event_at"] = timestamp
+                    summary["last_event_type"] = event_type
+                    summary["session_id"] = session_id or str(summary.get("session_id", "") or "")
+                if event_type == "assistant_reply":
+                    if summary["last_assistant_at"] is None or timestamp > summary["last_assistant_at"]:
+                        summary["last_assistant_at"] = timestamp
+                        summary["last_assistant_session_id"] = session_id
+
+        eligible: List[Dict[str, Any]] = []
+        blocked_by_log: List[str] = []
+        waiting_for_timeout: List[str] = []
+        waiting_for_reply_end: List[str] = []
+        for summary in by_user.values():
+            user_name = str(summary.get("user_name", "") or "").strip() or "未知用户"
+            if bool(summary.get("has_stale_followup", False)):
+                blocked_by_log.append(user_name)
+                continue
+            if str(summary.get("last_event_type", "") or "") != "assistant_reply":
+                waiting_for_reply_end.append(user_name)
+                continue
+            last_assistant_at = summary.get("last_assistant_at")
+            if last_assistant_at is None:
+                continue
+            timeout_seconds = int(getattr(self, "_STALE_FOLLOWUP_AFTER_SECONDS", 120) or 120)
+            if now - last_assistant_at < timedelta(seconds=timeout_seconds):
+                waiting_for_timeout.append(user_name)
+                continue
+            if not user_name:
+                continue
+            eligible.append(summary)
+
+        if not eligible:
+            if blocked_by_log:
+                return None, f"跳过2分钟结尾话术：日志中已存在发送记录（{blocked_by_log[0]}）"
+            if waiting_for_timeout:
+                return None, f"跳过2分钟结尾话术：距离上次回复不足2分钟（{waiting_for_timeout[0]}）"
+            if waiting_for_reply_end:
+                return None, f"跳过2分钟结尾话术：最后一条不是客服回复（{waiting_for_reply_end[0]}）"
+            return None, "当前没有可触发的2分钟结尾话术候选"
+
+        eligible.sort(key=lambda item: item.get("last_assistant_at") or now)
+        chosen = eligible[0]
+        return (
+            {
+                "user_hash": str(chosen.get("user_hash", "") or ""),
+                "user_name": str(chosen.get("user_name", "") or ""),
+                "session_id": str(chosen.get("last_assistant_session_id", "") or chosen.get("session_id", "") or ""),
+            },
+            "",
+        )
+
+    def _parse_iso_ts(self, value: str) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except Exception:
+            return None
 
     def _detect_user_first_turn_global(self, user_hash: str) -> bool:
         if not user_hash:

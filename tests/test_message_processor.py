@@ -1,7 +1,7 @@
 import json
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, QEventLoop, QObject, Signal, QTimer
@@ -71,6 +71,48 @@ class DummyBrowserFlow(QObject):
 
     def send_message(self, text, callback):
         del text
+        callback(True, {"ok": True})
+
+    def send_image(self, media_path, callback):
+        del media_path
+        callback(True, {"ok": True})
+
+    def send_video_from_material_library(self, callback):
+        callback(True, {"ok": True})
+
+
+class DummyBrowserStaleFollowup(QObject):
+    page_loaded = Signal(bool)
+    url_changed = Signal(str)
+
+    def __init__(self, user_name: str):
+        super().__init__()
+        self.user_name = user_name
+        self.sent_messages = []
+
+    def find_and_click_first_unread(self, callback):
+        callback(True, {"found": False, "clicked": False})
+
+    def find_and_click_unread_by_usernames(self, user_names, callback):
+        del user_names
+        callback(True, {"found": False, "clicked": False})
+
+    def find_and_click_chat_by_username(self, user_name, callback):
+        callback(True, {"found": user_name == self.user_name, "clicked": user_name == self.user_name})
+
+    def grab_chat_data(self, callback):
+        callback(
+            True,
+            {
+                "user_name": self.user_name,
+                "chat_session_key": "",
+                "chat_session_fingerprint": f"name:{self.user_name}",
+                "messages": [{"text": "历史客服", "is_user": False}],
+            },
+        )
+
+    def send_message(self, text, callback):
+        self.sent_messages.append(text)
         callback(True, {"ok": True})
 
     def send_image(self, media_path, callback):
@@ -1263,6 +1305,88 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
                 QTimer.singleShot = original_single_shot
 
             self.assertIn(3000, scheduled)
+
+    def test_stale_followup_candidate_ignores_memory_flag_and_uses_log_only(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserStaleFollowup("超时用户")
+            sessions = SessionManager()
+            agent = DummyAgent(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            user_hash = processor._build_user_hash("超时用户", "user_timeout")
+            memory_store.update_user_state(
+                user_hash,
+                {
+                    "stale_followup_sent": True,
+                    "stale_followup_sent_at": datetime.now().isoformat(),
+                },
+            )
+            memory_store.save()
+
+            log_path = processor.conversation_logger._session_file("user_timeout", user_name="超时用户")
+            record = {
+                "timestamp": (datetime.now() - timedelta(minutes=3)).isoformat(),
+                "session_id": "user_timeout",
+                "user_id_hash": user_hash,
+                "event_type": "assistant_reply",
+                "reply_source": "rule",
+                "rule_id": "TEST",
+                "model_name": "",
+                "payload": {"text": "上一轮回复", "user_name": "超时用户"},
+            }
+            log_path.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+
+            candidate, reason = processor._find_stale_followup_candidate()
+
+            self.assertIsNotNone(candidate)
+            self.assertEqual(reason, "")
+            self.assertEqual(candidate["user_hash"], user_hash)
+            self.assertEqual(candidate["user_name"], "超时用户")
+
+    def test_stale_followup_candidate_blocks_once_log_contains_sent_event(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserStaleFollowup("超时用户")
+            sessions = SessionManager()
+            agent = DummyAgent(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            user_hash = processor._build_user_hash("超时用户", "user_timeout")
+            log_path = processor.conversation_logger._session_file("user_timeout", user_name="超时用户")
+            records = [
+                {
+                    "timestamp": (datetime.now() - timedelta(minutes=4)).isoformat(),
+                    "session_id": "user_timeout",
+                    "user_id_hash": user_hash,
+                    "event_type": "assistant_reply",
+                    "reply_source": "rule",
+                    "rule_id": "TEST",
+                    "model_name": "",
+                    "payload": {"text": "上一轮回复", "user_name": "超时用户"},
+                },
+                {
+                    "timestamp": (datetime.now() - timedelta(minutes=3)).isoformat(),
+                    "session_id": "user_timeout",
+                    "user_id_hash": user_hash,
+                    "event_type": "stale_followup_sent",
+                    "reply_source": "stale_followup",
+                    "rule_id": "STALE_FOLLOWUP",
+                    "model_name": "",
+                    "payload": {"text": "结尾话术", "user_name": "超时用户"},
+                },
+            ]
+            log_path.write_text(
+                "\n".join(json.dumps(row, ensure_ascii=False) for row in records) + "\n",
+                encoding="utf-8",
+            )
+
+            candidate, reason = processor._find_stale_followup_candidate()
+
+            self.assertIsNone(candidate)
+            self.assertIn("日志中已存在发送记录", reason)
 
 
 if __name__ == "__main__":
