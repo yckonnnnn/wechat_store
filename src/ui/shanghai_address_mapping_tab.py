@@ -4,11 +4,14 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Dict, List
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -93,6 +96,18 @@ class ShanghaiAddressMappingTab(QWidget):
         self.reset_btn.setCursor(Qt.PointingHandCursor)
         self.reset_btn.clicked.connect(self.reset_rows)
         toolbar_layout.addWidget(self.reset_btn)
+
+        self.export_btn = QPushButton("导出 JSON")
+        self.export_btn.setObjectName("Secondary")
+        self.export_btn.setCursor(Qt.PointingHandCursor)
+        self.export_btn.clicked.connect(self.export_rows_json)
+        toolbar_layout.addWidget(self.export_btn)
+
+        self.import_btn = QPushButton("导入 JSON")
+        self.import_btn.setObjectName("Secondary")
+        self.import_btn.setCursor(Qt.PointingHandCursor)
+        self.import_btn.clicked.connect(self.import_rows_json)
+        toolbar_layout.addWidget(self.import_btn)
 
         toolbar_layout.addStretch()
 
@@ -321,6 +336,81 @@ class ShanghaiAddressMappingTab(QWidget):
     def _collect_rows(self) -> List[Dict[str, str]]:
         self._sync_current_page_to_model()
         return [dict(row) for row in self._all_rows]
+
+    def _normalize_imported_rows(self, payload) -> List[Dict[str, str]]:
+        rows_payload = payload
+        if isinstance(payload, dict):
+            for key in ("rows", "route_aliases", "aliases", "data"):
+                candidate = payload.get(key)
+                if isinstance(candidate, list):
+                    rows_payload = candidate
+                    break
+
+        if not isinstance(rows_payload, list):
+            raise ValueError("JSON 格式不正确，需为数组或包含 rows 的对象。")
+
+        valid_store_keys = {
+            str(store_key or "").strip()
+            for store_key, _store_name in self.knowledge_service.get_shanghai_store_options()
+        }
+        normalized_rows: List[Dict[str, str]] = []
+        for index, row in enumerate(rows_payload, start=1):
+            if not isinstance(row, dict):
+                raise ValueError(f"第 {index} 条格式不正确，必须是对象。")
+            keyword = str(row.get("keyword", "") or "").strip()
+            target_store = str(row.get("target_store", "") or "").strip()
+            note = str(row.get("note", "") or "").strip()
+            if not keyword:
+                raise ValueError(f"第 {index} 条缺少关键词/路名。")
+            if target_store not in valid_store_keys:
+                raise ValueError(f"第 {index} 条推荐门店无效：{target_store or '空'}。")
+            normalized_rows.append(
+                {
+                    "keyword": keyword,
+                    "target_store": target_store,
+                    "note": note,
+                }
+            )
+        return normalized_rows
+
+    def export_rows_json(self):
+        rows = self._collect_rows()
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出上海地址映射",
+            "shanghai_route_aliases.json",
+            "JSON Files (*.json);;All Files (*.*)",
+        )
+        if not file_path:
+            return
+        try:
+            Path(file_path).write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+            QMessageBox.information(self, "导出成功", f"上海地址映射已导出到：\n{file_path}")
+            self.log_message.emit(f"✅ 上海地址映射已导出：{file_path}")
+        except Exception as e:
+            QMessageBox.warning(self, "导出失败", str(e))
+            self.log_message.emit(f"❌ 上海地址映射导出失败: {str(e)}")
+
+    def import_rows_json(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "导入上海地址映射",
+            "",
+            "JSON Files (*.json);;All Files (*.*)",
+        )
+        if not file_path:
+            return
+        try:
+            payload = json.loads(Path(file_path).read_text(encoding="utf-8"))
+            rows = self._normalize_imported_rows(payload)
+            self.knowledge_service.save_shanghai_route_alias_rows(rows)
+            self.reload_rows()
+            QMessageBox.information(self, "导入成功", f"已导入 {len(rows)} 条上海地址映射，并立即生效。")
+            self.mapping_updated.emit()
+            self.log_message.emit(f"✅ 上海地址映射已导入：{file_path}（{len(rows)} 条）")
+        except Exception as e:
+            QMessageBox.warning(self, "导入失败", str(e))
+            self.log_message.emit(f"❌ 上海地址映射导入失败: {str(e)}")
 
     def save_rows(self):
         rows = self._collect_rows()

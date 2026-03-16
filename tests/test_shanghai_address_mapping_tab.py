@@ -1,9 +1,13 @@
+import json
 import os
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from src.ui.shanghai_address_mapping_tab import ShanghaiAddressMappingTab
 
@@ -107,7 +111,8 @@ class ShanghaiAddressMappingTabTestCase(unittest.TestCase):
         tab, _service = self._create_tab(11)
 
         tab._go_to_page(2)
-        tab._remove_row(10)
+        with patch("src.ui.shanghai_address_mapping_tab.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+            tab._remove_row(10)
 
         self.assertEqual(tab.current_page, 1)
         self.assertEqual(tab._get_total_pages(), 1)
@@ -128,7 +133,8 @@ class ShanghaiAddressMappingTabTestCase(unittest.TestCase):
         tab._row_widgets[0]["note"].setText("第一条")
         tab._row_widgets[0]["target_store"].setCurrentIndex(1)
 
-        tab.save_rows()
+        with patch("src.ui.shanghai_address_mapping_tab.QMessageBox.information"):
+            tab.save_rows()
 
         self.assertIsNotNone(service.saved_rows)
         self.assertEqual(service.saved_rows[0]["keyword"], "新置顶")
@@ -136,6 +142,60 @@ class ShanghaiAddressMappingTabTestCase(unittest.TestCase):
         self.assertEqual(service.saved_rows[10]["keyword"], "路名10")
         self.assertEqual(service.saved_rows[11]["keyword"], "第11条已修改")
         self.assertEqual(service.saved_rows[12]["keyword"], "路名12")
+
+        tab.deleteLater()
+
+    def test_export_rows_json_writes_current_rows(self):
+        tab, _service = self._create_tab(2)
+
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "mapping.json"
+            with patch("src.ui.shanghai_address_mapping_tab.QFileDialog.getSaveFileName", return_value=(str(target), "JSON Files (*.json)")):
+                with patch("src.ui.shanghai_address_mapping_tab.QMessageBox.information"):
+                    tab.export_rows_json()
+
+            exported = json.loads(target.read_text(encoding="utf-8"))
+            self.assertEqual(len(exported), 2)
+            self.assertEqual(exported[0]["keyword"], "路名1")
+            self.assertEqual(exported[1]["target_store"], "sh_jingan")
+
+        tab.deleteLater()
+
+    def test_import_rows_json_replaces_rows_and_saves_immediately(self):
+        tab, service = self._create_tab(2)
+        imported_rows = [
+            {"keyword": "人民廣場", "target_store": "sh_renmin", "note": "繁体"},
+            {"keyword": "淮海中路", "target_store": "sh_xuhui", "note": "徐汇"},
+        ]
+
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "mapping.json"
+            source.write_text(json.dumps({"rows": imported_rows}, ensure_ascii=False, indent=2), encoding="utf-8")
+            with patch("src.ui.shanghai_address_mapping_tab.QFileDialog.getOpenFileName", return_value=(str(source), "JSON Files (*.json)")):
+                with patch("src.ui.shanghai_address_mapping_tab.QMessageBox.information"):
+                    tab.import_rows_json()
+
+        self.assertEqual(service.saved_rows, imported_rows)
+        self.assertEqual(tab._all_rows, imported_rows)
+        self.assertEqual(tab.current_page, 1)
+        self.assertEqual(tab._row_widgets[0]["keyword"].text(), "人民廣場")
+
+        tab.deleteLater()
+
+    def test_import_rows_json_rejects_invalid_store_key(self):
+        tab, service = self._create_tab(2)
+        bad_rows = [{"keyword": "测试路", "target_store": "bad_store", "note": ""}]
+
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "bad.json"
+            source.write_text(json.dumps(bad_rows, ensure_ascii=False, indent=2), encoding="utf-8")
+            with patch("src.ui.shanghai_address_mapping_tab.QFileDialog.getOpenFileName", return_value=(str(source), "JSON Files (*.json)")):
+                with patch("src.ui.shanghai_address_mapping_tab.QMessageBox.warning") as warning_mock:
+                    tab.import_rows_json()
+
+        self.assertIsNone(service.saved_rows)
+        self.assertEqual(len(tab._all_rows), 2)
+        self.assertTrue(warning_mock.called)
 
         tab.deleteLater()
 
