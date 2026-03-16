@@ -9,6 +9,8 @@ from pathlib import Path
 import json
 from datetime import datetime
 
+from PySide6.QtCore import QRect
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -49,21 +51,59 @@ from .shanghai_address_mapping_tab import ShanghaiAddressMappingTab
 class MainWindow(QWidget):
     """主窗口"""
 
+    DEFAULT_WINDOW_WIDTH = 1600
+    DEFAULT_WINDOW_HEIGHT = 900
+    WINDOW_SCREEN_MARGIN = 24
+
     def __init__(self, config_manager: ConfigManager, knowledge_repository: KnowledgeRepository, parent=None):
         super().__init__(parent)
         self.setWindowTitle("AI 智能客服系统")
-        self.resize(1600, 900)
+        self.resize(self.DEFAULT_WINDOW_WIDTH, self.DEFAULT_WINDOW_HEIGHT)
+        self._window_geometry_initialized = False
 
         self.config_manager = config_manager
         self.knowledge_repository = knowledge_repository
 
         self._init_services()
         self._setup_ui()
+        self._apply_initial_window_geometry()
         self._connect_signals()
         self.left_panel.append_log(
             f"⚙️ 首轮视频开关当前值: {bool(getattr(self.agent, 'first_reply_video_enabled', False))}"
         )
         self._load_wechat_store()
+
+    @classmethod
+    def _compute_initial_window_geometry(cls, available_geometry: QRect) -> QRect:
+        width_limit = max(960, available_geometry.width() - cls.WINDOW_SCREEN_MARGIN * 2)
+        height_limit = max(720, available_geometry.height() - cls.WINDOW_SCREEN_MARGIN * 2)
+        target_width = min(cls.DEFAULT_WINDOW_WIDTH, width_limit)
+        target_height = min(cls.DEFAULT_WINDOW_HEIGHT, height_limit)
+
+        x = available_geometry.x() + max(0, (available_geometry.width() - target_width) // 2)
+        y = available_geometry.y() + max(0, (available_geometry.height() - target_height) // 2)
+        return QRect(x, y, target_width, target_height)
+
+    def _apply_initial_window_geometry(self):
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        available_geometry = screen.availableGeometry()
+        self.setGeometry(self._compute_initial_window_geometry(available_geometry))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._window_geometry_initialized:
+            return
+
+        screen = self.screen()
+        if screen is None and self.windowHandle() is not None:
+            screen = self.windowHandle().screen()
+        if screen is None:
+            return
+
+        self.setGeometry(self._compute_initial_window_geometry(screen.availableGeometry()))
+        self._window_geometry_initialized = True
 
     def _init_services(self):
         self.browser_service = None

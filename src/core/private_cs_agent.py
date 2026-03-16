@@ -214,6 +214,17 @@ ADDRESS_FOLLOWUP_RESIDUAL_KEYWORDS = (
     "哪里呢",
     "位置呢",
 )
+SHANGHAI_ROUTE_HELP_KEYWORDS = (
+    "外地来的",
+    "外地来",
+    "不熟悉",
+    "不认识路",
+    "不熟路",
+    "不熟悉上海",
+    "不知道哪个区",
+    "不太清楚",
+    "第一次来上海",
+)
 ADDRESS_FOLLOWUP_BLOCK_KEYWORDS = (
     "多少钱",
     "价格",
@@ -424,7 +435,7 @@ DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
     "ask_sh_district_r2": "姐姐再确认下，您在上海哪个区或附近地标呢？我马上给您对门店～🌹",
     "ask_sh_district_choice": "姐姐您方便告诉我个位置？不确定也没关系，告诉我个地标我也能帮您匹配～🌹",
     "ask_sh_district_r1_reset": "姐姐我再确认下，您在上海哪个区呀？我这边马上帮您匹配最近门店～🌹",
-    "ask_sh_arrival_point": "姐姐，您到上海后一般在哪个站下车呀？像虹桥站、上海站、浦东机场这些都可以告诉我，我帮您针对性推荐门店；如果您还没确定，我也可以先给您推荐人广店🌹",
+    "ask_sh_arrival_point": "姐姐，您到上海后一般在哪个站下车呀？像虹桥站、上海站、浦东机场这些都可以告诉我，我帮您针对性推荐门店；如果您还没确定，我也可以先给您推荐人广店：黄埔区汉口路650号亚洲大厦🌹",
     "ask_sh_route_clarify": "姐姐，您说的是上海哪条路附近呀？我帮您匹配最近门店🌹",
     "ask_ambiguous_short_fragment": "姐姐，您是想问门店地址吗？您告诉我大概在哪个区域，我帮您匹配最近门店🌹",
     "store_recommend": "姐姐，推荐您去{store_name}，可以看下面的红框框，您跟着图走会更直观，但是一定要预约哦～🌹",
@@ -685,7 +696,16 @@ class CustomerServiceAgent:
                 rule_applied=True,
             )
         route = self.knowledge_service.resolve_store_recommendation(text)
-        if bool(session_state.get("last_geo_pending", False)) and self._is_remote_geo_followup_reply(text):
+        if self._should_recover_to_shanghai_arrival_help(text, session_state):
+            route = {
+                "city": "shanghai",
+                "target_store": "unknown",
+                "reason": "shanghai_need_arrival_point",
+                "route_type": "need_district",
+                "store_address": None,
+                "detected_region": "上海",
+            }
+        if self._should_force_out_of_coverage_from_geo_followup(text=text, session_state=session_state):
             route = {
                 "city": "unknown",
                 "target_store": "unknown",
@@ -1224,6 +1244,18 @@ class CustomerServiceAgent:
             return False
         return "外地" in normalized
 
+    def _should_force_out_of_coverage_from_geo_followup(self, text: str, session_state: Dict[str, Any]) -> bool:
+        if not bool(session_state.get("last_geo_pending", False)):
+            return False
+        if not self._is_remote_geo_followup_reply(text):
+            return False
+        normalized = re.sub(r"\s+", "", str(text or ""))
+        last_geo_route_reason = str(session_state.get("last_geo_route_reason", "") or "")
+        if last_geo_route_reason in ("need_district", "shanghai_need_district"):
+            if any(keyword in normalized for keyword in SHANGHAI_ROUTE_HELP_KEYWORDS):
+                return False
+        return True
+
     def _build_address_text_after_image_decision(
         self,
         latest_user_text: str,
@@ -1412,6 +1444,7 @@ class CustomerServiceAgent:
 
         if reason == "shanghai_need_arrival_point":
             session_state["last_geo_pending"] = True
+            session_state["last_geo_route_reason"] = "need_arrival_point"
             return AgentDecision(
                 reply_text=self._render_template("ask_sh_arrival_point"),
                 intent="address",
@@ -1429,6 +1462,7 @@ class CustomerServiceAgent:
 
         if reason == "sh_route_need_clarify":
             session_state["last_geo_pending"] = True
+            session_state["last_geo_route_reason"] = "need_clarify"
             return AgentDecision(
                 reply_text=self._render_template("ask_sh_route_clarify"),
                 intent="address",
@@ -1476,10 +1510,25 @@ class CustomerServiceAgent:
             )
 
         if reason == "out_of_coverage":
+            if self._should_recover_to_shanghai_arrival_help(text, session_state):
+                session_state["last_geo_pending"] = True
+                session_state["last_geo_route_reason"] = "need_arrival_point"
+                return AgentDecision(
+                    reply_text=self._render_template("ask_sh_arrival_point"),
+                    intent="address",
+                    route_reason="need_arrival_point",
+                    reply_goal="追问地区",
+                    media_plan="none",
+                    reply_source="rule",
+                    rule_id="ADDR_ASK_ARRIVAL_POINT",
+                    rule_applied=True,
+                    geo_context_source=geo_context.get("source", ""),
+                )
             region = route.get("detected_region") or route_region(reason, text) or session_state.get("last_detected_region", "") or "您所在地区"
             session_state["last_geo_pending"] = False
             session_state["geo_followup_round"] = 0
             session_state["geo_choice_offered"] = False
+            session_state["last_geo_route_reason"] = ""
 
             # 如果已经发送过联系方式图片，只用固定话术提醒
             if self._is_contact_image_sent_for_current_geo(session_state):
@@ -1612,6 +1661,7 @@ class CustomerServiceAgent:
             session_state["last_geo_pending"] = False
             session_state["geo_followup_round"] = 0
             session_state["geo_choice_offered"] = False
+            session_state["last_geo_route_reason"] = ""
             return AgentDecision(
                 reply_text=self._render_template("store_recommend", store_name=store_name),
                 intent="address",
@@ -1636,6 +1686,7 @@ class CustomerServiceAgent:
             session_state["geo_followup_round"] = next_round
             session_state["geo_choice_offered"] = False
             session_state["last_geo_pending"] = True
+            session_state["last_geo_route_reason"] = route_reason
             if route_reason == "need_district":
                 template_key = "ask_sh_district_r1" if next_round == 1 else "ask_sh_district_r2"
                 rule_id = f"ADDR_ASK_DISTRICT_R{next_round}"
@@ -1645,6 +1696,7 @@ class CustomerServiceAgent:
         elif not choice_offered:
             session_state["geo_choice_offered"] = True
             session_state["last_geo_pending"] = True
+            session_state["last_geo_route_reason"] = route_reason
             template_key = "ask_sh_district_choice" if route_reason == "need_district" else "ask_region_choice"
             rule_id = "ADDR_ASK_DISTRICT_CHOICE" if route_reason == "need_district" else "ADDR_ASK_REGION_CHOICE"
         else:
@@ -1652,6 +1704,7 @@ class CustomerServiceAgent:
             session_state["geo_followup_round"] = 1
             session_state["geo_choice_offered"] = False
             session_state["last_geo_pending"] = True
+            session_state["last_geo_route_reason"] = route_reason
             template_key = "ask_sh_district_r1_reset" if route_reason == "need_district" else "ask_region_r1_reset"
             rule_id = "ADDR_ASK_DISTRICT_R1_RESET" if route_reason == "need_district" else "ADDR_ASK_REGION_R1_RESET"
 
@@ -1666,6 +1719,16 @@ class CustomerServiceAgent:
             rule_id=rule_id,
             rule_applied=True,
         )
+
+    def _should_recover_to_shanghai_arrival_help(self, text: str, session_state: Dict[str, Any]) -> bool:
+        if not bool(session_state.get("last_geo_pending", False)):
+            return False
+        if str(session_state.get("last_geo_route_reason", "") or "") not in ("need_district", "shanghai_need_district"):
+            return False
+        normalized = re.sub(r"\s+", "", str(text or ""))
+        if not normalized:
+            return False
+        return any(keyword in normalized for keyword in SHANGHAI_ROUTE_HELP_KEYWORDS)
 
     def _is_follow_up_question(self, text: str, conversation_history: List[Dict[str, str]]) -> bool:
         """检测是否为追问，根据用户选择的策略"""

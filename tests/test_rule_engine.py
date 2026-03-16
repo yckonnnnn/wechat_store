@@ -254,9 +254,33 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(route_alias_renmin.get("reason"), "sh_route_scored:sh_renmin")
             self.assertEqual(route_alias_renmin.get("confidence"), "high")
 
+            renmin_variant_route = service.resolve_store_recommendation("人民廣場地址发一下")
+            self.assertEqual(renmin_variant_route.get("target_store"), "sh_renmin")
+            self.assertEqual(renmin_variant_route.get("reason"), "sh_route_scored:sh_renmin")
+
+            huaihai_route = service.resolve_store_recommendation("淮海中路地址发一下")
+            self.assertEqual(huaihai_route.get("target_store"), "sh_xuhui")
+            self.assertEqual(huaihai_route.get("reason"), "sh_route_scored:sh_xuhui")
+
+            ruijin_route = service.resolve_store_recommendation("瑞金二路地址发一下")
+            self.assertEqual(ruijin_route.get("target_store"), "sh_xuhui")
+            self.assertEqual(ruijin_route.get("reason"), "sh_route_scored:sh_xuhui")
+
+            service.save_shanghai_route_alias_rows(
+                [{"keyword": "北京西路", "target_store": "sh_jingan", "note": "静安高频"}]
+            )
+            beijing_road_route = service.resolve_store_recommendation("北京西路地址发一下")
+            self.assertEqual(beijing_road_route.get("target_store"), "sh_jingan")
+            self.assertEqual(beijing_road_route.get("reason"), "sh_route_scored:sh_jingan")
+            self.assertEqual(beijing_road_route.get("confidence"), "high")
+
             hongqiao_station_route = service.resolve_store_recommendation("上海虹桥站附近有店吗")
             self.assertEqual(hongqiao_station_route.get("target_store"), "sh_renmin")
             self.assertEqual(hongqiao_station_route.get("reason"), "sh_route_scored:sh_renmin")
+
+            hongqiao_route = service.resolve_store_recommendation("虹桥")
+            self.assertEqual(hongqiao_route.get("target_store"), "sh_renmin")
+            self.assertEqual(hongqiao_route.get("reason"), "sh_route_scored:sh_renmin")
 
             south_station_route = service.resolve_store_recommendation("上海南站附近地址发一下")
             self.assertEqual(south_station_route.get("target_store"), "sh_xuhui")
@@ -447,6 +471,19 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d.route_reason, "need_arrival_point")
             self.assertEqual(d.media_plan, "none")
             self.assertIn("哪个站下车", d.reply_text)
+
+    def test_shanghai_district_followup_with_unfamiliar_route_recovers_to_arrival_point(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+
+            d1 = agent.decide("chat_sh_unfamiliar", "用户上海不熟", "上海地址", [])
+            self.assertEqual(d1.rule_id, "ADDR_ASK_DISTRICT_R1")
+
+            d2 = agent.decide("chat_sh_unfamiliar", "用户上海不熟", "我外地来的不熟悉", [])
+            self.assertEqual(d2.rule_id, "ADDR_ASK_ARRIVAL_POINT")
+            self.assertEqual(d2.route_reason, "need_arrival_point")
+            self.assertEqual(d2.media_plan, "none")
+            self.assertIn("哪个站下车", d2.reply_text)
 
     def test_shanghai_route_alias_short_phrase_is_treated_as_address(self):
         with tempfile.TemporaryDirectory() as td:

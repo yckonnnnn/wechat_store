@@ -33,11 +33,16 @@ class KnowledgeService(QObject):
         {"keyword": "汉中路", "target_store": "sh_renmin", "note": "人广附近高频路名"},
         {"keyword": "汉口路", "target_store": "sh_renmin", "note": "人民广场门店所在路名"},
         {"keyword": "中百一店", "target_store": "sh_renmin", "note": "人民广场高频地标"},
+        {"keyword": "人民廣場", "target_store": "sh_renmin", "note": "人民广场繁体写法，归到人民广场门店"},
+        {"keyword": "人民广場", "target_store": "sh_renmin", "note": "人民广场繁体错别字，归到人民广场门店"},
         {"keyword": "上海南京路", "target_store": "sh_renmin", "note": "人民广场高频商圈问法"},
         {"keyword": "南京路", "target_store": "sh_renmin", "note": "人民广场高频商圈问法"},
         {"keyword": "西芷中路", "target_store": "sh_renmin", "note": "用户常见错别字，归到人民广场门店"},
         {"keyword": "西藏中路", "target_store": "sh_renmin", "note": "人民广场高频路名"},
+        {"keyword": "虹桥", "target_store": "sh_renmin", "note": "人民广场交通枢纽简称"},
         {"keyword": "上海虹桥站", "target_store": "sh_renmin", "note": "人民广场交通枢纽高频问法"},
+        {"keyword": "虹桥火车站", "target_store": "sh_renmin", "note": "人民广场交通枢纽高频问法"},
+        {"keyword": "虹桥高铁站", "target_store": "sh_renmin", "note": "人民广场交通枢纽高频问法"},
         {"keyword": "上海站", "target_store": "sh_renmin", "note": "人民广场交通枢纽高频问法"},
         {"keyword": "浦东机场", "target_store": "sh_renmin", "note": "人民广场交通枢纽高频问法"},
         {"keyword": "虹桥机场", "target_store": "sh_renmin", "note": "人民广场交通枢纽高频问法"},
@@ -46,6 +51,8 @@ class KnowledgeService(QObject):
         {"keyword": "上海西站", "target_store": "sh_hongkou", "note": "虹口交通枢纽高频问法"},
         {"keyword": "花园路", "target_store": "sh_hongkou", "note": "虹口门店所在路名"},
         {"keyword": "政通路", "target_store": "sh_wujiaochang", "note": "五角场门店所在路名"},
+        {"keyword": "淮海中路", "target_store": "sh_xuhui", "note": "徐汇高频路名"},
+        {"keyword": "瑞金二路", "target_store": "sh_xuhui", "note": "徐汇高频路名"},
         {"keyword": "漕溪北路", "target_store": "sh_xuhui", "note": "徐汇门店所在路名"},
     ]
     STORE_DETAILS = {
@@ -978,6 +985,33 @@ class KnowledgeService(QObject):
                 "store_address": None,
                 "detected_region": detected_region,
             }
+
+        route_score = self._score_shanghai_route_aliases(text)
+        matched_keywords = list(route_score.get("matched_keywords", []) or [])
+        store_scores = dict(route_score.get("store_scores", {}) or {})
+        confidence = str(route_score.get("confidence", "none") or "none")
+        scored_target_store = str(route_score.get("target_store", "unknown") or "unknown")
+
+        if matched_keywords:
+            if confidence == "high" and scored_target_store != "unknown":
+                route = self._build_route(scored_target_store, f"sh_route_scored:{scored_target_store}")
+                route["detected_region"] = "上海"
+                route["matched_keywords"] = matched_keywords
+                route["store_scores"] = store_scores
+                route["confidence"] = "high"
+                return route
+            return {
+                "city": "shanghai",
+                "target_store": "unknown",
+                "reason": "sh_route_need_clarify",
+                "route_type": "need_clarify",
+                "store_address": None,
+                "detected_region": "上海",
+                "matched_keywords": matched_keywords,
+                "store_scores": store_scores,
+                "confidence": "low",
+            }
+
         # 北京：任何北京区县都只推荐朝阳
         beijing_markers = (
             "北京", "朝阳", "海淀", "丰台", "通州", "顺义", "门头沟", "大兴", "昌平",
@@ -994,12 +1028,6 @@ class KnowledgeService(QObject):
         for district, store_key in self.SHANGHAI_DISTRICT_STORE_MAP.items():
             if district in text:
                 return self._build_route(store_key, f"sh_district_map:{district}")
-
-        route_score = self._score_shanghai_route_aliases(text)
-        matched_keywords = list(route_score.get("matched_keywords", []) or [])
-        store_scores = dict(route_score.get("store_scores", {}) or {})
-        confidence = str(route_score.get("confidence", "none") or "none")
-        scored_target_store = str(route_score.get("target_store", "unknown") or "unknown")
 
         # 只说上海未带区：追问区，不直接给门店
         if coming_to_shanghai:
@@ -1020,26 +1048,6 @@ class KnowledgeService(QObject):
                 "route_type": "need_district",
                 "store_address": None,
                 "detected_region": "上海",
-            }
-
-        if matched_keywords:
-            if confidence == "high" and scored_target_store != "unknown":
-                route = self._build_route(scored_target_store, f"sh_route_scored:{scored_target_store}")
-                route["detected_region"] = "上海"
-                route["matched_keywords"] = matched_keywords
-                route["store_scores"] = store_scores
-                route["confidence"] = "high"
-                return route
-            return {
-                "city": "shanghai",
-                "target_store": "unknown",
-                "reason": "sh_route_need_clarify",
-                "route_type": "need_clarify",
-                "store_address": None,
-                "detected_region": "上海",
-                "matched_keywords": matched_keywords,
-                "store_scores": store_scores,
-                "confidence": "low",
             }
 
         # 江浙地区 -> 上海人民广场

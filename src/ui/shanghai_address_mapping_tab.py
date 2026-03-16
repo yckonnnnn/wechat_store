@@ -32,6 +32,9 @@ class ShanghaiAddressMappingTab(QWidget):
     def __init__(self, knowledge_service: KnowledgeService, parent=None):
         super().__init__(parent)
         self.knowledge_service = knowledge_service
+        self.page_size = 10
+        self.current_page = 1
+        self._all_rows: List[Dict[str, str]] = []
         self._row_widgets: List[Dict[str, object]] = []
         self._setup_ui()
         self.reload_rows()
@@ -123,6 +126,33 @@ class ShanghaiAddressMappingTab(QWidget):
         self.scroll_area.setWidget(self.rows_container)
         content_layout.addWidget(self.scroll_area)
 
+        self.pagination_wrap = QWidget()
+        pagination_layout = QHBoxLayout(self.pagination_wrap)
+        pagination_layout.setContentsMargins(16, 0, 16, 16)
+        pagination_layout.setSpacing(8)
+        pagination_layout.addStretch()
+
+        self.prev_page_btn = QPushButton("上一页")
+        self.prev_page_btn.setObjectName("Secondary")
+        self.prev_page_btn.setCursor(Qt.PointingHandCursor)
+        self.prev_page_btn.clicked.connect(self._prev_page)
+        pagination_layout.addWidget(self.prev_page_btn)
+
+        self.page_buttons_layout = QHBoxLayout()
+        self.page_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        self.page_buttons_layout.setSpacing(6)
+        pagination_layout.addLayout(self.page_buttons_layout)
+
+        self.next_page_btn = QPushButton("下一页")
+        self.next_page_btn.setObjectName("Secondary")
+        self.next_page_btn.setCursor(Qt.PointingHandCursor)
+        self.next_page_btn.clicked.connect(self._next_page)
+        pagination_layout.addWidget(self.next_page_btn)
+
+        pagination_layout.addStretch()
+        self.pagination_wrap.setVisible(False)
+        content_layout.addWidget(self.pagination_wrap)
+
         self.empty_label = QLabel("暂无映射，点击“新增映射”开始配置")
         self.empty_label.setAlignment(Qt.AlignCenter)
         self.empty_label.setObjectName("MutedText")
@@ -139,7 +169,14 @@ class ShanghaiAddressMappingTab(QWidget):
             if widget is not None:
                 widget.deleteLater()
 
-    def _create_row_widget(self, row: Dict[str, str] | None = None):
+    def _clear_layout_widgets(self, layout):
+        while layout.count() > 0:
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _create_row_widget(self, row: Dict[str, str] | None = None, row_index: int = 0):
         row = row or {}
         wrap = QFrame()
         wrap.setStyleSheet("background: #ffffff; border: 1px solid #e2e8f0; border-radius: 14px;")
@@ -167,11 +204,12 @@ class ShanghaiAddressMappingTab(QWidget):
         delete_btn = QPushButton("删除")
         delete_btn.setObjectName("Secondary")
         delete_btn.setCursor(Qt.PointingHandCursor)
-        delete_btn.clicked.connect(lambda: self._remove_row(wrap))
+        delete_btn.clicked.connect(lambda: self._remove_row(row_index))
         layout.addWidget(delete_btn, 1)
 
         self._row_widgets.append(
             {
+                "row_index": row_index,
                 "wrap": wrap,
                 "keyword": keyword_input,
                 "target_store": store_combo,
@@ -181,39 +219,108 @@ class ShanghaiAddressMappingTab(QWidget):
         self.rows_layout.insertWidget(self.rows_layout.count() - 1, wrap)
 
     def _add_empty_row(self):
-        self._create_row_widget()
-        self._refresh_state()
+        self._sync_current_page_to_model()
+        self._all_rows.insert(0, {"keyword": "", "target_store": "", "note": ""})
+        self.current_page = 1
+        self._render_current_page()
 
-    def _remove_row(self, wrap: QWidget):
-        self._row_widgets = [row for row in self._row_widgets if row.get("wrap") is not wrap]
-        wrap.deleteLater()
-        self._refresh_state()
+    def _remove_row(self, row_index: int):
+        reply = QMessageBox.question(
+            self,
+            "确认删除",
+            "确定删除这条上海地址映射吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
 
-    def _refresh_state(self):
-        count = len(self._row_widgets)
-        self.stats_label.setText(f"共 {count} 条")
-        self.empty_label.setVisible(count == 0)
+        self._sync_current_page_to_model()
+        if 0 <= row_index < len(self._all_rows):
+            self._all_rows.pop(row_index)
+        self.current_page = min(self.current_page, self._get_total_pages())
+        self._render_current_page()
 
-    def reload_rows(self):
-        self.knowledge_service.reload_shanghai_route_aliases()
-        rows = self.knowledge_service.get_shanghai_route_alias_rows()
-        self._clear_rows()
-        for row in rows:
-            self._create_row_widget(row)
-        self._refresh_state()
-        self.log_message.emit(f"✅ 上海地址映射已加载: {len(rows)} 条")
+    def _get_page_slice(self) -> List[Dict[str, str]]:
+        start = max(0, (self.current_page - 1) * self.page_size)
+        end = start + self.page_size
+        return self._all_rows[start:end]
 
-    def _collect_rows(self) -> List[Dict[str, str]]:
-        rows: List[Dict[str, str]] = []
+    def _get_total_pages(self) -> int:
+        if not self._all_rows:
+            return 1
+        return (len(self._all_rows) + self.page_size - 1) // self.page_size
+
+    def _sync_current_page_to_model(self):
         for row in self._row_widgets:
-            rows.append(
-                {
+            row_index = int(row["row_index"])
+            if 0 <= row_index < len(self._all_rows):
+                self._all_rows[row_index] = {
                     "keyword": str(row["keyword"].text()).strip(),
                     "target_store": str(row["target_store"].currentData() or "").strip(),
                     "note": str(row["note"].text()).strip(),
                 }
-            )
-        return rows
+
+    def _render_current_page(self):
+        self._clear_rows()
+        for offset, row in enumerate(self._get_page_slice()):
+            row_index = (self.current_page - 1) * self.page_size + offset
+            self._create_row_widget(row, row_index=row_index)
+        self.scroll_area.verticalScrollBar().setValue(0)
+        self._refresh_state()
+
+    def _render_pagination(self):
+        self._clear_layout_widgets(self.page_buttons_layout)
+
+        has_multiple_pages = len(self._all_rows) > self.page_size
+        self.pagination_wrap.setVisible(has_multiple_pages)
+        self.prev_page_btn.setEnabled(has_multiple_pages and self.current_page > 1)
+        self.next_page_btn.setEnabled(has_multiple_pages and self.current_page < self._get_total_pages())
+        if not has_multiple_pages:
+            return
+
+        total_pages = self._get_total_pages()
+        for page in range(1, total_pages + 1):
+            btn = QPushButton(str(page))
+            btn.setObjectName("Secondary")
+            btn.setCheckable(True)
+            btn.setChecked(page == self.current_page)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda _checked=False, p=page: self._go_to_page(p))
+            self.page_buttons_layout.addWidget(btn)
+
+    def _go_to_page(self, page: int):
+        target = max(1, min(page, self._get_total_pages()))
+        if target == self.current_page:
+            return
+        self._sync_current_page_to_model()
+        self.current_page = target
+        self._render_current_page()
+
+    def _prev_page(self):
+        self._go_to_page(self.current_page - 1)
+
+    def _next_page(self):
+        self._go_to_page(self.current_page + 1)
+
+    def _refresh_state(self):
+        count = len(self._all_rows)
+        self.stats_label.setText(f"共 {count} 条")
+        self.empty_label.setVisible(count == 0)
+        self.scroll_area.setVisible(count > 0)
+        self._render_pagination()
+
+    def reload_rows(self):
+        self.knowledge_service.reload_shanghai_route_aliases()
+        rows = self.knowledge_service.get_shanghai_route_alias_rows()
+        self._all_rows = [dict(row) for row in rows]
+        self.current_page = 1
+        self._render_current_page()
+        self.log_message.emit(f"✅ 上海地址映射已加载: {len(rows)} 条")
+
+    def _collect_rows(self) -> List[Dict[str, str]]:
+        self._sync_current_page_to_model()
+        return [dict(row) for row in self._all_rows]
 
     def save_rows(self):
         rows = self._collect_rows()
@@ -223,6 +330,7 @@ class ShanghaiAddressMappingTab(QWidget):
         try:
             self.knowledge_service.save_shanghai_route_alias_rows(rows)
             self.reload_rows()
+            QMessageBox.information(self, "保存成功", "上海地址映射已保存并立即生效。")
             self.mapping_updated.emit()
             self.log_message.emit("✅ 上海地址映射已保存并立即生效")
         except Exception as e:
