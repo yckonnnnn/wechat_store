@@ -393,13 +393,13 @@ class RuleEngineTestCase(unittest.TestCase):
             d2 = agent.decide(session_id, user_name, "北京店具体位置", [])
             self.assertEqual(d2.rule_id, "ADDR_TEXT_AFTER_IMAGE")
             self.assertEqual(d2.reply_source, "rule")
-            self.assertEqual(d2.media_plan, "none")
-            self.assertIn("朝阳区建外SOHO东区", d2.reply_text)
+            self.assertEqual(d2.media_plan, "address_image")
+            self.assertTrue(d2.media_items)
+            self.assertNotIn("朝阳区建外SOHO东区", d2.reply_text)
 
-            llm.reply_text = "姐姐，北京店就在朝阳，您导航过去就行🌹"
             d3 = agent.decide(session_id, user_name, "北京店具体位置", [])
-            self.assertEqual(d3.reply_source, "llm")
-            self.assertEqual(d3.rule_id, "LLM_FOLLOW_UP")
+            self.assertEqual(d3.reply_source, "rule")
+            self.assertEqual(d3.rule_id, "ADDR_CONTACT_AFTER_TEXT")
 
     def test_address_followup_accepts_house_number_phrases_after_image(self):
         with tempfile.TemporaryDirectory() as td:
@@ -430,7 +430,9 @@ class RuleEngineTestCase(unittest.TestCase):
 
             d2 = agent.decide(session_id, user_name, "多少号", [])
             self.assertEqual(d2.rule_id, "ADDR_TEXT_AFTER_IMAGE")
-            self.assertIn("朝阳区建外SOHO东区", d2.reply_text)
+            self.assertEqual(d2.media_plan, "address_image")
+            self.assertTrue(d2.media_items)
+            self.assertNotIn("朝阳区建外SOHO东区", d2.reply_text)
 
             d3 = agent.decide(session_id, user_name, "几号", [])
             self.assertEqual(d3.rule_id, "ADDR_CONTACT_AFTER_TEXT")
@@ -499,7 +501,11 @@ class RuleEngineTestCase(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)
             conversations_dir = temp_dir / "conversations"
-            agent, _, _, _ = self._build_agent(temp_dir)
+            agent, _, _, _ = self._build_agent(
+                temp_dir,
+                address_image_files=["上海人广地址.jpg"],
+                store_targets={"上海人广地址.jpg": "sh_renmin"},
+            )
             session_id = "chat_sh_route_followup"
             user_name = "用户上海追问"
             user_hash = agent._hash_user(user_name)
@@ -515,7 +521,7 @@ class RuleEngineTestCase(unittest.TestCase):
                 {
                     "type": "address_image",
                     "target_store": "sh_renmin",
-                    "path": "dummy.jpg",
+                    "path": str(temp_dir / "images" / "上海人广地址.jpg"),
                 },
                 success=True,
             )
@@ -523,14 +529,16 @@ class RuleEngineTestCase(unittest.TestCase):
                 conversations_dir=conversations_dir,
                 session_id=session_id,
                 media_type="address_image",
-                media_path="dummy.jpg",
+                media_path=str(temp_dir / "images" / "上海人广地址.jpg"),
                 ts="2026-02-27T10:00:00",
                 user_id_hash=user_hash,
             )
 
             d2 = agent.decide(session_id, user_name, "南京路", [])
             self.assertEqual(d2.rule_id, "ADDR_TEXT_AFTER_IMAGE")
-            self.assertIn("汉口路650号亚洲大厦", d2.reply_text)
+            self.assertEqual(d2.media_plan, "address_image")
+            self.assertTrue(d2.media_items)
+            self.assertNotIn("汉口路650号亚洲大厦", d2.reply_text)
 
     def test_ambiguous_short_fragment_asks_back_instead_of_llm(self):
         with tempfile.TemporaryDirectory() as td:
@@ -712,7 +720,9 @@ class RuleEngineTestCase(unittest.TestCase):
 
             d3 = agent.decide(session_id, user_name, "具体地址", [])
             self.assertEqual(d3.rule_id, "ADDR_TEXT_AFTER_IMAGE")
-            self.assertIn("朝阳区建外SOHO东区", d3.reply_text)
+            self.assertEqual(d3.media_plan, "address_image")
+            self.assertTrue(d3.media_items)
+            self.assertNotIn("朝阳区建外SOHO东区", d3.reply_text)
 
             d4 = agent.decide(session_id, user_name, "具体地址", [])
             self.assertEqual(d4.rule_id, "ADDR_CONTACT_AFTER_TEXT")
@@ -1663,7 +1673,9 @@ class RuleEngineTestCase(unittest.TestCase):
 
             d3 = agent.decide(session_id, user_name, "北在哪？", [])
             self.assertEqual(d3.rule_id, "ADDR_TEXT_AFTER_IMAGE")
-            self.assertIn("朝阳区建外SOHO东区", d3.reply_text)
+            self.assertEqual(d3.media_plan, "address_image")
+            self.assertTrue(d3.media_items)
+            self.assertNotIn("朝阳区建外SOHO东区", d3.reply_text)
 
     def test_address_followup_does_not_hijack_price_question_after_address_context(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1798,7 +1810,9 @@ class RuleEngineTestCase(unittest.TestCase):
             print(f"实际发出：{d.reply_text}")
             self.assertEqual(llm.calls, 1)
             self.assertEqual(d.reply_source, "llm")
-            self.assertIn("静安区愚园路172号环球世界大厦A座", d.reply_text)
+            self.assertIn("上海静安门店", d.reply_text)
+            self.assertIn("圈圈的位置", d.reply_text)
+            self.assertNotIn("静安区愚园路172号环球世界大厦A座", d.reply_text)
             self.assertNotIn("南京西路", d.reply_text)
 
     def test_llm_contact_reply_is_overridden_by_fixed_contact_phrase(self):
@@ -1837,7 +1851,8 @@ class RuleEngineTestCase(unittest.TestCase):
             print(f"LLM输出：{llm.reply_text}")
             print(f"实际发出：{d.reply_text}")
             self.assertEqual(llm.calls, 1)
-            self.assertIn("具体地址，楼层，怎么坐车导航路线", d.reply_text)
+            self.assertIn("圈圈的位置", d.reply_text)
+            self.assertNotIn("具体地址", d.reply_text)
             self.assertNotIn("南京西路", d.reply_text)
 
     def test_llm_phone_leak_reply_is_blocked(self):
@@ -2297,9 +2312,8 @@ class RuleEngineTestCase(unittest.TestCase):
 
             d2 = agent.decide(session_id, user_name, "我在门头沟", [])
             self.assertEqual(d2.rule_id, "ADDR_STORE_RECOMMEND")
-            self.assertEqual(d2.media_plan, "none")
-            self.assertEqual(d2.media_skip_reason, "address_image_cooldown")
-            self.assertFalse(d2.media_items)
+            self.assertEqual(d2.media_plan, "address_image")
+            self.assertTrue(d2.media_items)
 
             (conversations_dir / f"{session_id}.jsonl").unlink(missing_ok=True)
             self._append_media_success_log(
@@ -2314,6 +2328,28 @@ class RuleEngineTestCase(unittest.TestCase):
             d3 = agent.decide(session_id, user_name, "我在门头沟", [])
             self.assertEqual(d3.media_plan, "address_image")
             self.assertTrue(d3.media_items)
+
+    def test_address_image_can_still_send_after_more_than_six_history(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = self._build_agent(temp_dir)
+            session_id = "chat_addr_more_than_six"
+            user_name = "用户地址超6次"
+            user_hash = agent._hash_user(user_name)
+
+            agent.memory_store.update_session_state(
+                session_id,
+                {
+                    "address_image_sent_count": 6,
+                    "last_target_store": "beijing_chaoyang",
+                },
+                user_hash=user_hash,
+            )
+
+            d = agent.decide(session_id, user_name, "我在门头沟", [])
+            self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
+            self.assertEqual(d.media_plan, "address_image")
+            self.assertTrue(d.media_items)
 
     def test_both_images_lock_blocks_future_images(self):
         with tempfile.TemporaryDirectory() as td:

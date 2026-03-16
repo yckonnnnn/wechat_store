@@ -76,9 +76,9 @@ SHIPPING_BLOCK_KEYWORDS = (
     "到家",
 )
 SHIPPING_BLOCK_REPLACEMENT = "姐姐我们是到店定制哦"
-ADDRESS_UNSUPPORTED_FALLBACK = "姐姐，您留个联系方式，我来加您并跟您具体沟通"
+ADDRESS_UNSUPPORTED_FALLBACK = "姐姐，门店位置您可以看图里圈圈的位置哦，需要的话我也可以继续帮您安排"
 MATERIAL_LIBRARY_VIDEO_SENTINEL = "__material_library_video__"
-ADDRESS_FACT_FALLBACK = "姐姐，具体地址，楼层，怎么坐车导航路线，以及价格问题，您发☎️，我来添加您，告诉您"
+ADDRESS_FACT_FALLBACK = "姐姐，门店位置您可以看图里圈圈的位置哦，我这边也可以继续帮您安排"
 ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK = "您发个☎️，我来加您好友，具体给您介绍怎么走，位置在哪里"
 PRICE_FACT_FALLBACK = "姐姐，具体的价格，设计，您可以留个☎️，我来添加您，专门给您详细介绍"
 PRICE_GUARDRAIL_SAFE_REPLY = "姐姐，我们的价格有3000、4000、5000、6000不同档位，具体要根据材质、款式、头围、脸型和需求方案来定。"
@@ -435,10 +435,10 @@ DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
     "ask_sh_district_r2": "姐姐再确认下，您在上海哪个区或附近地标呢？我马上给您对门店～🌹",
     "ask_sh_district_choice": "姐姐您方便告诉我个位置？不确定也没关系，告诉我个地标我也能帮您匹配～🌹",
     "ask_sh_district_r1_reset": "姐姐我再确认下，您在上海哪个区呀？我这边马上帮您匹配最近门店～🌹",
-    "ask_sh_arrival_point": "姐姐，您到上海后一般在哪个站下车呀？像虹桥站、上海站、浦东机场这些都可以告诉我，我帮您针对性推荐门店；如果您还没确定，我也可以先给您推荐人广店：黄埔区汉口路650号亚洲大厦🌹",
+    "ask_sh_arrival_point": "姐姐，您到上海后一般在哪个站下车呀？像虹桥站、上海站、浦东机场这些都可以告诉我，我帮您针对性推荐门店🌹",
     "ask_sh_route_clarify": "姐姐，您说的是上海哪条路附近呀？我帮您匹配最近门店🌹",
     "ask_ambiguous_short_fragment": "姐姐，您是想问门店地址吗？您告诉我大概在哪个区域，我帮您匹配最近门店🌹",
-    "store_recommend": "姐姐，推荐您去{store_name}，可以看下面的红框框，您跟着图走会更直观，但是一定要预约哦～🌹",
+    "store_recommend": "姐姐，推荐您去{store_name}，位置可以看图中圈圈的位置哦，一定要预约哈～🌹",
     "non_coverage_contact": "姐姐，{region}暂时没有我们的门店，目前假发是需要根据头围和脸型进行私人定制的，您可以看看下面图中画圈圈的地方，会有专门的老师跟您远程鉴定～💗",
     "contact_intro": "姐姐可以看下红框框的内容，您按图添加后我这边一对一继续跟进您呀😊",
     "purchase_contact_intro": "姐姐可以看看图中画框框的地方，会有专门的老师给您介绍～❤️",
@@ -1180,23 +1180,13 @@ class CustomerServiceAgent:
         if any(k in (text or "") for k in aftercare_keywords):
             return False
 
-        # 优先检查：如果会触发地址图片发送，且该门店已经发送过，则不走规则决策
         route_type = route.get("route_type", "unknown")
         target_store = route.get("target_store", "unknown")
 
-        # 判断是否会触发地址图片发送
         will_send_address_image = (
             route_type in ("coverage", "non_coverage", "need_district", "need_clarify") or
             intent == "address"
         )
-
-        if will_send_address_image and target_store != "unknown":
-            sent_stores = set(session_state.get("sent_address_stores", []) or [])
-            print(f"[DEBUG] 地址路由检查: target_store={target_store}, sent_stores={sent_stores}, route_type={route_type}, intent={intent}")
-            if target_store in sent_stores:
-                # 已经发送过该门店的地址图片，后续由固定文字地址或 LLM 处理
-                print(f"[DEBUG] 该门店已发送过地址图片，跳过地址路由")
-                return False
 
         if intent == "address":
             session_target_store = str(session_state.get("last_target_store", "") or "")
@@ -1286,16 +1276,13 @@ class CustomerServiceAgent:
 
         store = self.knowledge_service.get_store_display(target_store)
         store_name = str(store.get("store_name", "") or "门店")
-        store_address = str(store.get("store_address", "") or "")
-        if not store_address:
-            return None
 
         return AgentDecision(
-            reply_text=f"姐姐，{store_name}具体位置是：{store_address}。",
+            reply_text=self._normalize_reply_text(f"姐姐，{store_name}位置可以看图中圈圈的位置哦"),
             intent="address",
             route_reason=str(route.get("reason", "unknown") or "unknown"),
             reply_goal="解答",
-            media_plan="none",
+            media_plan="address_image",
             reply_source="rule",
             rule_id="ADDR_TEXT_AFTER_IMAGE",
             rule_applied=True,
@@ -1313,10 +1300,9 @@ class CustomerServiceAgent:
         if not self._should_continue_address_followup(latest_user_text=latest_user_text, session_state=session_state):
             return None
 
-        if str(route.get("target_store", "") or "") not in ("", "unknown"):
-            return None
-
-        target_store = str(session_state.get("last_target_store", "") or "")
+        target_store = str(route.get("target_store", "") or "")
+        if not target_store or target_store == "unknown":
+            target_store = str(session_state.get("last_target_store", "") or "")
         if not target_store or target_store == "unknown":
             return None
 
@@ -2688,6 +2674,8 @@ class CustomerServiceAgent:
         items: List[Dict[str, Any]] = []
         skip_reason = ""
         target_store = route.get("target_store", "unknown")
+        if media_plan == "address_image" and target_store in ("", "unknown"):
+            target_store = str(session_state.get("last_target_store", "") or "unknown")
         reason = route_reason or route.get("reason", "unknown")
         detected_region = route.get("detected_region", "") or ""
 
@@ -2734,26 +2722,6 @@ class CustomerServiceAgent:
     ) -> Tuple[Optional[Dict[str, Any]], str]:
         if target_store == "unknown":
             return None, "address_target_unknown"
-
-        whitelist = self._is_media_whitelist_session(session_id)
-
-        if not whitelist:
-            sent_count = int(session_state.get("address_image_sent_count", 0) or 0)
-            if sent_count >= 6:
-                return None, "address_image_limit_reached"
-
-            sent_map = session_state.get("address_image_last_sent_at_by_store", {}) or {}
-            if not isinstance(sent_map, dict):
-                sent_map = {}
-                session_state["address_image_last_sent_at_by_store"] = sent_map
-
-            last_sent_text = str(sent_map.get(target_store, "") or "").strip()
-            if last_sent_text:
-                last_sent = self._parse_iso(last_sent_text)
-                if last_sent:
-                    elapsed = datetime.now() - last_sent
-                    if elapsed < timedelta(hours=ADDRESS_IMAGE_COOLDOWN_HOURS):
-                        return None, "address_image_cooldown"
 
         image_path = self._pick_address_image(target_store)
         if not image_path:
@@ -3422,9 +3390,7 @@ class CustomerServiceAgent:
             if store_key:
                 store = self.knowledge_service.get_store_display(store_key)
                 store_name = str(store.get("store_name", "") or "门店")
-                store_address = str(store.get("store_address", "") or "")
-                if store_address:
-                    return self._normalize_reply_text(f"姐姐，{store_name}具体位置是：{store_address}")
+                return self._normalize_reply_text(f"姐姐，{store_name}位置可以看图中圈圈的位置哦")
             if self._reply_contains_unsupported_address_detail(reply):
                 return self._render_guardrail_reply(ADDRESS_FACT_FALLBACK)
             return self._render_guardrail_reply(ADDRESS_FACT_FALLBACK)
