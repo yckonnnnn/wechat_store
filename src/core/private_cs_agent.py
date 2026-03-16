@@ -219,7 +219,6 @@ ADDRESS_FOLLOWUP_BLOCK_KEYWORDS = (
     "价格",
     "价位",
     "多少",
-    "钱",
     "报价",
     "费用",
     "收费",
@@ -321,7 +320,6 @@ PRICE_PRIORITY_KEYWORDS = (
     "价格",
     "价位",
     "多少",
-    "钱",
     "报价",
     "费用",
     "收费",
@@ -404,6 +402,16 @@ BUSINESS_BLOCK_PRIORITY_KEYWORDS = (
     "培训",
     "学习",
 )
+LIFESPAN_PRIORITY_KEYWORDS = (
+    "能用多久",
+    "用多久",
+    "多久换",
+    "使用寿命",
+    "寿命",
+    "能戴多久",
+    "可以戴多久",
+    "耐用吗",
+)
 REQUIRED_MEDIA_TYPES = ("address_image", "contact_image")
 
 
@@ -414,8 +422,11 @@ DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
     "ask_region_r1_reset": "姐姐我再帮您快速确认下，您在什么城市或区域呀？我马上按距离给您匹配最近门店～🌹",
     "ask_sh_district_r1": "姐姐您在上海哪个区呀？我帮您匹配最近门店～🌹",
     "ask_sh_district_r2": "姐姐再确认下，您在上海哪个区或附近地标呢？我马上给您对门店～🌹",
-    "ask_sh_district_choice": "姐姐您在静安/徐汇/杨浦附近吗？不确定也没关系，告诉我个地标我也能帮您匹配～🌹",
+    "ask_sh_district_choice": "姐姐您方便告诉我个位置？不确定也没关系，告诉我个地标我也能帮您匹配～🌹",
     "ask_sh_district_r1_reset": "姐姐我再确认下，您在上海哪个区呀？我这边马上帮您匹配最近门店～🌹",
+    "ask_sh_arrival_point": "姐姐，您到上海后一般在哪个站下车呀？像虹桥站、上海站、浦东机场这些都可以告诉我，我帮您针对性推荐门店；如果您还没确定，我也可以先给您推荐人广店🌹",
+    "ask_sh_route_clarify": "姐姐，您说的是上海哪条路附近呀？我帮您匹配最近门店🌹",
+    "ask_ambiguous_short_fragment": "姐姐，您是想问门店地址吗？您告诉我大概在哪个区域，我帮您匹配最近门店🌹",
     "store_recommend": "姐姐，推荐您去{store_name}，可以看下面的红框框，您跟着图走会更直观，但是一定要预约哦～🌹",
     "non_coverage_contact": "姐姐，{region}暂时没有我们的门店，目前假发是需要根据头围和脸型进行私人定制的，您可以看看下面图中画圈圈的地方，会有专门的老师跟您远程鉴定～💗",
     "contact_intro": "姐姐可以看下红框框的内容，您按图添加后我这边一对一继续跟进您呀😊",
@@ -1084,6 +1095,8 @@ class CustomerServiceAgent:
         if self._looks_like_direct_contact_request(text):
             return "contact"
 
+        if self.knowledge_service.is_shanghai_route_alias_address_candidate(text):
+            return "address"
         if self.knowledge_service.is_address_query(text):
             return "address"
         if self.knowledge_service.is_purchase_intent(text):
@@ -1118,6 +1131,17 @@ class CustomerServiceAgent:
         )
         return any(pattern in normalized for pattern in direct_patterns)
 
+    def _is_ambiguous_short_fragment(self, text: str, intent: str, route: Dict[str, Any]) -> bool:
+        normalized = re.sub(r"\s+", "", str(text or ""))
+        if not normalized or len(normalized) > 2:
+            return False
+        if intent != "general":
+            return False
+        if str(route.get("reason", "unknown") or "unknown") != "unknown":
+            return False
+        ambiguous_tokens = {"址", "店", "路", "位", "地址", "位置"}
+        return normalized in ambiguous_tokens
+
     def _looks_like_phone_submission(self, text: str) -> bool:
         normalized = re.sub(r"[^\d]", "", str(text or ""))
         if not normalized:
@@ -1142,7 +1166,7 @@ class CustomerServiceAgent:
 
         # 判断是否会触发地址图片发送
         will_send_address_image = (
-            route_type in ("coverage", "non_coverage", "need_district") or
+            route_type in ("coverage", "non_coverage", "need_district", "need_clarify") or
             intent == "address"
         )
 
@@ -1171,7 +1195,7 @@ class CustomerServiceAgent:
                 return False
 
         # 原有的规则决策逻辑
-        if route_type in ("coverage", "non_coverage", "need_district"):
+        if route_type in ("coverage", "non_coverage", "need_district", "need_clarify"):
             return True
         if intent in ("address", "purchase"):
             return True
@@ -1207,7 +1231,7 @@ class CustomerServiceAgent:
         intent: str,
         session_state: Dict[str, Any],
     ) -> Optional[AgentDecision]:
-        if intent != "address":
+        if intent != "address" and not self.knowledge_service.is_shanghai_route_alias_address_candidate(latest_user_text):
             return None
         if not self._should_continue_address_followup(latest_user_text=latest_user_text, session_state=session_state):
             return None
@@ -1219,7 +1243,9 @@ class CustomerServiceAgent:
             return None
 
         sent_stores = set(session_state.get("sent_address_stores", []) or [])
-        if target_store not in sent_stores:
+        last_target_store = str(session_state.get("last_target_store", "") or "")
+        has_sent_address = int(session_state.get("address_image_sent_count", 0) or 0) > 0
+        if target_store not in sent_stores and not (has_sent_address and last_target_store == target_store):
             return None
 
         text_reply_count_by_store = dict(session_state.get("address_text_reply_count_by_store", {}) or {})
@@ -1250,7 +1276,7 @@ class CustomerServiceAgent:
         intent: str,
         session_state: Dict[str, Any],
     ) -> Optional[AgentDecision]:
-        if intent != "address":
+        if intent != "address" and not self.knowledge_service.is_shanghai_route_alias_address_candidate(latest_user_text):
             return None
         if not self._should_continue_address_followup(latest_user_text=latest_user_text, session_state=session_state):
             return None
@@ -1263,7 +1289,9 @@ class CustomerServiceAgent:
             return None
 
         sent_stores = set(session_state.get("sent_address_stores", []) or [])
-        if target_store not in sent_stores:
+        last_target_store = str(session_state.get("last_target_store", "") or "")
+        has_sent_address = int(session_state.get("address_image_sent_count", 0) or 0) > 0
+        if target_store not in sent_stores and not (has_sent_address and last_target_store == target_store):
             return None
 
         text_reply_count_by_store = dict(session_state.get("address_text_reply_count_by_store", {}) or {})
@@ -1289,6 +1317,12 @@ class CustomerServiceAgent:
         normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
         if not normalized:
             return False
+
+        if self.knowledge_service.is_shanghai_route_alias_address_candidate(normalized):
+            has_sent_address = int(session_state.get("address_image_sent_count", 0) or 0) > 0
+            has_target_store = str(session_state.get("last_target_store", "") or "").strip() not in ("", "unknown")
+            if has_sent_address and has_target_store:
+                return True
 
         if any(keyword in normalized for keyword in ADDRESS_FOLLOWUP_PRIORITY_KEYWORDS):
             return True
@@ -1376,8 +1410,36 @@ class CustomerServiceAgent:
         if is_first_turn_global and intent == "purchase" and reason in ("unknown", "need_region"):
             return self._build_geo_followup_decision(session_state=session_state, route_reason="need_region", intent="purchase")
 
+        if reason == "shanghai_need_arrival_point":
+            session_state["last_geo_pending"] = True
+            return AgentDecision(
+                reply_text=self._render_template("ask_sh_arrival_point"),
+                intent="address",
+                route_reason="need_arrival_point",
+                reply_goal="追问地区",
+                media_plan="none",
+                reply_source="rule",
+                rule_id="ADDR_ASK_ARRIVAL_POINT",
+                rule_applied=True,
+                geo_context_source=geo_context.get("source", ""),
+            )
+
         if reason == "shanghai_need_district":
             return self._build_geo_followup_decision(session_state=session_state, route_reason="need_district", intent="address")
+
+        if reason == "sh_route_need_clarify":
+            session_state["last_geo_pending"] = True
+            return AgentDecision(
+                reply_text=self._render_template("ask_sh_route_clarify"),
+                intent="address",
+                route_reason="need_clarify",
+                reply_goal="追问地区",
+                media_plan="none",
+                reply_source="rule",
+                rule_id="ADDR_SH_ROUTE_NEED_CLARIFY",
+                rule_applied=True,
+                geo_context_source=geo_context.get("source", ""),
+            )
 
         # “不在上海怎么买”优先走远程联系方式逻辑，避免被历史上海门店上下文误导。
         if (
@@ -1833,6 +1895,71 @@ class CustomerServiceAgent:
             )
         )
 
+    def _looks_like_lifespan_query(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(text or ""))
+        if not normalized:
+            return False
+        return any(token in normalized for token in LIFESPAN_PRIORITY_KEYWORDS)
+
+    def _decide_lifespan_priority_reply(
+        self,
+        latest_user_text: str,
+        route: Dict[str, Any],
+        user_state: Dict[str, Any],
+        user_id_hash: str = "",
+    ) -> Optional[AgentDecision]:
+        text = (latest_user_text or "").strip()
+        if not self._looks_like_lifespan_query(text):
+            return None
+
+        kb_detail = self.knowledge_service.find_answer_detail(text, threshold=self.knowledge_threshold)
+        kb_intent = str(kb_detail.get("intent", "") or "").strip().lower()
+        tags = {str(tag).strip() for tag in (kb_detail.get("tags", []) or []) if str(tag).strip()}
+        if not (kb_detail.get("matched") and ("使用寿命" in tags or kb_intent in {"general", "aftercare"})):
+            return None
+
+        kb_answer = str(kb_detail.get("answer", "") or "").strip()
+        kb_answers = [
+            str(x).strip()
+            for x in (kb_detail.get("answers", []) or [])
+            if str(x).strip()
+        ]
+        if kb_answer and kb_answer not in kb_answers:
+            kb_answers.append(kb_answer)
+        answer = kb_answers[0] if kb_answers else kb_answer
+        if not answer:
+            return None
+
+        selected_answer, selected_index, exhausted = self._select_kb_variant_answer(
+            answers=kb_answers,
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+        )
+        answer = selected_answer or answer
+        self._remember_selected_kb_answer(
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+            answer_text=answer,
+        )
+        return AgentDecision(
+            reply_text=answer,
+            intent="general",
+            route_reason="lifespan_priority",
+            reply_goal="解答",
+            media_plan="none",
+            reply_source="knowledge",
+            rule_id="LIFESPAN_PRIORITY",
+            rule_applied=True,
+            kb_match_score=float(kb_detail.get("score", 0.0) or 0.0),
+            kb_match_question=str(kb_detail.get("question", "") or ""),
+            kb_match_mode=f"lifespan_priority_{str(kb_detail.get('mode', '') or 'match')}",
+            kb_item_id=str(kb_detail.get("item_id", "") or ""),
+            kb_variant_total=len(kb_answers),
+            kb_variant_selected_index=selected_index if selected_answer else (-1 if exhausted else 0),
+            kb_variant_fallback_llm=False,
+            kb_confident=True,
+        )
+
     def _decide_appointment_priority_reply(
         self,
         latest_user_text: str,
@@ -2045,6 +2172,15 @@ class CustomerServiceAgent:
         if media_placeholder_decision is not None:
             return media_placeholder_decision
 
+        lifespan_priority_decision = self._decide_lifespan_priority_reply(
+            latest_user_text=latest_user_text,
+            route=route,
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+        )
+        if lifespan_priority_decision is not None:
+            return lifespan_priority_decision
+
         if intent == "contact":
             if contact_sent:
                 prompt_count = int(session_state.get("contact_followup_prompt_count", 0) or 0)
@@ -2068,6 +2204,18 @@ class CustomerServiceAgent:
                 media_plan="contact_image",
                 reply_source="rule",
                 rule_id="CONTACT_SEND_IMAGE",
+                rule_applied=True,
+            )
+
+        if self._is_ambiguous_short_fragment(latest_user_text, intent=intent, route=route):
+            return AgentDecision(
+                reply_text=self._render_template("ask_ambiguous_short_fragment"),
+                intent="address",
+                route_reason="ambiguous_short_fragment",
+                reply_goal="追问地区",
+                media_plan="none",
+                reply_source="rule",
+                rule_id="ADDR_AMBIGUOUS_SHORT_FRAGMENT",
                 rule_applied=True,
             )
 

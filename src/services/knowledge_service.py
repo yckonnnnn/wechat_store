@@ -37,6 +37,13 @@ class KnowledgeService(QObject):
         {"keyword": "南京路", "target_store": "sh_renmin", "note": "人民广场高频商圈问法"},
         {"keyword": "西芷中路", "target_store": "sh_renmin", "note": "用户常见错别字，归到人民广场门店"},
         {"keyword": "西藏中路", "target_store": "sh_renmin", "note": "人民广场高频路名"},
+        {"keyword": "上海虹桥站", "target_store": "sh_renmin", "note": "人民广场交通枢纽高频问法"},
+        {"keyword": "上海站", "target_store": "sh_renmin", "note": "人民广场交通枢纽高频问法"},
+        {"keyword": "浦东机场", "target_store": "sh_renmin", "note": "人民广场交通枢纽高频问法"},
+        {"keyword": "虹桥机场", "target_store": "sh_renmin", "note": "人民广场交通枢纽高频问法"},
+        {"keyword": "上海南站", "target_store": "sh_xuhui", "note": "徐汇交通枢纽高频问法"},
+        {"keyword": "上海松江站", "target_store": "sh_xuhui", "note": "徐汇交通枢纽高频问法"},
+        {"keyword": "上海西站", "target_store": "sh_hongkou", "note": "虹口交通枢纽高频问法"},
         {"keyword": "花园路", "target_store": "sh_hongkou", "note": "虹口门店所在路名"},
         {"keyword": "政通路", "target_store": "sh_wujiaochang", "note": "五角场门店所在路名"},
         {"keyword": "漕溪北路", "target_store": "sh_xuhui", "note": "徐汇门店所在路名"},
@@ -205,6 +212,10 @@ class KnowledgeService(QObject):
 
         if not rows:
             rows = self._normalize_shanghai_route_alias_rows(self.DEFAULT_SHANGHAI_ROUTE_ALIAS_ROWS)
+        else:
+            rows = self._normalize_shanghai_route_alias_rows(
+                list(rows) + list(self.DEFAULT_SHANGHAI_ROUTE_ALIAS_ROWS)
+            )
 
         self._shanghai_route_alias_rows = rows
         self._shanghai_route_alias_pairs = sorted(
@@ -854,6 +865,27 @@ class KnowledgeService(QObject):
         text = (text or "").strip()
         return bool(text) and any(keyword in text for keyword in self.ADDRESS_KEYWORDS)
 
+    def is_shanghai_route_alias_address_candidate(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(text or ""))
+        if not normalized:
+            return False
+        if self.is_address_query(normalized):
+            return True
+        if any(keyword in normalized for keyword in self.PRICE_KEYWORDS):
+            return False
+        if any(keyword in normalized for keyword in self.WEARING_KEYWORDS):
+            return False
+        if any(keyword in normalized for keyword in self.PURCHASE_INTENT_KEYWORDS):
+            return False
+
+        score = self._score_shanghai_route_aliases(normalized)
+        matched_keywords = list(score.get("matched_keywords", []) or [])
+        if not matched_keywords:
+            return False
+
+        # 纯地点短句也视为地址候选，例如“中百一店”“南京路”“常德路长寿路”
+        return len(normalized) <= 12
+
     def is_purchase_intent(self, text: str) -> bool:
         """是否包含明确购买意图关键词"""
         normalized = re.sub(r"\s+", "", (text or ""))
@@ -869,6 +901,48 @@ class KnowledgeService(QObject):
             if keyword and keyword in normalized_text:
                 return keyword, target_store
         return None
+
+    def _score_shanghai_route_aliases(self, text: str) -> Dict[str, object]:
+        normalized_text = re.sub(r"\s+", "", str(text or ""))
+        if not normalized_text:
+            return {"matched_keywords": [], "store_scores": {}, "confidence": "none", "target_store": "unknown"}
+
+        matched_keywords: List[str] = []
+        store_scores: Dict[str, int] = {}
+        occupied_spans: List[Tuple[int, int]] = []
+
+        for keyword, target_store, _note in self._shanghai_route_alias_pairs:
+            if not keyword or not target_store:
+                continue
+            search_from = 0
+            while True:
+                start = normalized_text.find(keyword, search_from)
+                if start < 0:
+                    break
+                end = start + len(keyword)
+                overlapped = any(not (end <= span_start or start >= span_end) for span_start, span_end in occupied_spans)
+                if not overlapped:
+                    occupied_spans.append((start, end))
+                    matched_keywords.append(keyword)
+                    store_scores[target_store] = int(store_scores.get(target_store, 0) or 0) + 1
+                    break
+                search_from = start + 1
+
+        if not store_scores:
+            return {"matched_keywords": [], "store_scores": {}, "confidence": "none", "target_store": "unknown"}
+
+        ranked_scores = sorted(store_scores.items(), key=lambda item: (-item[1], item[0]))
+        top_store, top_score = ranked_scores[0]
+        second_score = ranked_scores[1][1] if len(ranked_scores) > 1 else 0
+        confidence = "high" if top_score > second_score else "low"
+        target_store = top_store if confidence == "high" else "unknown"
+
+        return {
+            "matched_keywords": matched_keywords,
+            "store_scores": store_scores,
+            "confidence": confidence,
+            "target_store": target_store,
+        }
 
     def resolve_store_recommendation(self, user_text: str) -> dict:
         """根据用户地理位置解析推荐门店（仅路由，不生成文案）"""
@@ -886,6 +960,7 @@ class KnowledgeService(QObject):
         compact = re.sub(r"[^\u4e00-\u9fa5A-Za-z0-9]", "", text)
         neg_beijing = bool(re.search(r"(不在|不是|不去).*北京", compact))
         neg_shanghai = bool(re.search(r"(不在|不是|不去).*上海", compact))
+        coming_to_shanghai = bool(re.search(r"(来上海|去上海|到上海)", compact))
 
         # 明确表示“不在北京/不在上海（含两者）”时，按非覆盖处理，避免落到 unknown。
         if neg_beijing or neg_shanghai:
@@ -920,15 +995,24 @@ class KnowledgeService(QObject):
             if district in text:
                 return self._build_route(store_key, f"sh_district_map:{district}")
 
-        route_alias = self._match_shanghai_route_alias(text)
-        if route_alias:
-            keyword, store_key = route_alias
-            route = self._build_route(store_key, f"sh_route_alias:{keyword}")
-            route["detected_region"] = "上海"
-            return route
+        route_score = self._score_shanghai_route_aliases(text)
+        matched_keywords = list(route_score.get("matched_keywords", []) or [])
+        store_scores = dict(route_score.get("store_scores", {}) or {})
+        confidence = str(route_score.get("confidence", "none") or "none")
+        scored_target_store = str(route_score.get("target_store", "unknown") or "unknown")
 
         # 只说上海未带区：追问区，不直接给门店
-        if not neg_shanghai and "上海" in text:
+        if coming_to_shanghai:
+            return {
+                "city": "shanghai",
+                "target_store": "unknown",
+                "reason": "shanghai_need_arrival_point",
+                "route_type": "need_district",
+                "store_address": None,
+                "detected_region": "上海",
+            }
+
+        if not neg_shanghai and "上海" in text and not matched_keywords:
             return {
                 "city": "shanghai",
                 "target_store": "unknown",
@@ -936,6 +1020,26 @@ class KnowledgeService(QObject):
                 "route_type": "need_district",
                 "store_address": None,
                 "detected_region": "上海",
+            }
+
+        if matched_keywords:
+            if confidence == "high" and scored_target_store != "unknown":
+                route = self._build_route(scored_target_store, f"sh_route_scored:{scored_target_store}")
+                route["detected_region"] = "上海"
+                route["matched_keywords"] = matched_keywords
+                route["store_scores"] = store_scores
+                route["confidence"] = "high"
+                return route
+            return {
+                "city": "shanghai",
+                "target_store": "unknown",
+                "reason": "sh_route_need_clarify",
+                "route_type": "need_clarify",
+                "store_address": None,
+                "detected_region": "上海",
+                "matched_keywords": matched_keywords,
+                "store_scores": store_scores,
+                "confidence": "low",
             }
 
         # 江浙地区 -> 上海人民广场

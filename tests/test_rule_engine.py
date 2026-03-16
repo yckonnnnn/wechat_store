@@ -246,11 +246,38 @@ class RuleEngineTestCase(unittest.TestCase):
 
             route_alias_jingan = service.resolve_store_recommendation("常德路长寿路地址能发一下吗？")
             self.assertEqual(route_alias_jingan.get("target_store"), "sh_jingan")
-            self.assertEqual(route_alias_jingan.get("reason"), "sh_route_alias:常德路")
+            self.assertEqual(route_alias_jingan.get("reason"), "sh_route_scored:sh_jingan")
+            self.assertEqual(route_alias_jingan.get("confidence"), "high")
 
             route_alias_renmin = service.resolve_store_recommendation("汉口路地址发一下")
             self.assertEqual(route_alias_renmin.get("target_store"), "sh_renmin")
-            self.assertEqual(route_alias_renmin.get("reason"), "sh_route_alias:汉口路")
+            self.assertEqual(route_alias_renmin.get("reason"), "sh_route_scored:sh_renmin")
+            self.assertEqual(route_alias_renmin.get("confidence"), "high")
+
+            hongqiao_station_route = service.resolve_store_recommendation("上海虹桥站附近有店吗")
+            self.assertEqual(hongqiao_station_route.get("target_store"), "sh_renmin")
+            self.assertEqual(hongqiao_station_route.get("reason"), "sh_route_scored:sh_renmin")
+
+            south_station_route = service.resolve_store_recommendation("上海南站附近地址发一下")
+            self.assertEqual(south_station_route.get("target_store"), "sh_xuhui")
+            self.assertEqual(south_station_route.get("reason"), "sh_route_scored:sh_xuhui")
+
+            west_station_route = service.resolve_store_recommendation("上海西站")
+            self.assertEqual(west_station_route.get("target_store"), "sh_hongkou")
+            self.assertEqual(west_station_route.get("reason"), "sh_route_scored:sh_hongkou")
+
+            route_alias_low_conf = service.resolve_store_recommendation("长寿路南京路地址哪个近")
+            self.assertEqual(route_alias_low_conf.get("reason"), "sh_route_need_clarify")
+            self.assertEqual(route_alias_low_conf.get("route_type"), "need_clarify")
+            self.assertEqual(route_alias_low_conf.get("confidence"), "low")
+
+            sh_need_district = service.resolve_store_recommendation("我在上海")
+            self.assertEqual(sh_need_district.get("reason"), "shanghai_need_district")
+
+            coming_to_shanghai = service.resolve_store_recommendation("我从外地来上海 去那个店")
+            self.assertEqual(coming_to_shanghai.get("reason"), "shanghai_need_arrival_point")
+            self.assertEqual(coming_to_shanghai.get("route_type"), "need_district")
+
 
     def test_not_in_shanghai_or_beijing_should_not_fallback_to_llm(self):
         with tempfile.TemporaryDirectory() as td:
@@ -400,6 +427,124 @@ class RuleEngineTestCase(unittest.TestCase):
             d = agent.decide("chat_detail_sh_landmark", "用户地址地标", "上海徐家汇", [])
             self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
             self.assertEqual(d.route_reason, "sh_district_map:徐家汇")
+
+    def test_shanghai_route_scoring_low_confidence_asks_clarify(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+
+            d = agent.decide("chat_sh_route_clarify", "用户上海路线", "长寿路南京路地址哪个近", [])
+            self.assertEqual(d.rule_id, "ADDR_SH_ROUTE_NEED_CLARIFY")
+            self.assertEqual(d.route_reason, "need_clarify")
+            self.assertEqual(d.media_plan, "none")
+            self.assertIn("哪条路附近", d.reply_text)
+
+    def test_coming_to_shanghai_from_out_of_town_asks_shanghai_district(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+
+            d = agent.decide("chat_come_to_sh", "用户外地来沪", "我从外地来上海 去那个店？", [])
+            self.assertEqual(d.rule_id, "ADDR_ASK_ARRIVAL_POINT")
+            self.assertEqual(d.route_reason, "need_arrival_point")
+            self.assertEqual(d.media_plan, "none")
+            self.assertIn("哪个站下车", d.reply_text)
+
+    def test_shanghai_route_alias_short_phrase_is_treated_as_address(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+
+            d = agent.decide("chat_sh_route_short", "用户纯地点", "中百一店", [])
+            self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
+            self.assertEqual(d.intent, "address")
+            self.assertEqual(d.route_reason, "sh_route_scored:sh_renmin")
+            self.assertIn("上海人民广场门店", d.reply_text)
+
+    def test_shanghai_route_short_phrase_after_image_uses_address_followup(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            conversations_dir = temp_dir / "conversations"
+            agent, _, _, _ = self._build_agent(temp_dir)
+            session_id = "chat_sh_route_followup"
+            user_name = "用户上海追问"
+            user_hash = agent._hash_user(user_name)
+            self._append_assistant_reply_log(
+                conversations_dir=conversations_dir,
+                session_id="seed_sh_route_followup",
+                user_id_hash=user_hash,
+                ts="2026-02-27T09:35:00",
+            )
+            agent.mark_media_sent(
+                session_id,
+                user_name,
+                {
+                    "type": "address_image",
+                    "target_store": "sh_renmin",
+                    "path": "dummy.jpg",
+                },
+                success=True,
+            )
+            self._append_media_success_log(
+                conversations_dir=conversations_dir,
+                session_id=session_id,
+                media_type="address_image",
+                media_path="dummy.jpg",
+                ts="2026-02-27T10:00:00",
+                user_id_hash=user_hash,
+            )
+
+            d2 = agent.decide(session_id, user_name, "南京路", [])
+            self.assertEqual(d2.rule_id, "ADDR_TEXT_AFTER_IMAGE")
+            self.assertIn("汉口路650号亚洲大厦", d2.reply_text)
+
+    def test_ambiguous_short_fragment_asks_back_instead_of_llm(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+            llm.reply_text = "姐姐，北京朝阳门店具体位置是：朝阳区建外SOHO东区。"
+
+            d = agent.decide("chat_ambiguous_short", "用户残句", "址", [])
+            self.assertEqual(d.rule_id, "ADDR_AMBIGUOUS_SHORT_FRAGMENT")
+            self.assertEqual(d.reply_source, "rule")
+            self.assertEqual(d.media_plan, "none")
+            self.assertIn("门店地址", d.reply_text)
+
+    def test_non_price_sentence_with_earn_money_does_not_trigger_price_priority(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+            llm.reply_text = "姐姐，这段话我收到了呀。"
+
+            d = agent.decide(
+                "chat_non_price_money",
+                "用户非价格",
+                "马老师天天赚大钱，身体棒棒的，希望生意兴隆",
+                [],
+            )
+            self.assertNotIn(d.rule_id, {"PRICE_PRIORITY", "PRICE_PRIORITY_FALLBACK", "PRICE_PRIORITY_PRIVATE_GUIDE"})
+
+    def test_direct_price_question_still_triggers_price_priority(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+
+            d = agent.decide("chat_direct_price", "用户价格", "多少钱", [])
+            self.assertIn(d.rule_id, {"PRICE_PRIORITY", "PRICE_PRIORITY_FALLBACK"})
+
+    def test_lifespan_query_uses_knowledge_priority_not_llm(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, repository, llm = self._build_agent(Path(td))
+            llm.reply_text = "姐姐，一般正常佩戴可以用35年左右。"
+            repository.add(
+                question="假发一般能用多久？",
+                answer="姐姐，一般正常佩戴可以用3～5年左右，保养得好时间会更久哦🤍",
+                intent="general",
+                tags=["使用寿命"],
+                answers=[
+                    "姐姐，一般正常佩戴可以用3～5年左右，保养得好时间会更久哦🤍"
+                ],
+            )
+            repository.save()
+
+            d = agent.decide("chat_lifespan", "用户寿命", "一般能用多久", [])
+            self.assertEqual(d.rule_id, "LIFESPAN_PRIORITY")
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertIn("3～5年", d.reply_text)
 
     def test_address_index_prefers_store_targets_metadata_even_without_district_filename(self):
         with tempfile.TemporaryDirectory() as td:

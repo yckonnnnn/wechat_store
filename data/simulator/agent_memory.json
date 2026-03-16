@@ -1,68 +1,61 @@
 {
   "version": 4,
-  "updated_at": "2026-03-15T23:40:51.117054",
+  "updated_at": "2026-03-16T11:42:07.720949",
   "sessions": {
     "sim_session": {
       "session_id": "sim_session",
       "user_hash": "de81f6891f",
       "session_fingerprint": "",
-      "first_seen_at": "2026-03-15T23:40:18.815945",
-      "updated_at": "2026-03-15T23:40:51.117032",
+      "first_seen_at": "2026-03-16T11:39:28.733596",
+      "updated_at": "2026-03-16T11:42:07.720933",
       "address_prompt_count": 0,
-      "sent_address_stores": [
-        "sh_renmin",
-        "sh_jingan"
-      ],
-      "address_image_sent_count": 2,
-      "address_image_last_sent_at_by_store": {
-        "sh_jingan": "2026-03-15T23:40:24.391876",
-        "sh_renmin": "2026-03-15T23:40:51.117010"
-      },
-      "contact_image_sent_count": 0,
-      "contact_image_last_sent_at": "",
+      "sent_address_stores": [],
+      "address_image_sent_count": 0,
+      "address_image_last_sent_at_by_store": {},
+      "contact_image_sent_count": 1,
+      "contact_image_last_sent_at": "2026-03-16T11:39:50.589046",
       "contact_warmup": false,
-      "geo_followup_round": 0,
+      "geo_followup_round": 1,
       "geo_choice_offered": false,
-      "last_geo_pending": false,
+      "last_geo_pending": true,
       "last_detected_region": "上海",
-      "last_target_store": "sh_renmin",
-      "last_geo_route_reason": "sh_route_alias:汉中路",
-      "last_geo_updated_at": "2026-03-15T23:40:51.115586",
+      "last_target_store": "",
+      "last_geo_route_reason": "shanghai_need_district",
+      "last_geo_updated_at": "2026-03-16T11:42:07.719836",
       "strong_intent_after_both_count": 0,
       "purchase_both_first_hint_sent": false,
-      "session_video_armed": false,
+      "session_video_armed": true,
       "session_video_sent": false,
-      "session_post_contact_reply_count": 0,
+      "session_post_contact_reply_count": 1,
       "pending_required_media": [],
-      "pending_required_media_updated_at": "2026-03-15T23:40:51.117024",
+      "pending_required_media_updated_at": "2026-03-16T11:39:50.589177",
       "last_required_media_failure_code": "",
       "last_required_media_failure_detail": "",
       "required_media_retry_budget": {},
-      "last_route_reason": "sh_route_alias:汉中路",
+      "last_route_reason": "need_district",
       "last_intent": "address",
-      "last_reply_goal": "解答",
-      "session_user_message_count_after_contact": 0,
+      "last_reply_goal": "追问地区",
+      "session_user_message_count_after_contact": 2,
       "knowledge_reply_count": 0,
       "price_priority_reply_count": 0,
-      "address_text_reply_count_by_store": {
-        "sh_jingan": 1
-      },
+      "address_text_reply_count_by_store": {},
       "address_contact_reply_count_by_store": {}
     }
   },
   "users": {
     "de81f6891f": {
       "user_hash": "de81f6891f",
-      "first_seen_at": "2026-03-15T23:40:18.815993",
-      "updated_at": "2026-03-15T23:40:51.117037",
+      "first_seen_at": "2026-03-16T11:39:28.733623",
+      "updated_at": "2026-03-16T11:42:07.720937",
       "video_armed": false,
       "video_sent": false,
       "post_contact_reply_count": 0,
       "recent_reply_hashes": [
-        "姐姐您在什么城市区域呀方便告诉我吗我可以帮您针对性推荐门店我们目前北京朝阳1家上海5家静安人广虹口五角场徐汇",
-        "姐姐推荐您去上海静安门店我给您发一张位置图您跟着图中圈圈的位置会更直观",
-        "姐姐上海静安门店具体位置是静安区愚园路172号环球世界大厦a座",
-        "姐姐推荐您去上海人民广场门店我给您发一张位置图您跟着图中圈圈的位置会更直观"
+        "姐姐您是想问哪个门店的地址呢我们目前在北京和上海有店哦",
+        "姐姐您在上海哪个区呀我帮您匹配最近门店",
+        "姐姐外地暂时没有我们的门店目前假发是需要根据头围和脸型进行私人定制的您可以看看下面图中画圈圈的地方会有专门的老师跟您远程鉴定",
+        "姐姐您到上海后一般在哪个站下车呀像虹桥站上海站浦东机场这些都可以告诉我我帮您针对性推荐门店如果您还没确定我也可以先给您推荐人广店",
+        "姐姐您在上海哪个区呀我帮您匹配最近门店"
       ]
     }
   }
