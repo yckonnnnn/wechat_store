@@ -302,6 +302,10 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(coming_to_shanghai.get("reason"), "shanghai_need_arrival_point")
             self.assertEqual(coming_to_shanghai.get("route_type"), "need_district")
 
+            mixed_region_route = service.resolve_store_recommendation("哦你们在上海，我们在绍兴，什么时候过来来做一个，都很好看")
+            self.assertEqual(mixed_region_route.get("target_store"), "sh_renmin")
+            self.assertEqual(mixed_region_route.get("reason"), "jiangzhe_to_sh_renmin")
+
 
     def test_not_in_shanghai_or_beijing_should_not_fallback_to_llm(self):
         with tempfile.TemporaryDirectory() as td:
@@ -738,6 +742,17 @@ class RuleEngineTestCase(unittest.TestCase):
             d = agent.decide("chat_detail_city_only", "用户地址城市", "石家庄有吗", [])
             self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
             self.assertEqual(d.route_reason, "north_fallback_beijing")
+
+    def test_mixed_shanghai_and_shaoxing_phrase_prefers_jiangzhe_route(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td), address_image_files=["上海人广地址.jpg"])
+
+            d = agent.decide("chat_shaoxing_route", "用户江浙沪", "哦你们在上海，我们在绍兴，什么时候过来来做一个，都很好看!", [])
+            self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
+            self.assertEqual(d.route_reason, "jiangzhe_to_sh_renmin")
+            self.assertEqual(d.media_plan, "address_image")
+            self.assertIn("上海人民广场门店", d.reply_text)
+            self.assertIn("如果找不到可以留个☎️", d.reply_text)
 
     def test_generic_address_after_known_region_uses_real_text_then_contact_then_llm(self):
         with tempfile.TemporaryDirectory() as td:

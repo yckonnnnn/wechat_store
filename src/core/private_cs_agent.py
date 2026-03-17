@@ -435,7 +435,7 @@ LIFESPAN_PRIORITY_KEYWORDS = (
     "可以戴多久",
     "耐用吗",
 )
-REQUIRED_MEDIA_TYPES = ("address_image", "contact_image")
+REQUIRED_MEDIA_TYPES = ("address_image", "contact_image", "delayed_video")
 
 
 DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
@@ -450,7 +450,7 @@ DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
     "ask_sh_arrival_point": "姐姐，您到上海后一般在哪个站下车呀？像虹桥站、上海站、浦东机场这些都可以告诉我，我帮您针对性推荐门店🌹",
     "ask_sh_route_clarify": "姐姐，您说的是上海哪条路附近呀？我帮您匹配最近门店🌹",
     "ask_ambiguous_short_fragment": "姐姐，您是想问门店地址吗？您告诉我大概在哪个区域，我帮您匹配最近门店🌹",
-    "store_recommend": "姐姐，推荐您去{store_name}，位置可以看图中圈圈的位置哦，一定要预约哈～🌹",
+    "store_recommend": "姐姐，推荐您去{store_name}，我给您发一张位置图，您跟着图中圈圈的位置会更直观，如果找不到可以留个☎️，我来具体给你发路线～",
     "non_coverage_contact": "姐姐，{region}暂时没有我们的门店，目前假发是需要根据头围和脸型进行私人定制的，您可以看看下面图中画圈圈的地方，会有专门的老师跟您远程鉴定～💗",
     "contact_intro": "姐姐可以看下红框框的内容，您按图添加后我这边一对一继续跟进您呀😊",
     "purchase_contact_intro": "姐姐可以看看图中画框框的地方，会有专门的老师给您介绍～❤️",
@@ -1574,7 +1574,10 @@ class CustomerServiceAgent:
                 )
 
             store = self.knowledge_service.get_store_display("beijing_chaoyang")
-            store_name = store.get("store_name", "北京朝阳门店")
+            store_name = self._store_recommend_display_name(
+                "beijing_chaoyang",
+                store.get("store_name", "北京朝阳门店"),
+            )
             return AgentDecision(
                 reply_text=self._render_template("store_recommend", store_name=store_name),
                 intent="address",
@@ -1655,7 +1658,7 @@ class CustomerServiceAgent:
 
         if target_store != "unknown":
             store = self.knowledge_service.get_store_display(target_store)
-            store_name = store.get("store_name", "门店")
+            store_name = self._store_recommend_display_name(target_store, store.get("store_name", "门店"))
             session_state["last_geo_pending"] = False
             session_state["geo_followup_round"] = 0
             session_state["geo_choice_offered"] = False
@@ -2957,6 +2960,11 @@ class CustomerServiceAgent:
         if contact_last_ts:
             summary["contact_image_last_sent_at"] = contact_last_ts.isoformat()
         return summary
+
+    def _store_recommend_display_name(self, target_store: str, fallback_name: str = "") -> str:
+        if target_store == "beijing_chaoyang":
+            return "北京朝阳店"
+        return str(fallback_name or "门店")
 
     def summarize_user_turns_from_logs(self, user_id_hash: str) -> Dict[str, int]:
         summary = {

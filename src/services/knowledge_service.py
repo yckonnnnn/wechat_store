@@ -1032,6 +1032,13 @@ class KnowledgeService(QObject):
         if any(k in text for k in ("天津", "河北", "内蒙古")):
             return self._build_route("beijing_chaoyang", "north_fallback_beijing")
 
+        # 江浙地区 -> 上海人民广场
+        if any(k in text for k in (
+            "江苏", "浙江", "苏州", "无锡", "常州", "南通", "南京", "宁波",
+            "杭州", "绍兴", "嘉兴", "湖州", "金华", "温州"
+        )):
+            return self._build_route("sh_renmin", "jiangzhe_to_sh_renmin")
+
         # 上海明确区映射
         for district, store_key in self.SHANGHAI_DISTRICT_STORE_MAP.items():
             if district in text:
@@ -1057,13 +1064,6 @@ class KnowledgeService(QObject):
                 "store_address": None,
                 "detected_region": "上海",
             }
-
-        # 江浙地区 -> 上海人民广场
-        if any(k in text for k in (
-            "江苏", "浙江", "苏州", "无锡", "常州", "南通", "南京", "宁波",
-            "杭州", "绍兴", "嘉兴", "湖州", "金华", "温州"
-        )):
-            return self._build_route("sh_renmin", "jiangzhe_to_sh_renmin")
 
         # 其他明确地区（如新疆/大连）-> 非覆盖地区固定话术
         detected_region = self._extract_region_mention(text)
