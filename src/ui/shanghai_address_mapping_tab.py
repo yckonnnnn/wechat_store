@@ -38,7 +38,9 @@ class ShanghaiAddressMappingTab(QWidget):
         self.knowledge_service = knowledge_service
         self.page_size = 10
         self.current_page = 1
+        self.search_text = ""
         self._all_rows: List[Dict[str, str]] = []
+        self._filtered_row_indexes: List[int] = []
         self._row_widgets: List[Dict[str, object]] = []
         self._selected_row_indexes: set[int] = set()
         self._setup_ui()
@@ -59,6 +61,14 @@ class ShanghaiAddressMappingTab(QWidget):
         title_wrap.addWidget(subtitle)
         header_layout.addLayout(title_wrap)
         header_layout.addStretch()
+
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("搜索关键词、备注或门店，例如：外滩 / 人广 / 徐汇")
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.setFixedWidth(360)
+        self.search_input.textChanged.connect(self._on_search_text_changed)
+        header_layout.addWidget(self.search_input)
+
         layout.addLayout(header_layout)
 
         content_card = QFrame()
@@ -260,6 +270,7 @@ class ShanghaiAddressMappingTab(QWidget):
         self._selected_row_indexes = {idx + 1 for idx in self._selected_row_indexes}
         self._all_rows.insert(0, {"keyword": "", "target_store": "", "note": ""})
         self.current_page = 1
+        self._update_filtered_indexes()
         self._render_current_page()
 
     def _remove_row(self, row_index: int):
@@ -281,6 +292,7 @@ class ShanghaiAddressMappingTab(QWidget):
                 for idx in self._selected_row_indexes
                 if idx != row_index
             }
+        self._update_filtered_indexes()
         self.current_page = min(self.current_page, self._get_total_pages())
         self._render_current_page()
 
@@ -293,7 +305,7 @@ class ShanghaiAddressMappingTab(QWidget):
 
     def _select_all_rows(self):
         self._sync_current_page_to_model()
-        self._selected_row_indexes = set(range(len(self._all_rows)))
+        self._selected_row_indexes = set(self._filtered_row_indexes)
         self._render_current_page()
 
     def _remove_selected_rows(self):
@@ -318,18 +330,24 @@ class ShanghaiAddressMappingTab(QWidget):
             if idx not in self._selected_row_indexes
         ]
         self._selected_row_indexes.clear()
+        self._update_filtered_indexes()
         self.current_page = min(self.current_page, self._get_total_pages())
         self._render_current_page()
 
-    def _get_page_slice(self) -> List[Dict[str, str]]:
+    def _get_filtered_rows(self) -> List[tuple[int, Dict[str, str]]]:
+        return [(row_index, self._all_rows[row_index]) for row_index in self._filtered_row_indexes]
+
+    def _get_page_slice(self) -> List[tuple[int, Dict[str, str]]]:
+        filtered_rows = self._get_filtered_rows()
         start = max(0, (self.current_page - 1) * self.page_size)
         end = start + self.page_size
-        return self._all_rows[start:end]
+        return filtered_rows[start:end]
 
     def _get_total_pages(self) -> int:
-        if not self._all_rows:
+        visible_count = len(self._filtered_row_indexes)
+        if not visible_count:
             return 1
-        return (len(self._all_rows) + self.page_size - 1) // self.page_size
+        return (visible_count + self.page_size - 1) // self.page_size
 
     def _sync_current_page_to_model(self):
         for row in self._row_widgets:
@@ -343,8 +361,7 @@ class ShanghaiAddressMappingTab(QWidget):
 
     def _render_current_page(self):
         self._clear_rows()
-        for offset, row in enumerate(self._get_page_slice()):
-            row_index = (self.current_page - 1) * self.page_size + offset
+        for row_index, row in self._get_page_slice():
             self._create_row_widget(row, row_index=row_index)
         self.scroll_area.verticalScrollBar().setValue(0)
         self._refresh_state()
@@ -384,13 +401,54 @@ class ShanghaiAddressMappingTab(QWidget):
         self._go_to_page(self.current_page + 1)
 
     def _refresh_state(self):
-        count = len(self._all_rows)
-        self.stats_label.setText(f"共 {count} 条")
-        self.empty_label.setVisible(count == 0)
-        self.scroll_area.setVisible(count > 0)
-        self.select_all_btn.setEnabled(count > 0)
+        total_count = len(self._all_rows)
+        visible_count = len(self._filtered_row_indexes)
+        if self.search_text:
+            self.stats_label.setText(f"筛选 {visible_count} / 共 {total_count} 条")
+        else:
+            self.stats_label.setText(f"共 {total_count} 条")
+        empty_text = "暂无映射，点击“新增映射”开始配置"
+        if self.search_text and total_count > 0 and visible_count == 0:
+            empty_text = "没有匹配的映射，换个关键词试试"
+        self.empty_label.setText(empty_text)
+        self.empty_label.setVisible(visible_count == 0)
+        self.scroll_area.setVisible(visible_count > 0)
+        self.select_all_btn.setEnabled(visible_count > 0)
         self.delete_selected_btn.setEnabled(bool(self._selected_row_indexes))
         self._render_pagination()
+
+    def _update_filtered_indexes(self) -> None:
+        normalized_query = self._normalize_search_text(self.search_text)
+        if not normalized_query:
+            self._filtered_row_indexes = list(range(len(self._all_rows)))
+            return
+
+        matched_indexes: List[int] = []
+        store_name_map = {
+            str(store_key or "").strip(): str(store_name or "").strip()
+            for store_key, store_name in self.knowledge_service.get_shanghai_store_options()
+        }
+        for row_index, row in enumerate(self._all_rows):
+            haystacks = [
+                str(row.get("keyword", "") or ""),
+                str(row.get("note", "") or ""),
+                str(row.get("target_store", "") or ""),
+                store_name_map.get(str(row.get("target_store", "") or "").strip(), ""),
+            ]
+            normalized_haystacks = [self._normalize_search_text(value) for value in haystacks]
+            if any(normalized_query in value for value in normalized_haystacks if value):
+                matched_indexes.append(row_index)
+        self._filtered_row_indexes = matched_indexes
+
+    def _normalize_search_text(self, text: str) -> str:
+        return "".join(str(text or "").strip().lower().split())
+
+    def _on_search_text_changed(self, text: str) -> None:
+        self._sync_current_page_to_model()
+        self.search_text = str(text or "")
+        self.current_page = 1
+        self._update_filtered_indexes()
+        self._render_current_page()
 
     def reload_rows(self):
         self.knowledge_service.reload_shanghai_route_aliases()
@@ -398,6 +456,7 @@ class ShanghaiAddressMappingTab(QWidget):
         self._all_rows = [dict(row) for row in rows]
         self._selected_row_indexes.clear()
         self.current_page = 1
+        self._update_filtered_indexes()
         self._render_current_page()
         self.log_message.emit(f"✅ 上海地址映射已加载: {len(rows)} 条")
 

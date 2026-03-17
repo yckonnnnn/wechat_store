@@ -165,6 +165,40 @@ class ShanghaiAddressMappingTabTestCase(unittest.TestCase):
 
         tab.deleteLater()
 
+    def test_search_filters_rows_by_keyword_and_resets_page(self):
+        tab, _service = self._create_tab(24)
+
+        tab._go_to_page(3)
+        tab.search_input.setText("路名12")
+
+        self.assertEqual(tab.current_page, 1)
+        self.assertEqual(tab._filtered_row_indexes, [11])
+        self.assertEqual(len(tab._row_widgets), 1)
+        self.assertEqual(tab._row_widgets[0]["keyword"].text(), "路名12")
+        self.assertEqual(tab.stats_label.text(), "筛选 1 / 共 24 条")
+
+        tab.search_input.clear()
+
+        self.assertEqual(len(tab._filtered_row_indexes), 24)
+        self.assertEqual(tab.stats_label.text(), "共 24 条")
+
+        tab.deleteLater()
+
+    def test_search_matches_store_name_and_select_all_only_selects_filtered_rows(self):
+        tab, _service = self._create_tab(6)
+
+        tab.search_input.setText("人民广场")
+
+        self.assertEqual(tab._filtered_row_indexes, [0, 2, 4])
+        self.assertEqual(len(tab._row_widgets), 3)
+
+        tab._select_all_rows()
+
+        self.assertEqual(tab._selected_row_indexes, {0, 2, 4})
+        self.assertTrue(all(row["selected"].isChecked() for row in tab._row_widgets))
+
+        tab.deleteLater()
+
     def test_save_rows_keeps_global_order(self):
         tab, service = self._create_tab(12)
 

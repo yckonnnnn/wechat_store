@@ -244,12 +244,16 @@ class RuleEngineTestCase(unittest.TestCase):
             normal_price_route = service.resolve_store_recommendation("不同价格有什么区别啊？")
             self.assertEqual(normal_price_route.get("reason"), "unknown")
 
-            route_alias_jingan = service.resolve_store_recommendation("常德路长寿路地址能发一下吗？")
+            route_alias_xuhui = service.resolve_store_recommendation("常德路地址能发一下吗？")
+            self.assertEqual(route_alias_xuhui.get("target_store"), "sh_xuhui")
+            self.assertEqual(route_alias_xuhui.get("reason"), "sh_route_scored:sh_xuhui")
+            self.assertEqual(route_alias_xuhui.get("confidence"), "high")
+
+            route_alias_jingan = service.resolve_store_recommendation("长寿路地址能发一下")
             self.assertEqual(route_alias_jingan.get("target_store"), "sh_jingan")
             self.assertEqual(route_alias_jingan.get("reason"), "sh_route_scored:sh_jingan")
-            self.assertEqual(route_alias_jingan.get("confidence"), "high")
 
-            route_alias_renmin = service.resolve_store_recommendation("汉口路地址发一下")
+            route_alias_renmin = service.resolve_store_recommendation("外滩地址发一下")
             self.assertEqual(route_alias_renmin.get("target_store"), "sh_renmin")
             self.assertEqual(route_alias_renmin.get("reason"), "sh_route_scored:sh_renmin")
             self.assertEqual(route_alias_renmin.get("confidence"), "high")
@@ -257,6 +261,10 @@ class RuleEngineTestCase(unittest.TestCase):
             renmin_variant_route = service.resolve_store_recommendation("人民廣場地址发一下")
             self.assertEqual(renmin_variant_route.get("target_store"), "sh_renmin")
             self.assertEqual(renmin_variant_route.get("reason"), "sh_route_scored:sh_renmin")
+
+            yangpu_bridge_route = service.resolve_store_recommendation("杨浦大桥怎么走")
+            self.assertEqual(yangpu_bridge_route.get("target_store"), "sh_wujiaochang")
+            self.assertEqual(yangpu_bridge_route.get("reason"), "sh_route_scored:sh_wujiaochang")
 
             huaihai_route = service.resolve_store_recommendation("淮海中路地址发一下")
             self.assertEqual(huaihai_route.get("target_store"), "sh_xuhui")
@@ -279,8 +287,8 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(hongqiao_station_route.get("reason"), "sh_route_scored:sh_renmin")
 
             hongqiao_route = service.resolve_store_recommendation("虹桥")
-            self.assertEqual(hongqiao_route.get("target_store"), "sh_renmin")
-            self.assertEqual(hongqiao_route.get("reason"), "sh_route_scored:sh_renmin")
+            self.assertEqual(hongqiao_route.get("target_store"), "sh_xuhui")
+            self.assertEqual(hongqiao_route.get("reason"), "sh_route_scored:sh_xuhui")
 
             south_station_route = service.resolve_store_recommendation("上海南站附近地址发一下")
             self.assertEqual(south_station_route.get("target_store"), "sh_xuhui")
@@ -498,8 +506,8 @@ class RuleEngineTestCase(unittest.TestCase):
             d = agent.decide("chat_sh_route_short", "用户纯地点", "中百一店", [])
             self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
             self.assertEqual(d.intent, "address")
-            self.assertEqual(d.route_reason, "sh_route_scored:sh_renmin")
-            self.assertIn("上海人民广场门店", d.reply_text)
+            self.assertEqual(d.route_reason, "sh_route_scored:sh_wujiaochang")
+            self.assertIn("上海五角场门店", d.reply_text)
 
     def test_shanghai_route_short_phrase_after_image_uses_address_followup(self):
         with tempfile.TemporaryDirectory() as td:
