@@ -2119,7 +2119,7 @@ class BrowserService(QObject):
             "image_button_x": 0.0,
             "image_button_y": 0.0,
         }
-        max_verify_attempts = 20
+        max_verify_attempts = 30
         max_enter_attempts = 2
 
         def build_failure_payload(message: str, step: str, **extra: Any) -> Dict[str, Any]:
@@ -2342,7 +2342,7 @@ class BrowserService(QObject):
                     )
                     return
 
-                QTimer.singleShot(450, poll_delivery)
+                QTimer.singleShot(350, poll_delivery)
 
             self._get_chat_media_signature(on_signature_result)
 
@@ -2427,7 +2427,7 @@ class BrowserService(QObject):
             "drag_attempt": 0,
             "confirm_attempt": 0,
         }
-        max_verify_attempts = 20
+        max_verify_attempts = 30
         max_confirm_attempts = 10
 
         def build_failure_payload(message: str, step: str, **extra: Any) -> Dict[str, Any]:
@@ -2788,7 +2788,7 @@ class BrowserService(QObject):
                     )
                     return
 
-                QTimer.singleShot(450, poll_delivery)
+                QTimer.singleShot(350, poll_delivery)
 
             self._get_chat_media_signature(on_signature_result)
 

@@ -942,15 +942,19 @@ class MessageProcessor(QObject):
                         "failure_code": failure_code,
                         },
                     )
-                self._send_media_queue(
-                    session_id=session_id,
-                    user_name=user_name,
-                    media_queue=[retry_item] + list(media_queue),
-                    decision=decision,
-                    media_summary=media_summary,
-                    on_complete=on_complete,
-                    defer_retry_media_types=defer_retry_media_types,
-                    deferred_retry_items=deferred_retry_items,
+                # 延迟重试：等待 1500ms 后再重试，给页面时间恢复
+                QTimer.singleShot(
+                    1500,
+                    lambda: self._send_media_queue(
+                        session_id=session_id,
+                        user_name=user_name,
+                        media_queue=[retry_item] + list(media_queue),
+                        decision=decision,
+                        media_summary=media_summary,
+                        on_complete=on_complete,
+                        defer_retry_media_types=defer_retry_media_types,
+                        deferred_retry_items=deferred_retry_items,
+                    )
                 )
                 return
 
@@ -1136,7 +1140,7 @@ class MessageProcessor(QObject):
                 if not success:
                     self._emit_media_ui_log(
                         media_type,
-                        "发送媒体前清空输入框失败，继续尝试发图",
+                        f"发送媒体前清空输入框失败: {result}，继续尝试发送",
                         level="warning",
                     )
                 send_media_after_clear()
@@ -1149,7 +1153,7 @@ class MessageProcessor(QObject):
     def _should_retry_media_send(self, media_type: str, result: Any, retry_count: int) -> bool:
         failure_code = self._extract_failure_code(result)
         if media_type in ("contact_image", "address_image"):
-            if retry_count >= 1:
+            if retry_count >= 2:
                 return False
             return failure_code in {
                 "locate_image_button_failed",
@@ -1160,7 +1164,7 @@ class MessageProcessor(QObject):
                 "verified_soft_timeout",
             }
         if media_type == "delayed_video":
-            if retry_count >= 1:
+            if retry_count >= 2:
                 return False
             return failure_code in {
                 "locate_material_library_failed",
