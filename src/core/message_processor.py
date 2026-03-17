@@ -680,6 +680,64 @@ class MessageProcessor(QObject):
 
             self.browser.send_message(decision.reply_text, on_text_sent)
 
+        # Phase 1: 首轮视频优先发送
+        if decision.is_first_turn_global and first_turn_video_items:
+            self._mark_active_session(
+                session_id=session_id,
+                user_name=user_name,
+                stage="first_turn_send_video",
+                detail=f"queued_media={len(first_turn_video_items)}",
+            )
+            self._emit_log("🎬 首轮优先发送视频")
+
+            def on_video_complete():
+                self._emit_log("✅ 首轮视频发送完成，等待 3 秒后继续发送图片")
+                self._mark_active_session(
+                    session_id=session_id,
+                    user_name=user_name,
+                    stage="first_turn_video_wait_continue",
+                    detail="waiting_3s",
+                )
+
+                def continue_with_images():
+                    self._emit_log("⏭️ 继续发送图片和文本")
+                    # 清空 first_turn_video_items，避免重复发送
+                    first_turn_video_items.clear()
+
+                    # 继续发送图片（如果有）
+                    if first_turn_image_items:
+                        self._mark_active_session(
+                            session_id=session_id,
+                            user_name=user_name,
+                            stage="first_turn_send_image",
+                            detail=f"queued_media={len(first_turn_image_items)}",
+                        )
+                        self._send_media_queue(
+                            session_id,
+                            user_name,
+                            first_turn_image_items,
+                            decision=None,
+                            media_summary=media_summary,
+                            on_complete=lambda: send_text_and_remaining_media([]),
+                            defer_retry_media_types={"address_image", "contact_image"},
+                            deferred_retry_items=deferred_media_items,
+                        )
+                    else:
+                        # 没有图片，直接发送文本
+                        send_text_and_remaining_media([])
+
+                QTimer.singleShot(3000, continue_with_images)
+
+            self._send_media_queue(
+                session_id,
+                user_name,
+                first_turn_video_items,
+                decision=None,
+                media_summary=media_summary,
+                on_complete=on_video_complete,
+            )
+            return
+
         if decision.is_first_turn_global and first_turn_image_items:
             self._mark_active_session(
                 session_id=session_id,
@@ -784,12 +842,25 @@ class MessageProcessor(QObject):
         )
         if media_type == "delayed_video":
             trigger_source = str(item.get("trigger_source", "") or "")
+            retry_count = int(item.get("_retry_count", 0) or 0)
             if trigger_source == "first_reply":
-                self._emit_media_ui_log(media_type, "开始触发首轮视频发送", level="info")
+                self._emit_media_ui_log(
+                    media_type,
+                    f"开始触发首轮视频发送 (重试次数: {retry_count}/2)",
+                    level="info"
+                )
             elif trigger_source:
-                self._emit_media_ui_log(media_type, f"开始触发视频发送: source={trigger_source}", level="info")
+                self._emit_media_ui_log(
+                    media_type,
+                    f"开始触发视频发送: source={trigger_source} (重试次数: {retry_count}/2)",
+                    level="info"
+                )
             else:
-                self._emit_media_ui_log(media_type, "开始触发视频发送", level="info")
+                self._emit_media_ui_log(
+                    media_type,
+                    f"开始触发视频发送 (重试次数: {retry_count}/2)",
+                    level="info"
+                )
         self._emit_media_ui_log(media_type, f"准备发送媒体: type={media_type}", level="info")
         self._append_media_delivery_event(
             session_id=session_id,
@@ -855,12 +926,37 @@ class MessageProcessor(QObject):
             ):
                 retry_item = dict(item)
                 retry_item["_retry_count"] = retry_count + 1
+
+                # 增强视频重试日志
+                if media_type == "delayed_video":
+                    trigger_source = str(item.get("trigger_source", "") or "")
+                    if trigger_source == "first_reply":
+                        self._emit_media_ui_log(
+                            media_type,
+                            f"⚠️ 首轮视频发送失败，准备重试 ({retry_count + 1}/2): failure={failure_code or 'unknown'}",
+                            level="warning",
+                        )
+                    else:
+                        self._emit_media_ui_log(
+                            media_type,
+                            f"⚠️ 视频发送失败，准备重试 ({retry_count + 1}/2): failure={failure_code or 'unknown'}",
+                            level="warning",
+                        )
+
                 if media_type in defer_retry_set and deferred_retry_items is not None:
-                    self._emit_media_ui_log(
-                        media_type,
-                        f"媒体发送未确认，先继续后续流程，尾部重试一次: type={media_type}, failure={failure_code or 'unknown'}",
-                        level="warning",
-                    )
+                    # 增强图片延迟重试日志
+                    if media_type in ("address_image", "contact_image"):
+                        self._emit_media_ui_log(
+                            media_type,
+                            f"⚠️ 图片发送未确认，先继续后续流程，尾部重试一次 ({retry_count + 1}/2): type={media_type}, failure={failure_code or 'unknown'}",
+                            level="warning",
+                        )
+                    else:
+                        self._emit_media_ui_log(
+                            media_type,
+                            f"媒体发送未确认，先继续后续流程，尾部重试一次: type={media_type}, failure={failure_code or 'unknown'}",
+                            level="warning",
+                        )
                     deferred_retry_items.append(retry_item)
                     self._append_training_event(
                         session_id=session_id,
@@ -900,11 +996,33 @@ class MessageProcessor(QObject):
                     else:
                         next_call()
                     return
-                self._emit_media_ui_log(
-                    media_type,
-                    f"媒体发送未确认，准备重试: type={media_type}, failure={failure_code or 'unknown'}",
-                    level="warning",
-                )
+                # 增强立即重试日志
+                if media_type == "delayed_video":
+                    trigger_source = str(item.get("trigger_source", "") or "")
+                    if trigger_source == "first_reply":
+                        self._emit_media_ui_log(
+                            media_type,
+                            f"⚠️ 首轮视频发送失败，立即重试 ({retry_count + 1}/2): failure={failure_code or 'unknown'}",
+                            level="warning",
+                        )
+                    else:
+                        self._emit_media_ui_log(
+                            media_type,
+                            f"⚠️ 视频发送失败，立即重试 ({retry_count + 1}/2): failure={failure_code or 'unknown'}",
+                            level="warning",
+                        )
+                elif media_type in ("address_image", "contact_image"):
+                    self._emit_media_ui_log(
+                        media_type,
+                        f"⚠️ 图片发送失败，立即重试 ({retry_count + 1}/2): type={media_type}, failure={failure_code or 'unknown'}",
+                        level="warning",
+                    )
+                else:
+                    self._emit_media_ui_log(
+                        media_type,
+                        f"媒体发送未确认，准备重试: type={media_type}, failure={failure_code or 'unknown'}",
+                        level="warning",
+                    )
                 self._append_training_event(
                     session_id=session_id,
                     user_id_hash=self._build_user_hash(user_name=user_name, session_id=session_id),
