@@ -1,49 +1,47 @@
 {
   "version": 4,
-  "updated_at": "2026-03-17T13:30:36.005562",
+  "updated_at": "2026-03-17T14:56:54.241808",
   "sessions": {
     "sim_session": {
       "session_id": "sim_session",
       "user_hash": "de81f6891f",
       "session_fingerprint": "",
-      "first_seen_at": "2026-03-17T13:27:35.167046",
-      "updated_at": "2026-03-17T13:30:36.004602",
+      "first_seen_at": "2026-03-17T14:50:03.912514",
+      "updated_at": "2026-03-17T14:56:54.241791",
       "address_prompt_count": 0,
       "sent_address_stores": [
-        "beijing_chaoyang",
         "sh_renmin"
       ],
-      "address_image_sent_count": 2,
+      "address_image_sent_count": 1,
       "address_image_last_sent_at_by_store": {
-        "sh_renmin": "2026-03-17T13:30:20.477549",
-        "beijing_chaoyang": "2026-03-17T13:30:26.467582"
+        "sh_renmin": "2026-03-17T14:56:54.241771"
       },
-      "contact_image_sent_count": 0,
-      "contact_image_last_sent_at": "",
+      "contact_image_sent_count": 3,
+      "contact_image_last_sent_at": "2026-03-17T14:53:08.506637",
       "contact_warmup": false,
       "geo_followup_round": 0,
       "geo_choice_offered": false,
-      "last_geo_pending": true,
-      "last_detected_region": "上海",
-      "last_target_store": "beijing_chaoyang",
-      "last_geo_route_reason": "shanghai_need_arrival_point",
-      "last_geo_updated_at": "2026-03-17T13:30:36.004576",
+      "last_geo_pending": false,
+      "last_detected_region": "",
+      "last_target_store": "sh_renmin",
+      "last_geo_route_reason": "jiangzhe_to_sh_renmin",
+      "last_geo_updated_at": "2026-03-17T14:56:54.238605",
       "strong_intent_after_both_count": 0,
       "purchase_both_first_hint_sent": false,
-      "session_video_armed": false,
-      "session_video_sent": false,
-      "session_post_contact_reply_count": 0,
+      "session_video_armed": true,
+      "session_video_sent": true,
+      "session_post_contact_reply_count": 3,
       "pending_required_media": [],
-      "pending_required_media_updated_at": "2026-03-17T13:30:26.467801",
+      "pending_required_media_updated_at": "2026-03-17T14:56:54.241782",
       "last_required_media_failure_code": "",
       "last_required_media_failure_detail": "",
       "required_media_retry_budget": {},
-      "last_route_reason": "need_arrival_point",
+      "last_route_reason": "jiangzhe_to_sh_renmin",
       "last_intent": "address",
-      "last_reply_goal": "追问地区",
-      "session_user_message_count_after_contact": 0,
-      "knowledge_reply_count": 2,
-      "price_priority_reply_count": 2,
+      "last_reply_goal": "解答",
+      "session_user_message_count_after_contact": 4,
+      "knowledge_reply_count": 5,
+      "price_priority_reply_count": 0,
       "address_text_reply_count_by_store": {},
       "address_contact_reply_count_by_store": {}
     }
@@ -51,18 +49,19 @@
   "users": {
     "de81f6891f": {
       "user_hash": "de81f6891f",
-      "first_seen_at": "2026-03-17T13:27:35.167080",
-      "updated_at": "2026-03-17T13:30:36.005541",
+      "first_seen_at": "2026-03-17T14:50:03.912557",
+      "updated_at": "2026-03-17T14:56:54.241795",
       "video_armed": false,
       "video_sent": false,
       "post_contact_reply_count": 0,
       "recent_reply_hashes": [
-        "姐姐价格一般在3000到6000之间具体要看材质款式头围和想要的效果门店目前是北京朝阳1家上海5家静安人广虹口五角场徐汇",
-        "姐姐这款一般在30006000之间具体要看您的头围脸型和定制方案",
-        "姐姐这款一般在30006000之间具体要看您的头围脸型和定制方案",
-        "姐姐推荐您去上海人民广场门店我给您发一张位置图您跟着图中圈圈的位置会更直观如果找不到可以留个我来具体给你发路线",
-        "姐姐推荐您去北京朝阳店我给您发一张位置图您跟着图中圈圈的位置会更直观如果找不到可以留个我来具体给你发路线",
-        "姐姐您到上海后一般在哪个站下车呀像虹桥站上海站浦东机场这些都可以告诉我我帮您针对性推荐门店如果您还没确定我也可以先给您推荐人广店黄埔区汉口路650号亚洲大厦"
+        "姐姐可以看看图中画框框的地方会有专门的老师给您介绍",
+        "姐姐我们是预约制的呢您方便告诉我哪天有时间我帮您安排专属老师给您预留时间",
+        "姐姐我们是需要预约的推荐您到上海徐汇门店具体位置您可以看下面的圈圈我好友我发给您路线地址",
+        "姐姐我们这边是预约制的您可以看看红框内容加我预约",
+        "姐姐我们是需要预约的推荐您到上海人民广场门店具体位置您可以看下面的圈圈我好友我发给您路线地址",
+        "需要预约的姐姐您什么时间方便您可以看看红框内容我",
+        "姐姐推荐您去上海人民广场门店我给您发一张位置图您跟着图中圈圈的位置会更直观如果找不到可以留个我来具体给你发路线"
       ]
     }
   }

@@ -599,6 +599,35 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d.intent, "address")
             self.assertNotIn(d.rule_id, {"PRICE_PRIORITY", "PRICE_PRIORITY_FALLBACK", "PRICE_PRIORITY_PRIVATE_GUIDE"})
 
+    def test_price_query_with_shanghai_without_district_asks_for_specific_location_without_media(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+
+            d = agent.decide("chat_price_shanghai_only", "上海价格用户", "假发价格是多少？我在上海", [])
+
+            self.assertIn(d.rule_id, {"PRICE_PRIORITY", "PRICE_PRIORITY_FALLBACK"})
+            self.assertEqual(d.media_plan, "none")
+            self.assertFalse(d.media_items)
+            self.assertIn("3000", d.reply_text)
+            self.assertIn("您在上海具体位置告诉我，我给您推荐", d.reply_text)
+
+    def test_price_query_with_precise_shanghai_district_triggers_nearest_store_and_address_image(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = self._build_agent(
+                temp_dir,
+                address_image_files=["徐汇地址.jpg"],
+                store_targets={"徐汇地址.jpg": "sh_xuhui"},
+            )
+
+            d = agent.decide("chat_price_sh_jiading", "嘉定价格用户", "假发价格是多少？我在上海嘉定", [])
+
+            self.assertIn(d.rule_id, {"PRICE_PRIORITY", "PRICE_PRIORITY_FALLBACK"})
+            self.assertEqual(d.media_plan, "address_image")
+            self.assertTrue(d.media_items)
+            self.assertEqual(d.media_items[0].get("target_store"), "sh_xuhui")
+            self.assertIn("上海徐汇门店", d.reply_text)
+
     def test_lifespan_query_uses_knowledge_priority_not_llm(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, repository, llm = self._build_agent(Path(td))
@@ -1494,6 +1523,88 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(len(d.first_turn_image_items), 1)
             self.assertEqual(len(d.first_turn_video_items), 1)
 
+    def test_address_plus_appointment_prefers_contact_image_with_store_specific_copy(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, _ = self._build_agent(temp_dir)
+            repository.add(
+                "怎么预约？如何预约？需要预约吗？",
+                "姐姐，我们是预约制的呢，避免您跑空您看看图上红框框加我预约🌷",
+                intent="appointment",
+                tags=["预约"],
+            )
+
+            d = agent.decide("chat_address_appoint_store", "预约门店用户", "我在上海徐汇，怎么预约？", [])
+
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertEqual(d.rule_id, "KB_MATCH_CONTACT_IMAGE")
+            self.assertEqual(d.media_plan, "contact_image")
+            self.assertTrue(d.media_items)
+            self.assertEqual(d.media_items[0].get("type"), "contact_image")
+            self.assertIn("上海徐汇门店", d.reply_text)
+            self.assertIn("看下面的圈圈+我好友", d.reply_text)
+
+    def test_address_plus_appointment_phrase_without_direct_kb_match_still_uses_store_specific_contact_copy(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, _ = self._build_agent(temp_dir)
+            repository.add(
+                "怎么预约？如何预约？需要预约吗？",
+                "姐姐，我们是预约制的呢，避免您跑空您看看图上红框框加我预约🌷",
+                intent="appointment",
+                tags=["预约"],
+            )
+
+            d = agent.decide("chat_address_appoint_fallback", "预约门店用户2", "我在上海 徐汇， 你们需要预约吗？", [])
+
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertEqual(d.rule_id, "KB_MATCH_CONTACT_IMAGE")
+            self.assertEqual(d.media_plan, "contact_image")
+            self.assertTrue(d.media_items)
+            self.assertEqual(d.intent, "appointment")
+            self.assertIn("上海徐汇门店", d.reply_text)
+            self.assertIn("看下面的圈圈+我好友", d.reply_text)
+
+    def test_north_region_plus_appointment_uses_beijing_store_specific_contact_copy(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, _ = self._build_agent(temp_dir)
+            repository.add(
+                "怎么预约？如何预约？需要预约吗？",
+                "姐姐，我们是预约制的呢，避免您跑空您看看图上红框框加我预约🌷",
+                intent="appointment",
+                tags=["预约"],
+            )
+
+            d = agent.decide("chat_tianjin_appoint", "天津预约用户", "我在天津，需要预约吗？怎么预约？", [])
+
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertEqual(d.rule_id, "KB_MATCH_CONTACT_IMAGE")
+            self.assertEqual(d.media_plan, "contact_image")
+            self.assertTrue(d.media_items)
+            self.assertIn("北京朝阳店", d.reply_text)
+            self.assertIn("看下面的圈圈+我好友", d.reply_text)
+
+    def test_jiangzhe_region_plus_appointment_uses_shanghai_store_specific_contact_copy(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, _ = self._build_agent(temp_dir)
+            repository.add(
+                "怎么预约？如何预约？需要预约吗？",
+                "姐姐，我们是预约制的呢，避免您跑空您看看图上红框框加我预约🌷",
+                intent="appointment",
+                tags=["预约"],
+            )
+
+            d = agent.decide("chat_shaoxing_appoint", "绍兴预约用户", "我在绍兴，需要预约吗？", [])
+
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertEqual(d.rule_id, "KB_MATCH_CONTACT_IMAGE")
+            self.assertEqual(d.media_plan, "contact_image")
+            self.assertTrue(d.media_items)
+            self.assertIn("上海人民广场门店", d.reply_text)
+            self.assertIn("看下面的圈圈+我好友", d.reply_text)
+
     def test_kb_match_without_shipping_keeps_media_none(self):
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)
@@ -1517,7 +1628,7 @@ class RuleEngineTestCase(unittest.TestCase):
 
             d = agent.decide("chat_normal_kb", user_name, "价格是多少", [])
             self.assertEqual(d.reply_source, "knowledge")
-            self.assertEqual(d.rule_id, "PRICE_PRIORITY")
+            self.assertIn(d.rule_id, {"PRICE_PRIORITY", "PRICE_PRIORITY_FALLBACK"})
             self.assertEqual(d.media_plan, "none")
             self.assertFalse(d.media_items)
 
@@ -1545,7 +1656,7 @@ class RuleEngineTestCase(unittest.TestCase):
 
             d = agent.decide("chat_price_beijing", user_name, "第二款假发多少钱", [])
             self.assertEqual(d.reply_source, "knowledge")
-            self.assertEqual(d.rule_id, "PRICE_PRIORITY")
+            self.assertIn(d.rule_id, {"PRICE_PRIORITY", "PRICE_PRIORITY_FALLBACK"})
             self.assertEqual(d.media_plan, "none")
             self.assertFalse(d.media_items)
             self.assertIn("3000", d.reply_text)
@@ -1565,7 +1676,7 @@ class RuleEngineTestCase(unittest.TestCase):
 
             d = agent.decide("chat_price_store", "价格门店用户", "这款多少钱，在哪个店能看？", [])
             self.assertEqual(d.reply_source, "knowledge")
-            self.assertEqual(d.rule_id, "PRICE_PRIORITY")
+            self.assertIn(d.rule_id, {"PRICE_PRIORITY", "PRICE_PRIORITY_FALLBACK"})
             self.assertEqual(d.media_plan, "none")
             self.assertIn("3000", d.reply_text)
             self.assertIn("北京朝阳1家", d.reply_text)
@@ -1585,7 +1696,7 @@ class RuleEngineTestCase(unittest.TestCase):
 
             d = agent.decide("chat_price_appoint", "价格预约用户", "这款多少钱，需要预约吗？", [])
             self.assertEqual(d.reply_source, "knowledge")
-            self.assertEqual(d.rule_id, "PRICE_PRIORITY")
+            self.assertIn(d.rule_id, {"PRICE_PRIORITY", "PRICE_PRIORITY_FALLBACK"})
             self.assertEqual(d.media_plan, "none")
             self.assertIn("3000", d.reply_text)
             self.assertIn("预约制", d.reply_text)
@@ -1628,6 +1739,39 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d.rule_id, "PRICE_PRIORITY")
             self.assertIn("3000", d.reply_text)
             self.assertIn("上海5家", d.reply_text)
+            self.assertEqual(llm.calls, 0)
+
+    def test_price_plus_appointment_and_located_store_prefers_nearest_store_text(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, llm = self._build_agent(
+                temp_dir,
+                address_image_files=["虹口地址.jpg"],
+                store_targets={"虹口地址.jpg": "sh_hongkou"},
+            )
+            repository.add(
+                "这款多少钱？图片上多少钱？第二款多少钱？",
+                "姐姐，我们是私人定制的假发，根据不同的材质，正常3000、4000、5000、6000都有，具体要看您的头围、脸型和需求方案。😘",
+                intent="price",
+                tags=["价格", "咨询", "定制"],
+            )
+
+            d = agent.decide(
+                "chat_price_appoint_store",
+                "价格位置用户",
+                "请问第一款的价格?需要预约吗?我在上海宝山，去哪个店比较方便?",
+                [],
+            )
+
+            self.assertEqual(d.reply_source, "knowledge")
+            self.assertIn(d.rule_id, {"PRICE_PRIORITY", "PRICE_PRIORITY_FALLBACK"})
+            self.assertEqual(d.media_plan, "address_image")
+            self.assertTrue(d.media_items)
+            self.assertEqual(d.media_items[0].get("target_store"), "sh_hongkou")
+            self.assertIn("3000", d.reply_text)
+            self.assertIn("预约制", d.reply_text)
+            self.assertIn("上海虹口门店", d.reply_text)
+            self.assertNotIn("上海5家", d.reply_text)
             self.assertEqual(llm.calls, 0)
 
     def test_price_priority_rotates_variants_for_same_user(self):

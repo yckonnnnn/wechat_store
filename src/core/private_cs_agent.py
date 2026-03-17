@@ -357,10 +357,30 @@ PRICE_PRIORITY_KEYWORDS = (
 )
 PRICE_FACT_FOLLOWUP_APPOINTMENT = "我们这边是预约制的，您定好时间我可以帮您安排。"
 PRICE_FACT_FOLLOWUP_STORE_DISTRIBUTION = "门店目前是北京朝阳1家，上海5家（静安、人广、虹口、五角场、徐汇）。"
+PRICE_FACT_FOLLOWUP_SHANGHAI_DISTRICT = "姐姐，您在上海具体位置告诉我，我给您推荐～"
 PRICE_FACT_FOLLOWUP_SAME_DAY_DURATION = "如果是到店定制，当天一般做不完哦，我们是私人定制，需要时间制作。"
 PRICE_FACT_FOLLOWUP_GENERAL_DURATION = "正常定制一般需要7到10天，门店周边城市通常2到3天能安排，外地也可以加急。"
 PRICE_FACT_FOLLOWUP_PROCESS = "我们是一对一定制，通常会先看脸型头围，再定材质、长度和款式。"
 PRICE_FACT_FOLLOWUP_PRICING_BASIS = "具体价格主要看材质、款式、头围和想要的效果。"
+STORE_CONVENIENCE_QUERY_KEYWORDS = (
+    "哪个店",
+    "哪家店",
+    "哪个门店",
+    "哪家门店",
+    "去哪个店",
+    "去哪个门店",
+    "去哪家店",
+    "去哪家门店",
+    "哪个近",
+    "哪家近",
+    "哪个门店近",
+    "哪家门店近",
+    "比较方便",
+    "更方便",
+    "方便一些",
+    "哪里方便",
+    "哪边方便",
+)
 MA_TEACHER_INVALID_SERVICE_KEYWORDS = (
     "做头发",
     "做假发",
@@ -1814,6 +1834,7 @@ class CustomerServiceAgent:
         text = (latest_user_text or "").strip()
         if not self._has_price_priority(text):
             return None
+        should_send_address_image = self._should_attach_address_image_for_price_query(text, route)
 
         price_priority_count = int(session_state.get("price_priority_reply_count", 0) or 0)
         if price_priority_count == 2:
@@ -1822,7 +1843,7 @@ class CustomerServiceAgent:
                 intent="price",
                 route_reason="price_priority_private_followup",
                 reply_goal="承接联系方式",
-                media_plan="none",
+                media_plan="address_image" if should_send_address_image else "none",
                 reply_source="knowledge",
                 rule_id="PRICE_PRIORITY_PRIVATE_GUIDE",
                 rule_applied=True,
@@ -1865,7 +1886,7 @@ class CustomerServiceAgent:
                     intent="price",
                     route_reason="price_priority",
                     reply_goal="解答",
-                    media_plan="none",
+                    media_plan="address_image" if should_send_address_image else "none",
                     reply_source="knowledge",
                     rule_id="PRICE_PRIORITY",
                     rule_applied=True,
@@ -1885,7 +1906,7 @@ class CustomerServiceAgent:
             intent="price",
             route_reason="price_priority_fallback",
             reply_goal="解答",
-            media_plan="none",
+            media_plan="address_image" if should_send_address_image else "none",
             reply_source="knowledge",
             rule_id="PRICE_PRIORITY_FALLBACK",
             rule_applied=True,
@@ -1911,8 +1932,9 @@ class CustomerServiceAgent:
             followups.append(PRICE_FACT_FOLLOWUP_SAME_DAY_DURATION)
         elif self._looks_like_duration_query(normalized):
             followups.append(PRICE_FACT_FOLLOWUP_GENERAL_DURATION)
-        if self.knowledge_service.is_address_query(latest_user_text):
-            followups.append(PRICE_FACT_FOLLOWUP_STORE_DISTRIBUTION)
+        price_geo_followup = self._build_price_geo_followup(latest_user_text, route)
+        if price_geo_followup:
+            followups.append(price_geo_followup)
         if self._looks_like_appointment_query(latest_user_text):
             followups.append(PRICE_FACT_FOLLOWUP_APPOINTMENT)
         if any(token in normalized for token in ("材质", "区别", "为什么", "怎么定", "怎么算", "档次", "等级", "效果", "款式")):
@@ -1939,6 +1961,65 @@ class CustomerServiceAgent:
             base_clean = f"{base_clean}。"
         combined = f"{base_clean}{''.join(unique_followups)}"
         return self._normalize_reply_text(combined)
+
+    def _build_price_geo_followup(self, latest_user_text: str, route: Dict[str, Any]) -> str:
+        text = str(latest_user_text or "").strip()
+        normalized = re.sub(r"\s+", "", text).lower()
+        if not normalized:
+            return ""
+        route_reason = str(route.get("reason", "") or "").strip()
+        if route_reason == "shanghai_need_district":
+            return PRICE_FACT_FOLLOWUP_SHANGHAI_DISTRICT
+
+        has_explicit_geo_context = self._has_precise_geo_context_for_current_query(route)
+        asks_store_location = (
+            self.knowledge_service.is_address_query(text)
+            or any(token in normalized for token in STORE_CONVENIENCE_QUERY_KEYWORDS)
+        )
+        if not asks_store_location and not has_explicit_geo_context:
+            return ""
+
+        target_store = str(route.get("target_store", "") or "").strip()
+        route_type = str(route.get("route_type", "") or "").strip()
+        if route_type == "coverage" and target_store and target_store != "unknown":
+            fallback_name = str(route.get("store_name", "") or "")
+            store_name = self._store_recommend_display_name(target_store, fallback_name)
+            return f"您这个位置去{store_name}会更方便一些。"
+
+        return PRICE_FACT_FOLLOWUP_STORE_DISTRIBUTION
+
+    def _should_attach_address_image_for_price_query(self, latest_user_text: str, route: Dict[str, Any]) -> bool:
+        text = str(latest_user_text or "").strip()
+        normalized = re.sub(r"\s+", "", text).lower()
+        if not normalized:
+            return False
+        target_store = str(route.get("target_store", "") or "").strip()
+        route_type = str(route.get("route_type", "") or "").strip()
+        has_explicit_geo_context = self._has_precise_geo_context_for_current_query(route)
+        asks_store_location = (
+            self.knowledge_service.is_address_query(text)
+            or any(token in normalized for token in STORE_CONVENIENCE_QUERY_KEYWORDS)
+        )
+        return bool(
+            (asks_store_location or has_explicit_geo_context)
+            and route_type == "coverage"
+            and target_store
+            and target_store != "unknown"
+        )
+
+    def _has_precise_geo_context_for_current_query(self, route: Dict[str, Any]) -> bool:
+        route_reason = str(route.get("reason", "") or "").strip()
+        if not route_reason:
+            return False
+        if route_reason.startswith("sh_district_map:"):
+            return True
+        if route_reason.startswith("sh_route_scored:"):
+            return True
+        return route_reason in {
+            "beijing_all_district",
+            "north_fallback_beijing",
+            "jiangzhe_to_sh_renmin",
+        }
 
     def _looks_like_same_day_duration_query(self, normalized_text: str) -> bool:
         normalized = str(normalized_text or "")
@@ -2057,6 +2138,7 @@ class CustomerServiceAgent:
         user_state: Dict[str, Any],
         user_id_hash: str = "",
     ) -> Optional[AgentDecision]:
+        store_specific_reply = self._build_store_appointment_contact_reply(latest_user_text, route)
         kb_detail = self.knowledge_service.find_answer_detail(
             latest_user_text,
             threshold=self.knowledge_threshold,
@@ -2064,6 +2146,27 @@ class CustomerServiceAgent:
         kb_intent = str(kb_detail.get("intent", "") or "").strip().lower()
         tags = {str(tag).strip() for tag in (kb_detail.get("tags", []) or []) if str(tag).strip()}
         if not (kb_detail.get("matched") and (kb_intent == "appointment" or "预约" in tags)):
+            if store_specific_reply:
+                return AgentDecision(
+                    reply_text=store_specific_reply,
+                    intent="appointment",
+                    route_reason=str(route.get("reason", "unknown") or "unknown"),
+                    reply_goal="解答",
+                    media_plan="contact_image",
+                    reply_source="knowledge",
+                    rule_id="KB_MATCH_CONTACT_IMAGE",
+                    rule_applied=False,
+                    kb_match_score=0.0,
+                    kb_match_question="",
+                    kb_match_mode="appointment_route_contact_fallback",
+                    kb_item_id="",
+                    kb_variant_total=0,
+                    kb_variant_selected_index=-1,
+                    kb_variant_fallback_llm=False,
+                    kb_confident=True,
+                    force_contact_image=True,
+                    kb_contact_trigger_type="appointment",
+                )
             return None
 
         kb_answer = str(kb_detail.get("answer", "") or "").strip()
@@ -2083,6 +2186,8 @@ class CustomerServiceAgent:
         answer = selected_answer or kb_answer or (kb_answers[0] if kb_answers else "")
         if not answer:
             return None
+        if store_specific_reply:
+            answer = store_specific_reply
 
         return AgentDecision(
             reply_text=answer,
@@ -2104,6 +2209,23 @@ class CustomerServiceAgent:
             force_contact_image=True,
             kb_contact_trigger_type="appointment",
         )
+
+    def _build_store_appointment_contact_reply(self, latest_user_text: str, route: Dict[str, Any]) -> str:
+        text = str(latest_user_text or "").strip()
+        if not text:
+            return ""
+        route_type = str(route.get("route_type", "") or "").strip()
+        target_store = str(route.get("target_store", "") or "").strip()
+        if route_type != "coverage" or not target_store or target_store == "unknown":
+            return ""
+        if not (
+            self.knowledge_service.is_address_query(text)
+            or self._has_precise_geo_context_for_current_query(route)
+        ):
+            return ""
+        store = self.knowledge_service.get_store_display(target_store)
+        store_name = self._store_recommend_display_name(target_store, store.get("store_name", "门店"))
+        return f"姐姐，我们是需要预约的，推荐您到{store_name}，具体位置您可以看下面的圈圈+我好友，我发给您路线地址❤️"
 
     def _looks_like_process_query(self, text: str) -> bool:
         normalized = re.sub(r"\s+", "", str(text or "")).lower()
