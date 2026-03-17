@@ -1776,6 +1776,29 @@ class CustomerServiceAgent:
             return False
         if any(keyword in normalized for keyword in ADDRESS_PRIORITY_OVER_PRICE_KEYWORDS):
             return False
+        explicit_price_keywords = (
+            "多少钱",
+            "价格",
+            "价位",
+            "报价",
+            "费用",
+            "收费",
+            "预算",
+            "贵",
+            "便宜",
+            "什么价",
+            "什么价格",
+            "大概多少钱",
+        )
+        has_explicit_price_signal = any(keyword in normalized for keyword in explicit_price_keywords)
+        if (
+            not has_explicit_price_signal
+            and (
+                self.knowledge_service.is_shanghai_route_alias_address_candidate(text)
+                or self.knowledge_service.is_address_query(text)
+            )
+        ):
+            return False
         return any(keyword in normalized for keyword in PRICE_PRIORITY_KEYWORDS)
 
     def _decide_price_priority_reply(

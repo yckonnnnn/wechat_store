@@ -583,6 +583,22 @@ class RuleEngineTestCase(unittest.TestCase):
             d = agent.decide("chat_direct_price", "用户价格", "多少钱", [])
             self.assertIn(d.rule_id, {"PRICE_PRIORITY", "PRICE_PRIORITY_FALLBACK"})
 
+    def test_route_address_query_with_shiduoshao_does_not_get_hijacked_by_price_priority(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = self._build_agent(
+                temp_dir,
+                address_image_files=["上海人广地址.jpg"],
+                store_targets={"上海人广地址.jpg": "sh_renmin"},
+            )
+
+            d = agent.decide("chat_waitan_address_fact", "用户外滩地址", "外滩地址是多少？", [])
+
+            self.assertEqual(d.rule_id, "ADDR_STORE_RECOMMEND")
+            self.assertEqual(d.route_reason, "sh_route_scored:sh_renmin")
+            self.assertEqual(d.intent, "address")
+            self.assertNotIn(d.rule_id, {"PRICE_PRIORITY", "PRICE_PRIORITY_FALLBACK", "PRICE_PRIORITY_PRIVATE_GUIDE"})
+
     def test_lifespan_query_uses_knowledge_priority_not_llm(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, repository, llm = self._build_agent(Path(td))
