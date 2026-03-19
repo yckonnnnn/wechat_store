@@ -23,11 +23,14 @@ class MessageProcessor(QObject):
     """消息编排器"""
 
     _GRAB_CHAT_AFTER_CLICK_DELAY_MS = 3000
+    _FIRST_TURN_VIDEO_CONTINUE_DELAY_MS = 3000
     _MEDIA_SEND_AFTER_TEXT_DELAY_MS = 900
     _VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 1200
     _STALE_FOLLOWUP_AFTER_SECONDS = 120
     _STALE_FOLLOWUP_GRAB_DELAY_MS = 800
     _STALE_FOLLOWUP_TEXT = "姐姐，请添加我好友，我会发详细定位还有乘车路线给您～♥️"
+    _FIRST_TURN_AUTO_REPLY_TEXT = "因咨询较多，我是智能助手小艾，请添加真人客服一对一详细为您解答！"
+    _FIRST_TURN_VIDEO_NOTICE_TEXT = _FIRST_TURN_AUTO_REPLY_TEXT
 
     status_changed = Signal(str)
     log_message = Signal(str)
@@ -503,13 +506,20 @@ class MessageProcessor(QObject):
             return
 
         history = self._convert_history(messages)
-        decision = self.agent.decide(
-            session_id=session_id,
-            user_name=user_name,
-            latest_user_text=latest_user_message,
-            conversation_history=history,
-            first_turn_global_override=is_first_turn_global,
-        )
+        if is_first_turn_global:
+            self._emit_log("🧭 首轮命中固定承接：跳过规则/知识库/LLM，直接发送固定文本和视频")
+            decision = self._build_first_turn_opening_decision(
+                session_id=session_id,
+                user_name=user_name,
+            )
+        else:
+            decision = self.agent.decide(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text=latest_user_message,
+                conversation_history=history,
+                first_turn_global_override=is_first_turn_global,
+            )
 
         self.decision_ready.emit(
             {
@@ -680,6 +690,10 @@ class MessageProcessor(QObject):
 
             self.browser.send_message(decision.reply_text, on_text_sent)
 
+        if decision.rule_id == "FIRST_TURN_AUTO_REPLY":
+            send_text_and_remaining_media([])
+            return
+
         # Phase 1: 首轮视频优先发送
         if decision.is_first_turn_global and first_turn_video_items:
             self._mark_active_session(
@@ -726,7 +740,11 @@ class MessageProcessor(QObject):
                         # 没有图片，直接发送文本
                         send_text_and_remaining_media([])
 
-                QTimer.singleShot(3000, continue_with_images)
+                delay_ms = int(getattr(self, "_FIRST_TURN_VIDEO_CONTINUE_DELAY_MS", 3000) or 0)
+                if delay_ms > 0:
+                    QTimer.singleShot(delay_ms, continue_with_images)
+                    return
+                continue_with_images()
 
             self._send_media_queue(
                 session_id,
@@ -759,6 +777,36 @@ class MessageProcessor(QObject):
 
         planned_items_after_text = [] if decision.is_first_turn_global else list(decision.media_items)
         send_text_and_remaining_media(planned_items_after_text)
+
+    def _build_first_turn_opening_decision(self, session_id: str, user_name: str) -> AgentDecision:
+        del user_name
+        video_items: List[Dict[str, Any]] = []
+        build_video_items = getattr(self.agent, "build_first_turn_video_items", None)
+        if callable(build_video_items):
+            try:
+                video_items = [dict(x) for x in (build_video_items(session_id) or []) if isinstance(x, dict)]
+            except Exception:
+                video_items = []
+
+        decision = AgentDecision(
+            reply_text=str(getattr(self, "_FIRST_TURN_AUTO_REPLY_TEXT", "") or "").strip(),
+            intent="first_turn_auto",
+            route_reason="first_turn_auto_reply",
+            reply_goal="首轮承接",
+            media_plan="delayed_video" if video_items else "none",
+            media_items=[],
+            reply_source="system",
+            rule_id="FIRST_TURN_AUTO_REPLY",
+            rule_applied=True,
+        )
+        decision.is_first_turn_global = True
+        decision.first_turn_text_required = True
+        decision.first_turn_video_items = video_items
+        decision.first_turn_retry_policy = {
+            "image_retry_once_deferred": True,
+            "video_retry_once_inline": True,
+        }
+        return decision
 
     def _send_media_queue(
         self,

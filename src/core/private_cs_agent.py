@@ -3148,6 +3148,17 @@ class CustomerServiceAgent:
         turns = self.summarize_user_turns_from_logs(user_id_hash=user_id_hash)
         return int(turns.get("event_count", 0) or 0) == 0
 
+    def build_first_turn_video_items(self, session_id: str) -> List[Dict[str, Any]]:
+        """为首轮固定承接生成视频计划，不触发规则/知识库/LLM决策。"""
+        session_video = self.summarize_session_video_from_log(session_id=session_id)
+        if session_video.get("first_reply_video_sent"):
+            return []
+        video_item = self._build_video_media_item(trigger_source="first_reply")
+        if not video_item:
+            return []
+        video_item["first_turn_media"] = True
+        return [video_item]
+
     def _populate_first_turn_media_plan(
         self,
         session_id: str,
@@ -3173,7 +3184,8 @@ class CustomerServiceAgent:
             item["first_turn_media"] = True
 
         video_items: List[Dict[str, Any]] = []
-        should_attach_first_reply_video = bool(image_items) or bool(self.first_reply_video_enabled)
+        # 只要是全局首轮，就优先挂上首轮视频，避免普通问候场景因未命中图片或开关关闭而跳过。
+        should_attach_first_reply_video = bool(decision.is_first_turn_global)
         if should_attach_first_reply_video:
             session_video = self.summarize_session_video_from_log(session_id=session_id)
             if not session_video.get("first_reply_video_sent"):

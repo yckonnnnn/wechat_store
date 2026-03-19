@@ -168,6 +168,7 @@ class DummyAgentFlow:
     def __init__(self, memory_store: MemoryStore):
         self.memory_store = memory_store
         self.mark_reply_sent_calls = []
+        self.decide_calls = 0
 
     def reload_media_library(self):
         return None
@@ -179,6 +180,7 @@ class DummyAgentFlow:
         return True
 
     def decide(self, session_id: str, user_name: str, latest_user_text: str, conversation_history=None, first_turn_global_override=None):
+        self.decide_calls += 1
         del session_id, user_name, latest_user_text, conversation_history, first_turn_global_override
         decision = AgentDecision(
             reply_text="姐姐我马上帮您安排～🌹",
@@ -248,31 +250,27 @@ class DummyAgentFlow:
 
 
 class DummyAgentFlowFirstReplyVideo(DummyAgentFlow):
-    def decide(self, session_id: str, user_name: str, latest_user_text: str, conversation_history=None, first_turn_global_override=None):
-        decision = super().decide(session_id, user_name, latest_user_text, conversation_history, first_turn_global_override)
-        decision.first_turn_image_items = [dict(x) for x in decision.media_items]
-        decision.first_turn_video_items = [
+    def build_first_turn_video_items(self, session_id: str):
+        del session_id
+        return [
             {
                 "type": "delayed_video",
                 "path": "video.mp4",
                 "trigger_source": "first_reply",
             }
         ]
-        return decision
 
 
 class DummyAgentFlowFirstTurnImageAndVideo(DummyAgentFlow):
-    def decide(self, session_id: str, user_name: str, latest_user_text: str, conversation_history=None, first_turn_global_override=None):
-        decision = super().decide(session_id, user_name, latest_user_text, conversation_history, first_turn_global_override)
-        decision.first_turn_image_items = [dict(x) for x in decision.media_items]
-        decision.first_turn_video_items = [
+    def build_first_turn_video_items(self, session_id: str):
+        del session_id
+        return [
             {
                 "type": "delayed_video",
                 "path": "video.mp4",
                 "trigger_source": "first_reply",
             }
         ]
-        return decision
 
 
 class DummyBrowserFirstTurnSequence(QObject):
@@ -282,6 +280,7 @@ class DummyBrowserFirstTurnSequence(QObject):
     def __init__(self):
         super().__init__()
         self.sequence = []
+        self.sent_texts = []
 
     def find_and_click_first_unread(self, callback):
         del callback
@@ -294,7 +293,7 @@ class DummyBrowserFirstTurnSequence(QObject):
 
     def send_message(self, text, callback):
         self.sequence.append("text")
-        del text
+        self.sent_texts.append(text)
         callback(True, {"ok": True})
 
     def send_image(self, media_path, callback):
@@ -700,6 +699,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
             processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
             processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+            processor._detect_user_first_turn_global = lambda user_hash: False
 
             payload = {
                 "user_name": "日志用户",
@@ -727,7 +727,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
 
             user_payload = user_events[-1].get("payload", {})
             self.assertIn("is_first_turn_global", user_payload)
-            self.assertTrue(user_payload.get("is_first_turn_global"))
+            self.assertFalse(user_payload.get("is_first_turn_global"))
 
             decision_payload = decision_events[-1].get("payload", {})
             self.assertIn("round_media_blocked", decision_payload)
@@ -789,6 +789,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             processor = MessageProcessor(browser, sessions, agent)
             processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
             processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
+            processor._detect_user_first_turn_global = lambda user_hash: False
 
             payload = {
                 "user_name": "媒体用户",
@@ -852,6 +853,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             processor = MessageProcessor(browser, sessions, agent)
             processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
             processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
+            processor._detect_user_first_turn_global = lambda user_hash: False
 
             payload = {
                 "user_name": "媒体用户",
@@ -890,6 +892,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             processor = MessageProcessor(browser, sessions, agent)
             processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
             processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
+            processor._detect_user_first_turn_global = lambda user_hash: False
 
             payload = {
                 "user_name": "媒体用户",
@@ -929,6 +932,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
             processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
             processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+            processor._detect_user_first_turn_global = lambda user_hash: False
 
             payload = {
                 "user_name": "重试用户",
@@ -962,6 +966,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
             processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
             processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+            processor._detect_user_first_turn_global = lambda user_hash: False
 
             payload = {
                 "user_name": "补偿用户",
@@ -1021,6 +1026,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
             processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
             processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+            processor._detect_user_first_turn_global = lambda user_hash: False
             processor._page_ready = True
             processor.set_remote_control_users(["控制用户"])
             processor.start()
@@ -1057,6 +1063,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
             processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
             processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+            processor._detect_user_first_turn_global = lambda user_hash: False
 
             payload = {
                 "user_name": "去重用户",
@@ -1100,6 +1107,47 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             self.assertTrue(agent.mark_reply_sent_calls)
             self.assertTrue(agent.mark_reply_sent_calls[-1]["is_first_turn_global"])
 
+    def test_first_turn_skips_decide_and_second_turn_starts_calling_it(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserFlow()
+            sessions = SessionManager()
+            agent = DummyAgentFlowFirstReplyVideo(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor._FIRST_TURN_VIDEO_CONTINUE_DELAY_MS = 0
+            processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
+            processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+            first_turn_states = [True, False]
+            processor._detect_user_first_turn_global = lambda user_hash: first_turn_states.pop(0)
+
+            first_payload = {
+                "user_name": "首轮转二轮用户",
+                "chat_session_key": "",
+                "chat_session_method": "fallback",
+                "chat_session_fingerprint": "fp_first_then_second",
+                "messages": [
+                    {"text": "历史客服", "is_user": False},
+                    {"text": "你好啊～", "is_user": True},
+                ],
+            }
+            processor._on_chat_data(True, first_payload, auto_reply=True)
+            self.assertEqual(agent.decide_calls, 0)
+
+            second_payload = {
+                "user_name": "首轮转二轮用户",
+                "chat_session_key": "",
+                "chat_session_method": "fallback",
+                "chat_session_fingerprint": "fp_first_then_second",
+                "messages": [
+                    {"text": "历史客服", "is_user": False},
+                    {"text": "你好啊～", "is_user": True},
+                    {"text": "价格多少", "is_user": True},
+                ],
+            }
+            processor._on_chat_data(True, second_payload, auto_reply=True)
+            self.assertEqual(agent.decide_calls, 1)
+
     def test_first_reply_video_flows_through_material_library_sender(self):
         app = QCoreApplication.instance() or QCoreApplication([])
 
@@ -1109,6 +1157,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             sessions = SessionManager()
             agent = DummyAgentFlowFirstReplyVideo(memory_store)
             processor = MessageProcessor(browser, sessions, agent)
+            processor._FIRST_TURN_VIDEO_CONTINUE_DELAY_MS = 0
             processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
             processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
             processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
@@ -1131,7 +1180,9 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             loop.exec()
 
             self.assertEqual(browser.video_send_calls, 1)
-            self.assertEqual(browser.image_send_calls, 1)
+            self.assertEqual(browser.image_send_calls, 0)
+            self.assertEqual(browser.sent_messages, [processor._FIRST_TURN_AUTO_REPLY_TEXT])
+            self.assertEqual(agent.decide_calls, 0)
 
     def test_first_turn_image_text_video_sequence_is_ordered(self):
         app = QCoreApplication.instance() or QCoreApplication([])
@@ -1142,6 +1193,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             sessions = SessionManager()
             agent = DummyAgentFlowFirstTurnImageAndVideo(memory_store)
             processor = MessageProcessor(browser, sessions, agent)
+            processor._FIRST_TURN_VIDEO_CONTINUE_DELAY_MS = 0
             processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
             processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
             processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
@@ -1163,7 +1215,39 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             QTimer.singleShot(1400, loop.quit)
             loop.exec()
 
-            self.assertEqual(browser.sequence, ["image", "text", "video"])
+            self.assertEqual(browser.sequence, ["text", "video"])
+            self.assertEqual(browser.sent_texts, [processor._FIRST_TURN_AUTO_REPLY_TEXT])
+            self.assertEqual(agent.decide_calls, 0)
+
+    def test_first_turn_greeting_plan_still_attaches_video(self):
+        agent = CustomerServiceAgent.__new__(CustomerServiceAgent)
+        agent.first_reply_video_enabled = False
+        agent.summarize_session_video_from_log = lambda session_id: {"first_reply_video_sent": False}
+        agent._build_video_media_item = lambda trigger_source: {
+            "type": "delayed_video",
+            "path": "video.mp4",
+            "trigger_source": trigger_source,
+        }
+
+        decision = AgentDecision(
+            reply_text="你好呀姐姐，有什么可以帮您？💕",
+            intent="general",
+            route_reason="unknown",
+            reply_goal="解答",
+            media_plan="none",
+            media_items=[],
+            reply_source="llm",
+            rule_id="LLM_FOLLOW_UP",
+            rule_applied=False,
+            is_first_turn_global=True,
+        )
+
+        agent._populate_first_turn_media_plan("user_f4279bcac8", "胃不疼", decision)
+
+        self.assertEqual(len(decision.first_turn_video_items), 1)
+        self.assertEqual(decision.first_turn_video_items[0]["type"], "delayed_video")
+        self.assertEqual(decision.first_turn_video_items[0]["trigger_source"], "first_reply")
+        self.assertTrue(decision.first_turn_video_items[0]["first_turn_media"])
 
     def test_delayed_video_uses_material_library_sender(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1173,6 +1257,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             agent = DummyAgentFlow(memory_store)
             processor = MessageProcessor(browser, sessions, agent)
             processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+            processor._detect_user_first_turn_global = lambda user_hash: False
 
             processor._send_media_queue(
                 session_id="chat_video_route",
@@ -1260,6 +1345,7 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
             agent = DummyAgentFlow(memory_store)
             processor = MessageProcessor(browser, sessions, agent)
             processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+            processor._detect_user_first_turn_global = lambda user_hash: False
 
             payload = {
                 "user_name": "落稳用户",
