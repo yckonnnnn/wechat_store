@@ -50,6 +50,7 @@ def build_agent(sim_dir: Path) -> CustomerServiceAgent:
         first_reply_video_enabled=False,
         reply_mode="llm_direct",
     )
+    agent._sync_media_state_from_conversation_log = lambda session_id, user_hash, session_state: None
     return agent
 
 
@@ -170,12 +171,32 @@ def run_case(messages: List[str], mode: str = "soft_context") -> Dict[str, Any]:
             reply_source = str(decision.reply_source or "")
             intent = str(decision.intent or "")
             route_reason = str(decision.route_reason or "")
-            media_plan = str(decision.media_plan or "none")
+            agent.mark_reply_sent(session_id, user_name, reply_text)
+            media_decision = agent.judge_post_reply_media(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text=text,
+                reply_text=reply_text,
+                conversation_history=history,
+                decision=decision,
+            )
+            media_plan = "contact_image" if media_decision.send_contact_image else "address_image" if media_decision.send_address_image else "delayed_video" if media_decision.send_delayed_video else "none"
+            media_queue = agent.build_post_text_media_queue(
+                session_id=session_id,
+                user_name=user_name,
+                planned_media_items=list(media_decision.media_items or []),
+                extra_media_items=[],
+            )
+            for item in media_queue:
+                agent.mark_media_sent(session_id, user_name, item, success=True)
+            contact_image_triggered = any(
+                isinstance(item, dict) and str(item.get("type", "") or "") == "contact_image"
+                for item in media_queue
+            )
             standard_reply_hit = bool(getattr(decision, "standard_reply_hit", False))
             standard_reply_question = str(getattr(decision, "standard_reply_question", "") or "")
             standard_reply_confidence = str(getattr(decision, "standard_reply_confidence", "") or "")
             brand_knowledge_used = bool(getattr(decision, "brand_knowledge_used", False))
-            agent.mark_reply_sent(session_id, user_name, reply_text)
         else:
             agent.llm_service.set_system_prompt(request_info["system_prompt"])
             ok, result = agent.llm_service.generate_reply_sync(
@@ -189,6 +210,7 @@ def run_case(messages: List[str], mode: str = "soft_context") -> Dict[str, Any]:
             intent = ""
             route_reason = ""
             media_plan = "none"
+            contact_image_triggered = False
             standard_reply_hit = bool(request_info["prompt_meta"].get("standard_reply_hit", False))
             standard_reply_question = str(request_info["prompt_meta"].get("standard_reply_question", "") or "")
             standard_reply_confidence = str(request_info["prompt_meta"].get("standard_reply_confidence", "") or "")
@@ -202,6 +224,7 @@ def run_case(messages: List[str], mode: str = "soft_context") -> Dict[str, Any]:
                 "intent": intent,
                 "route_reason": route_reason,
                 "media_plan": media_plan,
+                "contact_image_triggered": contact_image_triggered,
                 "standard_reply_hit": standard_reply_hit,
                 "standard_reply_question": standard_reply_question,
                 "standard_reply_confidence": standard_reply_confidence,

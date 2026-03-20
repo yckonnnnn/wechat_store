@@ -607,6 +607,8 @@ class MessageProcessor(QObject):
             "session_id": session_id,
             "user_name": user_name,
             "decision": decision,
+            "latest_user_text": latest_user_message,
+            "conversation_history": history,
         }
 
         self._emit_log("✉️ 开始发送回复")
@@ -621,6 +623,8 @@ class MessageProcessor(QObject):
         session_id = payload["session_id"]
         user_name = payload["user_name"]
         decision: AgentDecision = payload["decision"]
+        latest_user_text = str(payload.get("latest_user_text", "") or "")
+        conversation_history = list(payload.get("conversation_history", []) or [])
         self._mark_active_session(
             session_id=session_id,
             user_name=user_name,
@@ -655,11 +659,27 @@ class MessageProcessor(QObject):
                     is_first_turn_global=bool(decision.is_first_turn_global),
                 )
                 extra_medias = [extra_video] if extra_video else []
+                post_reply_media_items: List[Dict[str, Any]] = []
+                post_reply_media_decision = None
+                if str(getattr(decision, "reply_mode", "") or "") == "llm_direct":
+                    try:
+                        post_reply_media_decision = self.agent.judge_post_reply_media(
+                            session_id=session_id,
+                            user_name=user_name,
+                            latest_user_text=latest_user_text,
+                            reply_text=decision.reply_text,
+                            conversation_history=conversation_history,
+                            decision=decision,
+                        )
+                        post_reply_media_items = list(getattr(post_reply_media_decision, "media_items", []) or [])
+                    except Exception as exc:
+                        self._emit_log(f"⚠️ 媒体裁判执行失败，不影响文本发送: {exc}")
+                        post_reply_media_items = []
                 post_text_extra_items = [*first_turn_video_items, *extra_medias, *deferred_media_items]
                 media_queue = self.agent.build_post_text_media_queue(
                     session_id=session_id,
                     user_name=user_name,
-                    planned_media_items=planned_media_items,
+                    planned_media_items=[*planned_media_items, *post_reply_media_items],
                     extra_media_items=post_text_extra_items,
                 )
 

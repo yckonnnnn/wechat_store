@@ -541,6 +541,17 @@ class AgentDecision:
     brand_knowledge_used: bool = False
 
 
+@dataclass
+class MediaJudgeDecision:
+    send_contact_image: bool = False
+    send_address_image: bool = False
+    send_delayed_video: bool = False
+    reason: str = ""
+    reminder_only: bool = False
+    skip_reason: str = ""
+    media_items: List[Dict[str, Any]] = field(default_factory=list)
+
+
 class _SafeDict(dict):
     def __missing__(self, key):
         return ""
@@ -965,6 +976,10 @@ class CustomerServiceAgent:
                 "price_priority_reply_count": next_price_priority_reply_count,
                 "address_text_reply_count_by_store": next_address_text_reply_count_by_store,
                 "address_contact_reply_count_by_store": next_address_contact_reply_count_by_store,
+                "address_info_shared": bool(
+                    session_state.get("address_info_shared", False)
+                    or self._reply_shares_address_info(decision.reply_text)
+                ),
             },
             user_hash=user_hash,
         )
@@ -1049,6 +1064,86 @@ class CustomerServiceAgent:
                 queue.append(dict(item))
 
         return queue
+
+    def judge_post_reply_media(
+        self,
+        session_id: str,
+        user_name: str,
+        latest_user_text: str,
+        reply_text: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        decision: Optional[AgentDecision] = None,
+    ) -> MediaJudgeDecision:
+        user_hash = self._hash_user(user_name or session_id)
+        session_state = self.memory_store.get_session_state(session_id, user_hash=user_hash)
+        normalized_text = self.knowledge_service.normalize_user_text(latest_user_text).strip()
+        history = conversation_history or []
+        route = self.knowledge_service.resolve_store_recommendation(normalized_text)
+        intent = decision.intent if decision is not None else self._detect_intent(normalized_text)
+
+        if self._looks_like_direct_contact_request(normalized_text):
+            if self._is_contact_image_sent_for_current_geo(session_state):
+                return MediaJudgeDecision(
+                    send_contact_image=False,
+                    reason="direct_contact_request",
+                    reminder_only=True,
+                    skip_reason="contact_image_already_sent",
+                )
+            media_items, skip_reason = self._plan_media_items(
+                session_id=session_id,
+                text=normalized_text,
+                intent="contact",
+                route=route,
+                route_reason="direct_contact_request",
+                media_plan="contact_image",
+                session_state=session_state,
+                user_state=self.memory_store.get_user_state(user_hash),
+                force_contact_image=True,
+            )
+            return MediaJudgeDecision(
+                send_contact_image=bool(media_items),
+                reason="direct_contact_request",
+                reminder_only=False,
+                skip_reason=str(skip_reason or ""),
+                media_items=media_items,
+            )
+
+        if self._should_trigger_precise_address_contact_image(
+            latest_user_text=latest_user_text,
+            normalized_text=normalized_text,
+            reply_text=reply_text,
+            intent=intent,
+            route=route,
+            session_state=session_state,
+            conversation_history=history,
+        ):
+            if self._is_contact_image_sent_for_current_geo(session_state):
+                return MediaJudgeDecision(
+                    send_contact_image=False,
+                    reason="precise_address_followup",
+                    reminder_only=True,
+                    skip_reason="contact_image_already_sent",
+                )
+            media_items, skip_reason = self._plan_media_items(
+                session_id=session_id,
+                text=normalized_text,
+                intent="contact",
+                route=route,
+                route_reason="precise_address_followup",
+                media_plan="contact_image",
+                session_state=session_state,
+                user_state=self.memory_store.get_user_state(user_hash),
+                force_contact_image=True,
+            )
+            return MediaJudgeDecision(
+                send_contact_image=bool(media_items),
+                reason="precise_address_followup",
+                reminder_only=False,
+                skip_reason=str(skip_reason or ""),
+                media_items=media_items,
+            )
+
+        return MediaJudgeDecision(skip_reason="no_media_rule_matched")
 
     def mark_media_sent(self, session_id: str, user_name: str, media_item: Dict[str, Any], success: bool) -> None:
         """媒体发送回执"""
@@ -1226,6 +1321,10 @@ class CustomerServiceAgent:
             "联系方式",
             "联系方法",
             "联系信息",
+            "二维码",
+            "微信号",
+            "电话",
+            "手机号",
             "你的联系",
             "你们联系",
             "你的微信",
@@ -1242,6 +1341,114 @@ class CustomerServiceAgent:
             "如何联系",
         )
         return any(pattern in normalized for pattern in direct_patterns)
+
+    def _should_trigger_precise_address_contact_image(
+        self,
+        latest_user_text: str,
+        normalized_text: str,
+        reply_text: str,
+        intent: str,
+        route: Dict[str, Any],
+        session_state: Dict[str, Any],
+        conversation_history: List[Dict[str, str]],
+    ) -> bool:
+        if self._looks_like_direct_contact_request(normalized_text):
+            return False
+        if not self._has_address_info_shared_context(conversation_history, session_state):
+            return False
+        if not self._is_precise_address_followup(latest_user_text):
+            return False
+        if self._has_blocking_address_followup_topic(normalized_text):
+            return False
+        return True
+
+    def _has_address_info_shared_context(
+        self,
+        conversation_history: List[Dict[str, str]],
+        session_state: Dict[str, Any],
+    ) -> bool:
+        if bool(session_state.get("address_info_shared", False)):
+            return True
+        return self._history_has_address_info_shared(conversation_history)
+
+    def _history_has_address_info_shared(self, conversation_history: List[Dict[str, str]]) -> bool:
+        for item in reversed(conversation_history or []):
+            if str(item.get("role", "") or "") != "assistant":
+                continue
+            if self._reply_shares_address_info(str(item.get("content", "") or "")):
+                return True
+        return False
+
+    def _reply_shares_address_info(self, reply_text: str) -> bool:
+        normalized = self.knowledge_service.normalize_user_text(reply_text)
+        if not normalized:
+            return False
+        if self._infer_answer_type(reply_text) in {"store_address", "address_general"}:
+            return True
+        if any(token in normalized for token in ("北京1家", "北京只有1家", "上海有5家", "上海共有5家")):
+            return True
+        if any(token in normalized for token in ("静安", "人民广场", "人广", "虹口", "五角场", "徐汇", "朝阳区")) and any(
+            token in normalized for token in ("门店", "地址", "位置", "区域", "城市")
+        ):
+            return True
+        return False
+
+    def _is_precise_address_followup(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(text or "")).lower()
+        if not normalized:
+            return False
+        precise_keywords = (
+            "具体地址",
+            "具体位置",
+            "具体在哪",
+            "多少号",
+            "几号",
+            "几楼",
+            "楼层",
+            "哪一栋",
+            "哪栋",
+            "哪个门",
+            "从哪进",
+            "哪个出口",
+            "几号出口",
+            "导航",
+            "怎么导航",
+            "怎么走",
+            "怎么去",
+            "怎么过去",
+            "如何去",
+            "如何过去",
+            "坐车",
+            "坐什么车",
+            "地铁",
+            "几号线",
+            "哪一站",
+            "哪个站",
+            "开车怎么去",
+            "打车到哪里",
+            "定位",
+            "停车",
+        )
+        generic_only_patterns = (
+            "地址在哪",
+            "地址给我",
+            "上海地址给我",
+            "北京地址给我",
+            "店铺在那里",
+            "在什么地方",
+            "在哪里",
+            "位置在哪",
+        )
+        if any(keyword in normalized for keyword in precise_keywords):
+            return True
+        if normalized in generic_only_patterns:
+            return False
+        if any(keyword in normalized for keyword in ADDRESS_FOLLOWUP_PRIORITY_KEYWORDS):
+            return True
+        return False
+
+    def _has_blocking_address_followup_topic(self, normalized_text: str) -> bool:
+        return any(keyword in normalized_text for keyword in ADDRESS_FOLLOWUP_BLOCK_KEYWORDS)
 
     def _is_ambiguous_short_fragment(self, text: str, intent: str, route: Dict[str, Any]) -> bool:
         normalized = re.sub(r"\s+", "", str(text or ""))
@@ -3771,6 +3978,10 @@ class CustomerServiceAgent:
             return "未知"
         if any(token in normalized for token in ("愚园路", "汉口路", "花园路", "政通路", "漕溪北路", "建外soho", "亚洲大厦")):
             return "store_address"
+        if any(token in normalized for token in ("上海有5家", "上海共有5家", "北京只有1家", "北京1家", "静安", "人民广场", "人广", "虹口", "五角场", "徐汇", "朝阳区")) and any(
+            token in normalized for token in ("门店", "地址", "位置", "区域", "城市")
+        ):
+            return "address_general"
         if "预约" in normalized:
             return "appointment"
         if any(token in normalized for token in ("9:30", "18:00", "营业时间", "周一到周五")):

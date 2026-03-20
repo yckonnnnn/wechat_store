@@ -34,6 +34,7 @@ class TurnResult:
     intent: str
     route_reason: str
     media_plan: str
+    contact_image_triggered: bool
     standard_reply_hit: bool
     brand_knowledge_used: bool
 
@@ -69,6 +70,7 @@ def build_agent(sim_dir: Path) -> CustomerServiceAgent:
         first_reply_video_enabled=False,
         reply_mode="llm_direct",
     )
+    agent._sync_media_state_from_conversation_log = lambda session_id, user_hash, session_state: None
     return agent
 
 
@@ -94,6 +96,23 @@ def run_template(template_path: Path) -> Dict[str, Any]:
                 conversation_history=history,
             )
             agent.mark_reply_sent(f"{template_path.stem}_{idx:02d}", f"{template_path.stem}_{idx:02d}", decision.reply_text)
+            media_decision = agent.judge_post_reply_media(
+                session_id=f"{template_path.stem}_{idx:02d}",
+                user_name=f"{template_path.stem}_{idx:02d}",
+                latest_user_text=text,
+                reply_text=decision.reply_text,
+                conversation_history=history,
+                decision=decision,
+            )
+            media_plan = "contact_image" if media_decision.send_contact_image else "address_image" if media_decision.send_address_image else "delayed_video" if media_decision.send_delayed_video else "none"
+            media_queue = agent.build_post_text_media_queue(
+                session_id=f"{template_path.stem}_{idx:02d}",
+                user_name=f"{template_path.stem}_{idx:02d}",
+                planned_media_items=list(media_decision.media_items or []),
+                extra_media_items=[],
+            )
+            for item in media_queue:
+                agent.mark_media_sent(f"{template_path.stem}_{idx:02d}", f"{template_path.stem}_{idx:02d}", item, success=True)
             turns.append(
                 TurnResult(
                     turn=turn_idx,
@@ -102,7 +121,11 @@ def run_template(template_path: Path) -> Dict[str, Any]:
                     reply_source=decision.reply_source,
                     intent=decision.intent,
                     route_reason=decision.route_reason,
-                    media_plan=decision.media_plan,
+                    media_plan=media_plan,
+                    contact_image_triggered=any(
+                        isinstance(item, dict) and str(item.get("type", "") or "") == "contact_image"
+                        for item in media_queue
+                    ),
                     standard_reply_hit=bool(getattr(decision, "standard_reply_hit", False)),
                     brand_knowledge_used=bool(getattr(decision, "brand_knowledge_used", False)),
                 )
