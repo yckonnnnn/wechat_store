@@ -10,6 +10,7 @@ import copy
 import json
 import random
 import re
+import time
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -539,6 +540,12 @@ class AgentDecision:
     standard_reply_confidence: str = ""
     standard_reply_intent: str = ""
     brand_knowledge_used: bool = False
+    prompt_build_ms: int = 0
+    llm_request_ms: int = 0
+    llm_total_ms: int = 0
+    llm_attempt_count: int = 0
+    llm_message_count: int = 0
+    system_prompt_chars: int = 0
 
 
 @dataclass
@@ -2951,7 +2958,10 @@ class CustomerServiceAgent:
         allow_address_guardrails: bool = True,
     ) -> AgentDecision:
         self._current_prompt_conversation_history = conversation_history or []
+        llm_started_at = time.perf_counter()
+        prompt_started_at = time.perf_counter()
         composed_prompt, prompt_meta = self._build_general_llm_prompt(latest_user_text)
+        prompt_build_ms = int((time.perf_counter() - prompt_started_at) * 1000)
         self.llm_service.set_system_prompt(composed_prompt)
         effective_user_message = user_message_override or latest_user_text
         conversation_state = prompt_meta.get("conversation_state", {}) if isinstance(prompt_meta, dict) else {}
@@ -2980,10 +2990,11 @@ class CustomerServiceAgent:
             and str(prompt_meta.get("standard_reply_intent", "") or "") in {"service_hours", "lifespan"}
             and str(prompt_meta.get("standard_reply_answer", "") or "").strip()
         )
-        success, result = self.llm_service.generate_reply_sync(
+        success, result, llm_metrics = self.llm_service.generate_reply_sync(
             user_message=effective_user_message,
             conversation_history=conversation_history,
         )
+        llm_metrics = dict(llm_metrics or {})
         model_name = self.llm_service.get_current_model_name()
         if not success:
             return AgentDecision(
@@ -3013,6 +3024,12 @@ class CustomerServiceAgent:
                 standard_reply_confidence=str(prompt_meta.get("standard_reply_confidence", "") or ""),
                 standard_reply_intent=str(prompt_meta.get("standard_reply_intent", "") or ""),
                 brand_knowledge_used=bool(prompt_meta.get("brand_knowledge_used", False)),
+                prompt_build_ms=prompt_build_ms,
+                llm_request_ms=int(llm_metrics.get("request_ms", 0) or 0),
+                llm_total_ms=int((time.perf_counter() - llm_started_at) * 1000),
+                llm_attempt_count=int(llm_metrics.get("attempt_count", 0) or 0),
+                llm_message_count=int(llm_metrics.get("message_count", 0) or 0),
+                system_prompt_chars=int(llm_metrics.get("system_prompt_chars", 0) or 0),
             )
 
         if direct_standard_reply:
@@ -3053,6 +3070,12 @@ class CustomerServiceAgent:
             standard_reply_confidence=str(prompt_meta.get("standard_reply_confidence", "") or ""),
             standard_reply_intent=str(prompt_meta.get("standard_reply_intent", "") or ""),
             brand_knowledge_used=bool(prompt_meta.get("brand_knowledge_used", False)),
+            prompt_build_ms=prompt_build_ms,
+            llm_request_ms=int(llm_metrics.get("request_ms", 0) or 0),
+            llm_total_ms=int((time.perf_counter() - llm_started_at) * 1000),
+            llm_attempt_count=int(llm_metrics.get("attempt_count", 0) or 0),
+            llm_message_count=int(llm_metrics.get("message_count", 0) or 0),
+            system_prompt_chars=int(llm_metrics.get("system_prompt_chars", 0) or 0),
         )
 
     def _select_kb_variant_answer(
@@ -3140,7 +3163,7 @@ class CustomerServiceAgent:
         self.llm_service.set_system_prompt(composed_prompt)
 
         for _ in range(2):
-            ok, result = self.llm_service.generate_reply_sync(
+            ok, result, _metrics = self.llm_service.generate_reply_sync(
                 user_message=rewrite_prompt,
                 conversation_history=conversation_history,
             )

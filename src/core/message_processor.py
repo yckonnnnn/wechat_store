@@ -546,6 +546,13 @@ class MessageProcessor(QObject):
             self._emit_log("⏭️ 后台决策已完成，但当前会话已取消，忽略本次结果")
             return
         user_hash = str(payload.get("user_hash", "") or "")
+        request_ms = int(getattr(decision, "llm_request_ms", 0) or 0)
+        attempts = int(getattr(decision, "llm_attempt_count", 0) or 0)
+        speed_label = "正常"
+        if attempts >= 2 or request_ms > 5000:
+            speed_label = "异常慢"
+        elif request_ms >= 3000:
+            speed_label = "偏慢"
         self.decision_ready.emit(
             {
                 "session_id": payload["session_id"],
@@ -565,6 +572,18 @@ class MessageProcessor(QObject):
             f"🤖 Agent决策: source={decision.reply_source}, intent={decision.intent}, "
             f"route={decision.route_reason}, media={decision.media_plan}, rule={decision.rule_id or '-'}"
         )
+        self._emit_log(
+            "⏱️ LLM耗时: "
+            f"prompt={int(getattr(decision, 'prompt_build_ms', 0) or 0)}ms, "
+            f"request={int(getattr(decision, 'llm_request_ms', 0) or 0)}ms, "
+            f"total={int(getattr(decision, 'llm_total_ms', 0) or 0)}ms, "
+            f"attempts={int(getattr(decision, 'llm_attempt_count', 0) or 0)}, "
+            f"messages={int(getattr(decision, 'llm_message_count', 0) or 0)}, "
+            f"prompt_chars={int(getattr(decision, 'system_prompt_chars', 0) or 0)}, "
+            f"判定={speed_label}"
+        )
+        if str(getattr(decision, "llm_fallback_reason", "") or "").strip():
+            self._emit_log(f"⚠️ Fallback原因: {decision.llm_fallback_reason}")
         self._append_training_event(
             session_id=payload["session_id"],
             user_id_hash=user_hash,
@@ -624,6 +643,12 @@ class MessageProcessor(QObject):
                 "standard_reply_question": str(getattr(decision, "standard_reply_question", "") or ""),
                 "standard_reply_confidence": str(getattr(decision, "standard_reply_confidence", "") or ""),
                 "brand_knowledge_used": bool(getattr(decision, "brand_knowledge_used", False)),
+                "prompt_build_ms": int(getattr(decision, "prompt_build_ms", 0) or 0),
+                "llm_request_ms": int(getattr(decision, "llm_request_ms", 0) or 0),
+                "llm_total_ms": int(getattr(decision, "llm_total_ms", 0) or 0),
+                "llm_attempt_count": int(getattr(decision, "llm_attempt_count", 0) or 0),
+                "llm_message_count": int(getattr(decision, "llm_message_count", 0) or 0),
+                "system_prompt_chars": int(getattr(decision, "system_prompt_chars", 0) or 0),
             },
         )
 

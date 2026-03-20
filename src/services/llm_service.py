@@ -230,11 +230,17 @@ class LLMService(QObject):
         return rid
 
     def generate_reply_sync(self, user_message: str, conversation_history: List[Dict] = None) -> tuple:
+        started_at = time.perf_counter()
         model_name = self.config_manager.get_current_model()
         model_config = self.config_manager.get_model_config(model_name)
 
         if not model_config.get("api_key"):
-            return False, f"{model_name} 的API密钥未配置"
+            return False, f"{model_name} 的API密钥未配置", {
+                "attempt_count": 0,
+                "request_ms": 0,
+                "message_count": len(conversation_history or []) + 1,
+                "system_prompt_chars": len(str(self._system_prompt or "")),
+            }
 
         messages = []
         if conversation_history:
@@ -243,7 +249,9 @@ class LLMService(QObject):
 
         last_error = ""
         max_attempts = 2
+        attempt_count = 0
         for attempt in range(1, max_attempts + 1):
+            attempt_count = attempt
             try:
                 worker = LLMWorker(
                     request_id="sync",
@@ -254,7 +262,12 @@ class LLMService(QObject):
                 )
                 result = worker._call_api()
                 if str(result or "").strip():
-                    return True, result
+                    return True, result, {
+                        "attempt_count": attempt_count,
+                        "request_ms": int((time.perf_counter() - started_at) * 1000),
+                        "message_count": len(messages),
+                        "system_prompt_chars": len(str(self._system_prompt or "")),
+                    }
                 last_error = "empty_response"
             except Exception as exc:
                 last_error = str(exc)
@@ -263,7 +276,12 @@ class LLMService(QObject):
                 break
             time.sleep(0.6)
 
-        return False, last_error
+        return False, last_error, {
+            "attempt_count": attempt_count,
+            "request_ms": int((time.perf_counter() - started_at) * 1000),
+            "message_count": len(messages),
+            "system_prompt_chars": len(str(self._system_prompt or "")),
+        }
 
     def _should_retry_sync_error(self, error_text: str) -> bool:
         value = str(error_text or "").strip().lower()
