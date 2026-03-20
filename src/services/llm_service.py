@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import ssl
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -240,17 +241,65 @@ class LLMService(QObject):
             messages.extend(conversation_history)
         messages.append({"role": "user", "content": user_message})
 
-        try:
-            worker = LLMWorker(
-                request_id="sync",
-                model_name=model_name,
-                config=model_config,
-                messages=messages,
-                system_prompt=self._system_prompt,
-            )
-            return True, worker._call_api()
-        except Exception as exc:
-            return False, str(exc)
+        last_error = ""
+        max_attempts = 2
+        for attempt in range(1, max_attempts + 1):
+            try:
+                worker = LLMWorker(
+                    request_id="sync",
+                    model_name=model_name,
+                    config=model_config,
+                    messages=messages,
+                    system_prompt=self._system_prompt,
+                )
+                result = worker._call_api()
+                if str(result or "").strip():
+                    return True, result
+                last_error = "empty_response"
+            except Exception as exc:
+                last_error = str(exc)
+
+            if attempt >= max_attempts or not self._should_retry_sync_error(last_error):
+                break
+            time.sleep(0.6)
+
+        return False, last_error
+
+    def _should_retry_sync_error(self, error_text: str) -> bool:
+        value = str(error_text or "").strip().lower()
+        if not value:
+            return True
+        non_retry_markers = (
+            "api密钥未配置",
+            "api地址未配置",
+            "不支持的模型",
+            "http 400",
+            "http 401",
+            "http 403",
+            "http 404",
+            "http 422",
+        )
+        if any(marker in value for marker in non_retry_markers):
+            return False
+        retry_markers = (
+            "incompleteread",
+            "timed out",
+            "timeout",
+            "remote end closed connection",
+            "remotedisconnected",
+            "connection reset",
+            "temporarily unavailable",
+            "temporary failure",
+            "http 408",
+            "http 409",
+            "http 429",
+            "http 500",
+            "http 502",
+            "http 503",
+            "http 504",
+            "empty_response",
+        )
+        return any(marker in value for marker in retry_markers)
 
     def _on_worker_result(self, request_id: str, success: bool, result: str):
         if request_id in self._workers:

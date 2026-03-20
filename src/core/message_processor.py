@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from PySide6.QtCore import QObject, Signal, QTimer
+from PySide6.QtCore import QObject, Signal, QTimer, QThread
 
 from .private_cs_agent import AgentDecision, CustomerServiceAgent
 from .session_manager import SessionManager
@@ -55,6 +55,7 @@ class MessageProcessor(QObject):
         self._page_ready = False
         self._poll_inflight = False
         self._processing_reply = False
+        self._decision_worker: Optional[_DecisionWorker] = None
 
         self._last_processed_marker = ""
         self._recent_processed_media_markers: List[str] = []
@@ -506,25 +507,49 @@ class MessageProcessor(QObject):
             return
 
         history = self._convert_history(messages)
-        if is_first_turn_global and str(getattr(self.agent, "reply_mode", "")) != "llm_direct":
-            self._emit_log("🧭 首轮命中固定承接：跳过规则/知识库/LLM，直接发送固定文本和视频")
-            decision = self._build_first_turn_opening_decision(
-                session_id=session_id,
-                user_name=user_name,
-            )
-        else:
-            decision = self.agent.decide(
-                session_id=session_id,
-                user_name=user_name,
-                latest_user_text=latest_user_message,
-                conversation_history=history,
-                first_turn_global_override=is_first_turn_global,
-            )
+        self._processing_reply = True
+        self._pending_send = {
+            "session_id": session_id,
+            "user_name": user_name,
+            "latest_user_text": latest_user_message,
+            "conversation_history": history,
+            "user_hash": user_hash,
+        }
 
+        decision_payload = {
+            "session_id": session_id,
+            "user_name": user_name,
+            "latest_user_text": latest_user_message,
+            "conversation_history": history,
+            "is_first_turn_global": bool(is_first_turn_global),
+            "user_hash": user_hash,
+            "use_first_turn_opening": bool(
+                is_first_turn_global and str(getattr(self.agent, "reply_mode", "")) != "llm_direct"
+            ),
+            "build_first_turn_opening_decision": self._build_first_turn_opening_decision,
+        }
+        self._emit_log("🧠 开始后台生成 LLM 回复")
+        self._start_decision_worker(decision_payload)
+
+    def _start_decision_worker(self, payload: Dict[str, Any]) -> None:
+        if payload.get("use_first_turn_opening", False):
+            self._emit_log("🧭 首轮命中固定承接：后台直接生成固定文本和视频")
+        worker = _DecisionWorker(self.agent, payload, parent=self)
+        worker.decision_ready.connect(self._on_decision_worker_ready)
+        worker.decision_failed.connect(self._on_decision_worker_failed)
+        worker.finished.connect(self._clear_decision_worker)
+        self._decision_worker = worker
+        worker.start()
+
+    def _on_decision_worker_ready(self, payload: Dict[str, Any], decision: AgentDecision) -> None:
+        if not self._pending_send:
+            self._emit_log("⏭️ 后台决策已完成，但当前会话已取消，忽略本次结果")
+            return
+        user_hash = str(payload.get("user_hash", "") or "")
         self.decision_ready.emit(
             {
-                "session_id": session_id,
-                "user_name": user_name,
+                "session_id": payload["session_id"],
+                "user_name": payload["user_name"],
                 "intent": decision.intent,
                 "route_reason": decision.route_reason,
                 "reply_goal": decision.reply_goal,
@@ -541,10 +566,10 @@ class MessageProcessor(QObject):
             f"route={decision.route_reason}, media={decision.media_plan}, rule={decision.rule_id or '-'}"
         )
         self._append_training_event(
-            session_id=session_id,
+            session_id=payload["session_id"],
             user_id_hash=user_hash,
             event_type="decision_snapshot",
-            user_name=user_name,
+            user_name=payload["user_name"],
             reply_source=decision.reply_source,
             rule_id=decision.rule_id,
             model_name=decision.llm_model,
@@ -602,17 +627,33 @@ class MessageProcessor(QObject):
             },
         )
 
-        self._processing_reply = True
-        self._pending_send = {
-            "session_id": session_id,
-            "user_name": user_name,
-            "decision": decision,
-            "latest_user_text": latest_user_message,
-            "conversation_history": history,
-        }
-
+        if self._pending_send:
+            self._pending_send["decision"] = decision
         self._emit_log("✉️ 开始发送回复")
         self._send_pending_decision()
+
+    def _on_decision_worker_failed(self, payload: Dict[str, Any], error_text: str) -> None:
+        if not self._pending_send:
+            return
+        self._emit_log(f"❌ Agent后台决策失败: {error_text}")
+        self.error_occurred.emit("后台生成回复失败")
+        self._append_training_event(
+            session_id=str(payload.get("session_id", "") or ""),
+            user_id_hash=str(payload.get("user_hash", "") or ""),
+            event_type="decision_failed",
+            user_name=str(payload.get("user_name", "") or ""),
+            payload={"error": str(error_text or "")},
+        )
+        self._reset_cycle()
+
+    def _clear_decision_worker(self) -> None:
+        worker = self._decision_worker
+        if worker is None:
+            return
+        if worker.isRunning():
+            return
+        worker.deleteLater()
+        self._decision_worker = None
 
     def _send_pending_decision(self):
         payload = self._pending_send
@@ -1909,3 +1950,39 @@ class MessageProcessor(QObject):
                 "failure_code": failure_code,
             },
         )
+
+
+class _DecisionWorker(QThread):
+    """在后台线程里执行 Agent 决策，避免阻塞 UI 主线程。"""
+
+    decision_ready = Signal(dict, object)
+    decision_failed = Signal(dict, str)
+
+    def __init__(
+        self,
+        agent: CustomerServiceAgent,
+        payload: Dict[str, Any],
+        parent: Optional[QObject] = None,
+    ):
+        super().__init__(parent)
+        self._agent = agent
+        self._payload = dict(payload or {})
+
+    def run(self):
+        try:
+            if self._payload.get("use_first_turn_opening", False):
+                decision = self._payload["build_first_turn_opening_decision"](
+                    session_id=self._payload["session_id"],
+                    user_name=self._payload["user_name"],
+                )
+            else:
+                decision = self._agent.decide(
+                    session_id=self._payload["session_id"],
+                    user_name=self._payload["user_name"],
+                    latest_user_text=self._payload["latest_user_text"],
+                    conversation_history=list(self._payload.get("conversation_history", []) or []),
+                    first_turn_global_override=bool(self._payload.get("is_first_turn_global", False)),
+                )
+            self.decision_ready.emit(dict(self._payload), decision)
+        except Exception as exc:
+            self.decision_failed.emit(dict(self._payload), str(exc))

@@ -4379,7 +4379,8 @@ class CustomerServiceAgent:
             "",
             text or "",
         )
-        cleaned = re.sub(r"\s*[~～]+\s*", "到", cleaned)
+        cleaned = re.sub(r"(?<=\d)\s*[-~～—]+\s*(?=\d)", "到", cleaned)
+        cleaned = re.sub(r"\s*[~～]+\s*", "", cleaned)
         return cleaned
 
     def _avoid_repeat(self, user_state: Dict[str, Any], reply_text: str) -> str:
