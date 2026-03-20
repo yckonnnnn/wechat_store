@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from datetime import datetime
@@ -113,6 +114,7 @@ def build_request_payload(
         prompt_meta = request_info["prompt_meta"]
         effective_user_message = request_info["effective_user_message"]
     else:
+        agent._current_prompt_conversation_history = conversation_history
         prompt, prompt_meta = agent._build_general_llm_prompt(latest_user_text)
         effective_user_message = latest_user_text
         if (
@@ -157,27 +159,53 @@ def run_case(messages: List[str], mode: str = "soft_context") -> Dict[str, Any]:
 
     for idx, text in enumerate(messages, 1):
         request_info = build_request_payload(agent, text, history, mode=mode)
-        agent.llm_service.set_system_prompt(request_info["system_prompt"])
-        ok, result = agent.llm_service.generate_reply_sync(
-            user_message=request_info["effective_user_message"],
-            conversation_history=history,
-        )
-        reply_text = str(result or "").strip()
-        if not ok:
-            reply_text = f"[LLM调用失败] {reply_text}"
+        if mode == "actual":
+            decision = agent.decide(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text=text,
+                conversation_history=history,
+            )
+            reply_text = str(decision.reply_text or "").strip()
+            reply_source = str(decision.reply_source or "")
+            intent = str(decision.intent or "")
+            route_reason = str(decision.route_reason or "")
+            media_plan = str(decision.media_plan or "none")
+            standard_reply_hit = bool(getattr(decision, "standard_reply_hit", False))
+            standard_reply_question = str(getattr(decision, "standard_reply_question", "") or "")
+            standard_reply_confidence = str(getattr(decision, "standard_reply_confidence", "") or "")
+            brand_knowledge_used = bool(getattr(decision, "brand_knowledge_used", False))
+            agent.mark_reply_sent(session_id, user_name, reply_text)
+        else:
+            agent.llm_service.set_system_prompt(request_info["system_prompt"])
+            ok, result = agent.llm_service.generate_reply_sync(
+                user_message=request_info["effective_user_message"],
+                conversation_history=history,
+            )
+            reply_text = str(result or "").strip()
+            if not ok:
+                reply_text = f"[LLM调用失败] {reply_text}"
+            reply_source = "llm_raw"
+            intent = ""
+            route_reason = ""
+            media_plan = "none"
+            standard_reply_hit = bool(request_info["prompt_meta"].get("standard_reply_hit", False))
+            standard_reply_question = str(request_info["prompt_meta"].get("standard_reply_question", "") or "")
+            standard_reply_confidence = str(request_info["prompt_meta"].get("standard_reply_confidence", "") or "")
+            brand_knowledge_used = bool(request_info["prompt_meta"].get("brand_knowledge_used", False))
         turns.append(
             {
                 "turn": idx,
                 "user": text,
                 "reply_text": reply_text,
-                "reply_source": "llm_raw",
-                "intent": "",
-                "route_reason": "",
-                "media_plan": "none",
-                "standard_reply_hit": bool(request_info["prompt_meta"].get("standard_reply_hit", False)),
-                "standard_reply_question": str(request_info["prompt_meta"].get("standard_reply_question", "") or ""),
-                "standard_reply_confidence": str(request_info["prompt_meta"].get("standard_reply_confidence", "") or ""),
-                "brand_knowledge_used": bool(request_info["prompt_meta"].get("brand_knowledge_used", False)),
+                "reply_source": reply_source,
+                "intent": intent,
+                "route_reason": route_reason,
+                "media_plan": media_plan,
+                "standard_reply_hit": standard_reply_hit,
+                "standard_reply_question": standard_reply_question,
+                "standard_reply_confidence": standard_reply_confidence,
+                "brand_knowledge_used": brand_knowledge_used,
             }
         )
         request_samples.append(
@@ -208,6 +236,9 @@ def run_case(messages: List[str], mode: str = "soft_context") -> Dict[str, Any]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="导出多轮对话的真实 LLM 请求样例与回复结果")
+    parser.add_argument("--mode", choices=["actual", "soft_context"], default="actual")
+    args = parser.parse_args()
     messages = [
         "地址在哪",
         "上海地区地址给我",
@@ -216,7 +247,7 @@ def main() -> int:
         "人广要预约吗？",
         "怎么预约？",
     ]
-    report = run_case(messages, mode="soft_context")
+    report = run_case(messages, mode=args.mode)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
 
