@@ -484,7 +484,7 @@ DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
     "strong_intent_after_both_first": "姐姐，您可以看上面的画圈圈地方，我让老师跟您预约～💗",
     "contact_followup_1": "姐姐您看下我刚发的联系方式图，按图添加后跟我说一声，我马上接着帮您安排😊",
     "contact_followup_2": "姐姐刚刚那张联系方式图您点开就能看到，添加后回我一句，我立刻继续帮您跟进😊",
-    "llm_fallback": "姐姐抱歉，系统现在有点忙，您稍后再发我马上跟进您哦🌹",
+    "llm_fallback": "姐姐因咨询较多，您加我联系方式，我直接跟你电话沟通更快～🌹",
     "general_empty": "姐姐我在呢，您告诉我最关心的是价格、佩戴体验还是门店位置呀🌹",
     "repeat_pool": [
         "姐姐我在，您可以继续说下最关心的问题呀🌹",
@@ -1055,8 +1055,6 @@ class CustomerServiceAgent:
             item_type = str(item.get("type", "") or "")
             if item_type == "address_image":
                 queue = [x for x in queue if not (str(x.get("type", "")) == "address_image" and x.get("target_store") == item.get("target_store"))]
-            elif item_type == "contact_image":
-                queue = [x for x in queue if str(x.get("type", "")) != "contact_image"]
             queue.append(dict(item))
 
         for item in extra_media_items or []:
@@ -1081,14 +1079,27 @@ class CustomerServiceAgent:
         route = self.knowledge_service.resolve_store_recommendation(normalized_text)
         intent = decision.intent if decision is not None else self._detect_intent(normalized_text)
 
+        if decision is not None and str(decision.reply_source or "") == "fallback":
+            media_items, skip_reason = self._plan_media_items(
+                session_id=session_id,
+                text=normalized_text,
+                intent="contact",
+                route=route,
+                route_reason="llm_fallback_contact",
+                media_plan="contact_image",
+                session_state=session_state,
+                user_state=self.memory_store.get_user_state(user_hash),
+                force_contact_image=True,
+            )
+            return MediaJudgeDecision(
+                send_contact_image=bool(media_items),
+                reason="llm_fallback_contact",
+                reminder_only=False,
+                skip_reason=str(skip_reason or ""),
+                media_items=media_items,
+            )
+
         if self._looks_like_direct_contact_request(normalized_text):
-            if self._is_contact_image_sent_for_current_geo(session_state):
-                return MediaJudgeDecision(
-                    send_contact_image=False,
-                    reason="direct_contact_request",
-                    reminder_only=True,
-                    skip_reason="contact_image_already_sent",
-                )
             media_items, skip_reason = self._plan_media_items(
                 session_id=session_id,
                 text=normalized_text,
@@ -1117,13 +1128,6 @@ class CustomerServiceAgent:
             session_state=session_state,
             conversation_history=history,
         ):
-            if self._is_contact_image_sent_for_current_geo(session_state):
-                return MediaJudgeDecision(
-                    send_contact_image=False,
-                    reason="precise_address_followup",
-                    reminder_only=True,
-                    skip_reason="contact_image_already_sent",
-                )
             media_items, skip_reason = self._plan_media_items(
                 session_id=session_id,
                 text=normalized_text,
@@ -1176,6 +1180,15 @@ class CustomerServiceAgent:
             sent_count = int(session_state.get("contact_image_sent_count", 0) or 0)
             session_state["contact_image_sent_count"] = sent_count + 1
             session_state["contact_image_last_sent_at"] = now
+            sent_paths = [
+                str(path).strip()
+                for path in (session_state.get("contact_image_sent_paths", []) or [])
+                if str(path).strip()
+            ]
+            media_path = str(media_item.get("path", "") or "").strip()
+            if media_path and media_path not in sent_paths:
+                sent_paths.append(media_path)
+            session_state["contact_image_sent_paths"] = sent_paths
             session_state["contact_warmup"] = False
             session_state["last_geo_pending"] = False
 
@@ -3237,17 +3250,14 @@ class CustomerServiceAgent:
         if not self._contact_images:
             return None, "contact_image_missing"
 
-        whitelist = self._is_media_whitelist_session(session_id)
-        if not whitelist:
-            sent_count = int(session_state.get("contact_image_sent_count", 0) or 0)
-            if sent_count >= CONTACT_IMAGE_MAX_SEND:
-                return None, "contact_image_already_sent"
-
         if force_contact_image or reason == "out_of_coverage" or intent in ("contact", "purchase"):
+            image_path = self._pick_contact_image_for_session(session_state)
+            if not image_path:
+                return None, "contact_image_unique_exhausted"
             return (
                 {
                     "type": "contact_image",
-                    "path": random.choice(self._contact_images),
+                    "path": image_path,
                     "detected_region": route.get("detected_region", "") or route_region(reason, text),
                     "route_reason": reason,
                     "target_store": route.get("target_store", ""),
@@ -3256,6 +3266,20 @@ class CustomerServiceAgent:
             )
 
         return None, "contact_image_not_applicable"
+
+    def _pick_contact_image_for_session(self, session_state: Dict[str, Any]) -> Optional[str]:
+        pool = [str(path) for path in self._contact_images if str(path).strip()]
+        if not pool:
+            return None
+        sent_paths = {
+            str(path).strip()
+            for path in (session_state.get("contact_image_sent_paths", []) or [])
+            if str(path).strip()
+        }
+        available = [path for path in pool if path not in sent_paths]
+        if not available:
+            return None
+        return random.choice(available)
 
     def _resolve_kb_contact_trigger_type(self, latest_user_text: str, kb_detail: Dict[str, Any]) -> str:
         normalized_text = re.sub(r"\s+", "", (latest_user_text or ""))
@@ -3304,6 +3328,7 @@ class CustomerServiceAgent:
         session_state["address_image_last_sent_at_by_store"] = dict(user_summary.get("address_image_last_sent_at_by_store", {}) or {})
         session_state["sent_address_stores"] = list(user_summary.get("sent_address_stores", []) or [])
         session_state["contact_image_last_sent_at"] = str(user_summary.get("contact_image_last_sent_at", "") or "")
+        session_state["contact_image_sent_paths"] = list(user_summary.get("contact_image_sent_paths", []) or [])
 
         latest_store = str(user_summary.get("last_target_store", "") or "").strip()
         if latest_store:
@@ -3376,6 +3401,7 @@ class CustomerServiceAgent:
             "address_image_last_sent_at_by_store": {},
             "sent_address_stores": [],
             "contact_image_last_sent_at": "",
+            "contact_image_sent_paths": [],
             "last_target_store": "",
         }
         if not user_id_hash:
@@ -3386,6 +3412,7 @@ class CustomerServiceAgent:
         last_target_store = ""
         last_target_store_ts: Optional[datetime] = None
         contact_last_ts: Optional[datetime] = None
+        contact_sent_paths: List[str] = []
 
         for log_path in self.conversation_log_dir.glob("*.jsonl"):
             records = self._scan_session_media_records(log_path=log_path, user_id_hash=user_id_hash)
@@ -3406,6 +3433,9 @@ class CustomerServiceAgent:
                             last_target_store = target_store
                 elif media_type == "contact_image":
                     summary["contact_image_sent_count"] += 1
+                    media_path = str(rec.get("path", "") or "").strip()
+                    if media_path and media_path not in contact_sent_paths:
+                        contact_sent_paths.append(media_path)
                     if ts and (not contact_last_ts or ts > contact_last_ts):
                         contact_last_ts = ts
 
@@ -3416,6 +3446,7 @@ class CustomerServiceAgent:
         }
         if contact_last_ts:
             summary["contact_image_last_sent_at"] = contact_last_ts.isoformat()
+        summary["contact_image_sent_paths"] = contact_sent_paths
         return summary
 
     def _store_recommend_display_name(self, target_store: str, fallback_name: str = "") -> str:
