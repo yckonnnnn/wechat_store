@@ -481,8 +481,6 @@ DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
     "purchase_contact_intro": "姐姐可以看看图中画框框的地方，会有专门的老师给您介绍～❤️",
     "purchase_contact_remind_only": "姐姐，请注意一下上面图中的圈圈位置哦，可以详细给您介绍怎么买～💗",
     "purchase_contact_remote_remind_only": "姐姐，您可以往上看看图中画圈的地方，我让老师一对一跟您远程定制❤️",
-    "address_precise_contact_intro": "姐姐，具体位置和到店方式我给您发张联系方式图，您按图添加后我把详细位置发您，会更方便一些🌹",
-    "address_precise_contact_remind_only": "姐姐，您看下上面那张联系方式图，按图添加后我把详细位置和到店方式发您🌹",
     "strong_intent_after_both_first": "姐姐，您可以看上面的画圈圈地方，我让老师跟您预约～💗",
     "contact_followup_1": "姐姐您看下我刚发的联系方式图，按图添加后跟我说一声，我马上接着帮您安排😊",
     "contact_followup_2": "姐姐刚刚那张联系方式图您点开就能看到，添加后回我一句，我立刻继续帮您跟进😊",
@@ -541,8 +539,6 @@ class AgentDecision:
     standard_reply_confidence: str = ""
     standard_reply_intent: str = ""
     brand_knowledge_used: bool = False
-    address_stage: str = ""
-    contact_image_triggered: bool = False
 
 
 class _SafeDict(dict):
@@ -780,15 +776,6 @@ class CustomerServiceAgent:
                 session_state=session_state,
                 allow_address_guardrails=False,
             )
-            decision = self._apply_llm_direct_media_strategy(
-                decision=decision,
-                latest_user_text=raw_text,
-                normalized_text=text,
-                intent=intent,
-                route=route,
-                conversation_history=conversation_history or [],
-                session_state=session_state,
-            )
         price_priority_decision = None if self.reply_mode == REPLY_MODE_LLM_DIRECT else self._decide_price_priority_reply(
             latest_user_text=text,
             route=route,
@@ -913,20 +900,7 @@ class CustomerServiceAgent:
 
         original_media_plan = decision.media_plan
         if self.reply_mode == REPLY_MODE_LLM_DIRECT:
-            if original_media_plan == "contact_image":
-                media_items, media_skip_reason = self._plan_media_items(
-                    session_id=session_id,
-                    text=text,
-                    intent=decision.intent,
-                    route=route,
-                    route_reason=decision.route_reason,
-                    media_plan=original_media_plan,
-                    session_state=session_state,
-                    user_state=user_state,
-                    force_contact_image=bool(decision.force_contact_image),
-                )
-            else:
-                media_items, media_skip_reason = [], "reply_mode_llm_direct"
+            media_items, media_skip_reason = [], "reply_mode_llm_direct"
         else:
             media_items, media_skip_reason = self._plan_media_items(
                 session_id=session_id,
@@ -941,11 +915,6 @@ class CustomerServiceAgent:
             )
         decision.media_items = media_items
         decision.media_skip_reason = media_skip_reason
-        decision.contact_image_triggered = any(
-            str(item.get("type", "") or "") == "contact_image"
-            for item in (media_items or [])
-            if isinstance(item, dict)
-        )
         decision.first_turn_media_guard_applied = False
         if self.reply_mode != REPLY_MODE_LLM_DIRECT:
             self._populate_first_turn_media_plan(
@@ -996,15 +965,6 @@ class CustomerServiceAgent:
                 "price_priority_reply_count": next_price_priority_reply_count,
                 "address_text_reply_count_by_store": next_address_text_reply_count_by_store,
                 "address_contact_reply_count_by_store": next_address_contact_reply_count_by_store,
-                "address_info_shared": bool(
-                    session_state.get("address_info_shared", False)
-                    or self._reply_shares_address_info(
-                        reply_text=decision.reply_text,
-                        intent=decision.intent,
-                        route_reason=decision.route_reason,
-                    )
-                ),
-                "address_stage": decision.address_stage or session_state.get("address_stage", ""),
             },
             user_hash=user_hash,
         )
@@ -1266,10 +1226,6 @@ class CustomerServiceAgent:
             "联系方式",
             "联系方法",
             "联系信息",
-            "二维码",
-            "微信号",
-            "电话",
-            "手机号",
             "你的联系",
             "你们联系",
             "你的微信",
@@ -3080,7 +3036,7 @@ class CustomerServiceAgent:
             if sent_count >= CONTACT_IMAGE_MAX_SEND:
                 return None, "contact_image_already_sent"
 
-        if force_contact_image or reason in ("out_of_coverage", "precise_address_handoff") or intent in ("contact", "purchase"):
+        if force_contact_image or reason == "out_of_coverage" or intent in ("contact", "purchase"):
             return (
                 {
                     "type": "contact_image",
@@ -3634,9 +3590,7 @@ class CustomerServiceAgent:
             "- 北京只有 1 家门店，位于朝阳区。\n"
             "- 上海共有 5 家门店：静安、人民广场、虹口、五角场、徐汇。\n"
             "- 如果用户没有明确所在城市或区域，请自然追问，不要生硬套模板。\n"
-            "- 初次地址咨询只提供城市、区域、商圈或门店分布级信息。\n"
-            "- 不要编造路线、出口、导航、楼层、停车等不确定细节。\n"
-            "- 如果本会话已经给过地址方向信息，用户继续追问几楼、几号、路线、出口、导航、定位等精确细节时，应自然转到联系方式承接，不要继续硬答细节。"
+            "- 不要编造路线、出口、导航、楼层、停车等不确定细节。"
         )
         faq_priority_block = "（当前无高置信标准话术命中）"
         standard_reply_hit = False
@@ -3663,30 +3617,15 @@ class CustomerServiceAgent:
             conversation_history=getattr(self, "_current_prompt_conversation_history", []) or [],
             standard_reply_intent=standard_reply_intent,
         )
-        reply_plan = self._build_llm_reply_plan(
-            latest_user_text=latest_user_text,
-            conversation_state=conversation_state,
-            standard_reply_intent=standard_reply_intent,
-            standard_reply_hit=standard_reply_hit,
-        )
         conversation_state_block = (
             "【最近对话状态】\n"
             f"- 已确认城市：{conversation_state.get('city_confirmed', '未知')}\n"
             f"- 已确认门店：{conversation_state.get('store_confirmed', '未知')}\n"
             f"- 到店条件：{conversation_state.get('visit_status', '未说明')}\n"
             f"- 上一轮已回答：{conversation_state.get('last_answer_type', '未知')}\n"
-            f"- 地址信息已回复：{conversation_state.get('address_info_shared', '否')}\n"
             f"- 当前阶段：{conversation_state.get('current_stage', '信息确认')}\n"
             f"- 本轮回复目标：{conversation_state.get('reply_goal', '自然承接并回答当前问题')}\n"
             f"- 避免重复：{conversation_state.get('avoid_repeat', '无')}"
-        )
-        reply_plan_block = (
-            "【本轮回复计划】\n"
-            f"- 优先动作：{reply_plan.get('primary_action', '先自然回答当前问题')}\n"
-            f"- 是否推进下一步：{reply_plan.get('advance_step', '可自然推进')}\n"
-            f"- 是否需要追问：{reply_plan.get('follow_up', '如有必要再追问')}\n"
-            f"- 可带出的下一步：{reply_plan.get('next_step_hint', '无')}\n"
-            f"- 明确不要做：{reply_plan.get('avoid', '不要重复上一轮已明确回答的信息')}"
         )
         prompt = (
             "你是艾耐儿假发客服助理。\n"
@@ -3705,7 +3644,6 @@ class CustomerServiceAgent:
             "如果用户上一轮已经知道需要预约，这一轮再问“怎么预约”，应直接说明预约操作或下一步，不要重复“我们是预约制的呢”。\n\n"
             f"{store_fact_block}\n\n"
             f"{conversation_state_block}\n\n"
-            f"{reply_plan_block}\n\n"
             f"【高置信标准话术命中】\n{faq_priority_block}\n\n"
             f"【企业知识约束】\n{enterprise_guard}\n\n"
             f"【相关标准话术参考】\n{faq_block}\n\n"
@@ -3720,7 +3658,6 @@ class CustomerServiceAgent:
             "standard_reply_intent": standard_reply_intent,
             "brand_knowledge_used": bool(brand_snippets),
             "conversation_state": conversation_state,
-            "reply_plan": reply_plan,
         }
 
     def _summarize_llm_conversation_state(
@@ -3733,7 +3670,6 @@ class CustomerServiceAgent:
         combined_text = " ".join(str(item.get("content", "") or "") for item in history[-6:])
         current_text = f"{combined_text} {latest_user_text}".strip()
         normalized = self.knowledge_service.normalize_user_text(current_text)
-        address_info_shared = "是" if self._history_has_address_info_shared(conversation_history) else "否"
 
         city_confirmed = "未知"
         if "北京" in normalized or "朝阳" in normalized:
@@ -3798,15 +3734,9 @@ class CustomerServiceAgent:
         elif standard_reply_intent == "lifespan":
             reply_goal = "准确回答使用年限"
 
-        if address_info_shared == "是" and self._is_precise_address_followup(latest_user_text):
-            reply_goal = "停止细讲精确地址，转为联系方式承接"
-            avoid_repeat = "不要继续输出几楼、几号、导航或出口细节"
-
         current_stage = "信息确认"
         if visit_status == "不方便到店":
             current_stage = "远程定制引导"
-        elif address_info_shared == "是" and self._is_precise_address_followup(latest_user_text):
-            current_stage = "地址细化追问，准备私域承接"
         elif self._looks_like_appointment_query(latest_norm):
             current_stage = "预约引导"
         elif store_confirmed != "未知" and visit_status == "可以到店":
@@ -3829,268 +3759,11 @@ class CustomerServiceAgent:
             "store_confirmed": store_confirmed,
             "visit_status": visit_status,
             "last_answer_type": last_answer_type,
-            "address_info_shared": address_info_shared,
             "current_stage": current_stage,
             "reply_goal": reply_goal,
             "avoid_repeat": avoid_repeat,
             "empathy_need": empathy_need,
         }
-
-    def _build_llm_reply_plan(
-        self,
-        latest_user_text: str,
-        conversation_state: Dict[str, str],
-        standard_reply_intent: str = "",
-        standard_reply_hit: bool = False,
-    ) -> Dict[str, str]:
-        latest_norm = self.knowledge_service.normalize_user_text(latest_user_text)
-        store_confirmed = str(conversation_state.get("store_confirmed", "未知") or "未知")
-        visit_status = str(conversation_state.get("visit_status", "未说明") or "未说明")
-        last_answer_type = str(conversation_state.get("last_answer_type", "未知") or "未知")
-        empathy_need = str(conversation_state.get("empathy_need", "无") or "无")
-        address_info_shared = str(conversation_state.get("address_info_shared", "否") or "否")
-
-        primary_action = "先自然回答当前问题"
-        advance_step = "可自然推进"
-        follow_up = "如有必要再追问"
-        next_step_hint = "无"
-        avoid = str(conversation_state.get("avoid_repeat", "不要重复上一轮已明确回答的信息") or "不要重复上一轮已明确回答的信息")
-
-        if empathy_need != "无":
-            primary_action = "先安慰共情，再给可行方案"
-            advance_step = "可以带出远程定制或后续沟通"
-            follow_up = "先不追问过多细节"
-            next_step_hint = "远程方案或后续沟通"
-            avoid = "不要一上来就只要联系方式"
-        elif standard_reply_intent == "appointment" and last_answer_type == "appointment":
-            primary_action = "直接说明具体怎么预约"
-            advance_step = "推进到确认到店日期"
-            follow_up = "只追问哪天方便"
-            next_step_hint = "登记预约时间"
-            avoid = "不要重复“我们是预约制的呢”"
-        elif self._looks_like_appointment_query(latest_norm):
-            primary_action = "先回答预约相关问题"
-            advance_step = "可推进到确认时间"
-            follow_up = "追问哪天方便"
-            next_step_hint = "预约时间安排"
-        elif any(token in latest_norm for token in ("知道", "可以去", "过去", "就去", "那就")) and store_confirmed != "未知":
-            primary_action = "承接用户已确认门店"
-            advance_step = "推进到预约或到店安排"
-            follow_up = "可追问哪天方便过来"
-            next_step_hint = "预约或营业时间"
-            avoid = "不要重复门店完整地址"
-        elif any(token in latest_norm for token in ("地址", "在哪", "位置")) and store_confirmed != "未知":
-            primary_action = "直接回答已确认门店地址"
-            advance_step = "可顺带提示预约或营业时间"
-            follow_up = "除非用户没确认门店，否则不要反问区域"
-            next_step_hint = "预约或到店安排"
-            avoid = "不要重复上海全部门店列表"
-        elif any(token in latest_norm for token in ("地址", "在哪", "位置")):
-            primary_action = "先回答门店分布或确认城市区域"
-            advance_step = "确认后再给具体门店"
-            follow_up = "追问城市或区域"
-            next_step_hint = "确定最近门店"
-
-        if address_info_shared == "是" and self._is_precise_address_followup(latest_user_text):
-            primary_action = "停止提供精确地址细节，转为联系方式承接"
-            advance_step = "引导用户查看联系方式图"
-            follow_up = "无需继续追问精确地址细节"
-            next_step_hint = "详细位置和到店方式私发"
-            avoid = "不要继续输出几楼、几号、导航、路线、出口等细节"
-
-        if standard_reply_hit and standard_reply_intent in {"service_hours", "lifespan"}:
-            primary_action = "优先保留标准话术里的事实"
-            advance_step = "回答后可自然收尾"
-            follow_up = "一般不需要追问"
-            next_step_hint = "无"
-            avoid = "不要改错数字、时间或区间"
-        elif visit_status == "不方便到店":
-            advance_step = "优先给远程或替代方案"
-            next_step_hint = "远程定制"
-
-        return {
-            "primary_action": primary_action,
-            "advance_step": advance_step,
-            "follow_up": follow_up,
-            "next_step_hint": next_step_hint,
-            "avoid": avoid,
-        }
-
-    def _apply_llm_direct_media_strategy(
-        self,
-        decision: AgentDecision,
-        latest_user_text: str,
-        normalized_text: str,
-        intent: str,
-        route: Dict[str, Any],
-        conversation_history: List[Dict[str, str]],
-        session_state: Dict[str, Any],
-    ) -> AgentDecision:
-        if self._looks_like_direct_contact_request(normalized_text):
-            prompt_count = int(session_state.get("contact_followup_prompt_count", 0) or 0)
-            if self._is_contact_image_sent_for_current_geo(session_state):
-                template_key = "contact_followup_1" if (prompt_count % 2) == 0 else "contact_followup_2"
-                decision.reply_text = self._render_template(template_key)
-                decision.media_plan = "none"
-                decision.rule_id = "LLM_DIRECT_CONTACT_FOLLOWUP"
-                decision.reply_source = "rule"
-            else:
-                decision.reply_text = self._render_template("contact_intro")
-                decision.media_plan = "contact_image"
-                decision.rule_id = "LLM_DIRECT_CONTACT_SEND_IMAGE"
-                decision.reply_source = "rule"
-                decision.force_contact_image = True
-            decision.intent = "contact"
-            decision.reply_goal = "推进购买意图"
-            decision.address_stage = "handoff_sent"
-            return decision
-
-        if not self._should_trigger_precise_address_handoff(
-            latest_user_text=latest_user_text,
-            normalized_text=normalized_text,
-            intent=intent,
-            route=route,
-            conversation_history=conversation_history,
-            session_state=session_state,
-        ):
-            decision.address_stage = "replied" if self._reply_shares_address_info(decision.reply_text, decision.intent, decision.route_reason) else "initial"
-            return decision
-
-        decision.intent = "address"
-        decision.route_reason = "precise_address_handoff"
-        decision.reply_goal = "推进私域引导"
-        decision.reply_source = "rule"
-        if self._is_contact_image_sent_for_current_geo(session_state):
-            decision.reply_text = self._render_template("address_precise_contact_remind_only")
-            decision.media_plan = "none"
-            decision.rule_id = "LLM_ADDRESS_PRECISE_CONTACT_REMIND"
-            decision.address_stage = "handoff_sent"
-        else:
-            decision.reply_text = self._render_template("address_precise_contact_intro")
-            decision.media_plan = "contact_image"
-            decision.rule_id = "LLM_ADDRESS_PRECISE_CONTACT_IMAGE"
-            decision.force_contact_image = True
-            decision.address_stage = "precise_followup"
-        return decision
-
-    def _should_trigger_precise_address_handoff(
-        self,
-        latest_user_text: str,
-        normalized_text: str,
-        intent: str,
-        route: Dict[str, Any],
-        conversation_history: List[Dict[str, str]],
-        session_state: Dict[str, Any],
-    ) -> bool:
-        if self._looks_like_direct_contact_request(normalized_text):
-            return False
-        if (
-            intent != "address"
-            and not self.knowledge_service.is_shanghai_route_alias_address_candidate(normalized_text)
-            and not self._is_precise_address_followup(latest_user_text)
-        ):
-            return False
-        if not self._has_address_info_shared_context(conversation_history, session_state):
-            return False
-        if not self._is_precise_address_followup(latest_user_text):
-            return False
-        if self._has_blocking_address_followup_topic(normalized_text):
-            return False
-        return True
-
-    def _has_address_info_shared_context(
-        self,
-        conversation_history: List[Dict[str, str]],
-        session_state: Dict[str, Any],
-    ) -> bool:
-        if bool(session_state.get("address_info_shared", False)):
-            return True
-        return self._history_has_address_info_shared(conversation_history)
-
-    def _history_has_address_info_shared(self, conversation_history: List[Dict[str, str]]) -> bool:
-        for item in reversed(conversation_history or []):
-            if str(item.get("role", "") or "") != "assistant":
-                continue
-            if self._reply_shares_address_info(
-                reply_text=str(item.get("content", "") or ""),
-                intent="address",
-                route_reason="history",
-            ):
-                return True
-        return False
-
-    def _reply_shares_address_info(self, reply_text: str, intent: str, route_reason: str) -> bool:
-        normalized = self.knowledge_service.normalize_user_text(reply_text)
-        if not normalized:
-            return False
-        if self._infer_answer_type(reply_text) in {"store_address", "address_general"}:
-            return True
-        if any(token in normalized for token in ("北京1家", "北京只有1家", "上海有5家", "上海共有5家")):
-            return True
-        if any(token in normalized for token in ("静安", "人民广场", "人广", "虹口", "五角场", "徐汇", "朝阳区")) and any(
-            token in normalized for token in ("门店", "地址", "位置", "区域", "城市")
-        ):
-            return True
-        if intent == "address" and route_reason in {"need_region", "need_district", "shanghai_need_district", "precise_address_handoff"}:
-            return any(token in normalized for token in ("门店", "地址", "位置", "区域", "城市"))
-        return False
-
-    def _is_precise_address_followup(self, text: str) -> bool:
-        normalized = re.sub(r"\s+", "", str(text or "")).lower()
-        if not normalized:
-            return False
-        precise_keywords = (
-            "具体地址",
-            "具体位置",
-            "具体在哪",
-            "多少号",
-            "几号",
-            "几楼",
-            "楼层",
-            "哪一栋",
-            "哪栋",
-            "哪个门",
-            "从哪进",
-            "哪个出口",
-            "几号出口",
-            "导航",
-            "怎么导航",
-            "怎么走",
-            "怎么去",
-            "怎么过去",
-            "如何去",
-            "如何过去",
-            "坐车",
-            "坐什么车",
-            "地铁",
-            "几号线",
-            "哪一站",
-            "哪个站",
-            "开车怎么去",
-            "打车到哪里",
-            "定位",
-            "停车",
-        )
-        generic_only_patterns = (
-            "地址在哪",
-            "地址给我",
-            "上海地址给我",
-            "北京地址给我",
-            "店铺在那里",
-            "在什么地方",
-            "在哪里",
-            "位置在哪",
-        )
-        if any(keyword in normalized for keyword in precise_keywords):
-            return True
-        if any(pattern == normalized for pattern in generic_only_patterns):
-            return False
-        if any(keyword in normalized for keyword in ADDRESS_FOLLOWUP_PRIORITY_KEYWORDS):
-            return True
-        return False
-
-    def _has_blocking_address_followup_topic(self, normalized_text: str) -> bool:
-        return any(keyword in normalized_text for keyword in ADDRESS_FOLLOWUP_BLOCK_KEYWORDS)
 
     def _infer_answer_type(self, text: str) -> str:
         normalized = self.knowledge_service.normalize_user_text(text)
@@ -4098,10 +3771,6 @@ class CustomerServiceAgent:
             return "未知"
         if any(token in normalized for token in ("愚园路", "汉口路", "花园路", "政通路", "漕溪北路", "建外soho", "亚洲大厦")):
             return "store_address"
-        if any(token in normalized for token in ("上海有5家", "上海共有5家", "北京只有1家", "北京1家", "静安", "人民广场", "人广", "虹口", "五角场", "徐汇", "朝阳区")) and any(
-            token in normalized for token in ("门店", "地址", "位置", "区域", "城市")
-        ):
-            return "address_general"
         if "预约" in normalized:
             return "appointment"
         if any(token in normalized for token in ("9:30", "18:00", "营业时间", "周一到周五")):
@@ -4230,11 +3899,6 @@ class CustomerServiceAgent:
             if self._contains_low_price_quote(reply) or self._contains_invalid_price_channel(reply):
                 return self._render_guardrail_reply(PRICE_GUARDRAIL_SAFE_REPLY)
 
-        if self._is_service_hours_fact_risk(reply):
-            service_hours_reply = self._get_service_hours_guardrail_reply()
-            if service_hours_reply:
-                return service_hours_reply
-
         if allow_address_guardrails and self._is_address_fact_risk(text, reply, state, history):
             if self._is_address_unsupported_query(text):
                 return self._render_guardrail_reply(ADDRESS_FACT_FALLBACK)
@@ -4298,22 +3962,6 @@ class CustomerServiceAgent:
             return False
         empathy_tokens = ("注意休息", "别着急", "先养好", "先好好休息", "要紧", "辛苦了", "先把身体顾好")
         return any(token in normalized for token in empathy_tokens)
-
-    def _is_service_hours_fact_risk(self, reply_text: str) -> bool:
-        normalized = self.knowledge_service.normalize_user_text(reply_text)
-        if not normalized:
-            return False
-        if not any(token in normalized for token in ("营业时间", "上班", "下班", "工作日", "周一到周五", "9:30", "18:00", "10点", "20点")):
-            return False
-        valid_tokens = ("周一到周五", "9:30", "18:00", "下午6:00", "上午9:30")
-        return not all(any(token in normalized for token in group) for group in (("周一到周五",), ("9:30", "上午9:30"), ("18:00", "下午6:00")))
-
-    def _get_service_hours_guardrail_reply(self) -> str:
-        detail = self.knowledge_service.find_answer_detail("营业时间", threshold=0.1)
-        answer = str(detail.get("answer", "") or "").strip()
-        if not answer:
-            return self._normalize_reply_text("姐姐我们工作日周一到周五，营业时间是上午9:30到下午6:00哦")
-        return self._normalize_reply_text(answer)
 
     def _is_contact_fact_risk(self, text: str, reply_text: str) -> bool:
         normalized_text = re.sub(r"\s+", "", str(text or "")).lower()

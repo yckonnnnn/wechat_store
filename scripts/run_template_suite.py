@@ -34,7 +34,6 @@ class TurnResult:
     intent: str
     route_reason: str
     media_plan: str
-    contact_image_triggered: bool
     standard_reply_hit: bool
     brand_knowledge_used: bool
 
@@ -104,7 +103,6 @@ def run_template(template_path: Path) -> Dict[str, Any]:
                     intent=decision.intent,
                     route_reason=decision.route_reason,
                     media_plan=decision.media_plan,
-                    contact_image_triggered=bool(getattr(decision, "contact_image_triggered", False)),
                     standard_reply_hit=bool(getattr(decision, "standard_reply_hit", False)),
                     brand_knowledge_used=bool(getattr(decision, "brand_knowledge_used", False)),
                 )
