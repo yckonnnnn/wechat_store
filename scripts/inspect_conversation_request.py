@@ -171,6 +171,7 @@ def run_case(messages: List[str], mode: str = "soft_context") -> Dict[str, Any]:
             intent = str(decision.intent or "")
             route_reason = str(decision.route_reason or "")
             media_plan = str(decision.media_plan or "none")
+            contact_image_triggered = bool(getattr(decision, "contact_image_triggered", False))
             standard_reply_hit = bool(getattr(decision, "standard_reply_hit", False))
             standard_reply_question = str(getattr(decision, "standard_reply_question", "") or "")
             standard_reply_confidence = str(getattr(decision, "standard_reply_confidence", "") or "")
@@ -189,6 +190,7 @@ def run_case(messages: List[str], mode: str = "soft_context") -> Dict[str, Any]:
             intent = ""
             route_reason = ""
             media_plan = "none"
+            contact_image_triggered = False
             standard_reply_hit = bool(request_info["prompt_meta"].get("standard_reply_hit", False))
             standard_reply_question = str(request_info["prompt_meta"].get("standard_reply_question", "") or "")
             standard_reply_confidence = str(request_info["prompt_meta"].get("standard_reply_confidence", "") or "")
@@ -202,6 +204,7 @@ def run_case(messages: List[str], mode: str = "soft_context") -> Dict[str, Any]:
                 "intent": intent,
                 "route_reason": route_reason,
                 "media_plan": media_plan,
+                "contact_image_triggered": contact_image_triggered,
                 "standard_reply_hit": standard_reply_hit,
                 "standard_reply_question": standard_reply_question,
                 "standard_reply_confidence": standard_reply_confidence,
