@@ -4082,6 +4082,9 @@ class CustomerServiceAgent:
         value = re.sub(r"(?:\s+|^)(\d{1,2}:\d{2})(?:已读|未读|送达)?$", "", value).strip()
         value = " ".join(value.split())
         value = self._strip_inline_emoji_symbols(value)
+        # 清理模型偶发生成的明显病句尾缀，避免输出类似“沟通吧到”这类错误表达。
+        value = re.sub(r"吧到(?=[。！？!?，,；;]|$)", "吧", value)
+        value = re.sub(r"呢到(?=[。！？!?，,；;]|$)", "呢", value)
 
         # 联系方式合规拦截
         if any(k in value for k in CONTACT_COMPLIANCE_BLOCK_KEYWORDS):
