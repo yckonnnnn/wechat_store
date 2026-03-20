@@ -27,6 +27,7 @@ class ConfigManager(QObject):
             "current_model": "DeepSeek",
             "agent": {
                 "first_reply_video_enabled": False,
+                "reply_mode": "llm_direct",
             },
             "models": {
                 "ChatGPT": {

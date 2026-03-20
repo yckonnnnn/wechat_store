@@ -44,6 +44,7 @@ SHANGHAI_ROUTE_ALIAS_FILE = USER_DATA_DIR / "shanghai_route_aliases.json"
 KNOWLEDGE_BASE_FILE = PROJECT_ROOT / "config" / "knowledge_base.json"
 REMOTE_CONTROL_FILE = PROJECT_ROOT / "config" / "remote_control.json"
 ENV_FILE = PROJECT_ROOT / ".env"
+BRAND_KNOWLEDGE_FILE = Path("/Users/yckonnnn/Desktop/Coding/github-project/Aneel内部测试0318/艾耐儿品牌知识库.md")
 
 # 示例配置文件路径（用于首次运行提示）
 MODEL_SETTINGS_EXAMPLE = PROJECT_ROOT / "config" / "model_settings.example.json"

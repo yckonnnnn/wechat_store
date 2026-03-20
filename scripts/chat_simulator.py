@@ -28,7 +28,7 @@ from src.data.knowledge_repository import KnowledgeRepository
 from src.data.memory_store import MemoryStore
 from src.services.knowledge_service import KnowledgeService
 from src.services.llm_service import LLMService
-from src.utils.constants import ENV_FILE, KNOWLEDGE_BASE_FILE, MODEL_SETTINGS_FILE
+from src.utils.constants import BRAND_KNOWLEDGE_FILE, ENV_FILE, KNOWLEDGE_BASE_FILE, MODEL_SETTINGS_FILE
 
 
 MEDIA_PLACEHOLDER_MAP = {
@@ -55,7 +55,7 @@ class StubLLMService:
         return "StubLLM"
 
 
-def build_agent(no_llm: bool, stub_reply: str, sim_data_dir: Path) -> CustomerServiceAgent:
+def build_agent(no_llm: bool, stub_reply: str, sim_data_dir: Path, reply_mode: str) -> CustomerServiceAgent:
     sim_data_dir.mkdir(parents=True, exist_ok=True)
     convo_dir = sim_data_dir / "conversations"
     convo_dir.mkdir(parents=True, exist_ok=True)
@@ -74,6 +74,7 @@ def build_agent(no_llm: bool, stub_reply: str, sim_data_dir: Path) -> CustomerSe
         image_categories_path=Path("config") / "image_categories.json",
         system_prompt_doc_path=Path("docs") / "system_prompt_private_ai_customer_service.md",
         playbook_doc_path=Path("docs") / "private_ai_customer_service_playbook.md",
+        brand_knowledge_doc_path=BRAND_KNOWLEDGE_FILE,
         reply_templates_path=Path("config") / "reply_templates.json",
         media_whitelist_path=Path("config") / "media_whitelist.json",
         conversation_log_dir=convo_dir,
@@ -115,11 +116,16 @@ def print_decision(decision, triggered_types: List[str]) -> None:
     media_types = [str(item.get("type", "")) for item in (decision.media_items or []) if isinstance(item, dict)]
     payload = {
         "reply_source": decision.reply_source,
+        "reply_mode": getattr(decision, "reply_mode", ""),
         "intent": decision.intent,
         "route_reason": decision.route_reason,
         "rule_id": decision.rule_id,
         "media_plan": decision.media_plan,
         "media_types": media_types,
+        "standard_reply_hit": bool(getattr(decision, "standard_reply_hit", False)),
+        "standard_reply_question": str(getattr(decision, "standard_reply_question", "") or ""),
+        "standard_reply_confidence": str(getattr(decision, "standard_reply_confidence", "") or ""),
+        "brand_knowledge_used": bool(getattr(decision, "brand_knowledge_used", False)),
         "triggered_types_this_round": triggered_types,
         "triggered_flags_this_round": trigger_flags,
         "reply_text": decision.reply_text,
@@ -144,6 +150,7 @@ def main() -> int:
     parser.add_argument("--user-name", default="sim_user", help="用户名（默认 sim_user）")
     parser.add_argument("--no-llm", action="store_true", help="禁用真实 LLM，使用本地占位回复")
     parser.add_argument("--stub-reply", default="姐姐，这个问题我给您简要说明。", help="--no-llm 时的固定回复")
+    parser.add_argument("--reply-mode", default="llm_direct", choices=["legacy", "llm_direct"], help="回复模式")
     parser.add_argument(
         "--sim-data-dir",
         default="data/simulator",
@@ -155,6 +162,26 @@ def main() -> int:
         no_llm=bool(args.no_llm),
         stub_reply=str(args.stub_reply or ""),
         sim_data_dir=Path(args.sim_data_dir),
+        reply_mode=str(args.reply_mode or "llm_direct"),
+    )
+    agent.set_options(
+        use_knowledge_first=agent.use_knowledge_first,
+        knowledge_threshold=agent.knowledge_threshold,
+        first_reply_video_enabled=False,
+        reply_mode=str(args.reply_mode or "llm_direct"),
+    )
+    status = agent.get_status()
+    print(
+        json.dumps(
+            {
+                "reply_mode": status.get("reply_mode", ""),
+                "brand_knowledge_loaded": bool(status.get("brand_knowledge_loaded", False)),
+                "system_prompt_loaded": bool(status.get("system_prompt_loaded", False)),
+                "playbook_loaded": bool(status.get("playbook_loaded", False)),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
     )
     history: List[Dict[str, str]] = []
     session_log_file = Path(args.sim_data_dir) / "conversations" / f"{args.session_id}.jsonl"

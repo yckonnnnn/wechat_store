@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..data.memory_store import MemoryStore
 from ..services.knowledge_service import KnowledgeService
 from ..services.llm_service import LLMService
+from ..utils.constants import BRAND_KNOWLEDGE_FILE
 
 
 CONTACT_INTENT_KEYWORDS = (
@@ -84,6 +85,7 @@ PRICE_FACT_FALLBACK = "姐姐，具体的价格，设计，您可以留个☎️
 PRICE_GUARDRAIL_SAFE_REPLY = "姐姐，我们的价格有3000、4000、5000、6000不同档位，具体要根据材质、款式、头围、脸型和需求方案来定。"
 CONTACT_FACT_FALLBACK = "姐姐，您留个☎️，我来主动跟您介绍"
 PHONE_LEAK_BLOCK_FALLBACK = "姐姐，您提供电话，我来联系您，可以给您具体的介绍假发价格，款式，地址位置，坐车导航路线，以及预约事项。❤️"
+REMOTE_SUPPORT_FACT_FALLBACK = "姐姐，外地也支持远程定制，不过精准度会比到店稍低一些哦。❤️"
 USER_PHONE_SUBMITTED_REPLY = "收到啦姐姐，我稍后加您好友，具体跟你详细介绍❤️"
 MA_TEACHER_ROLE_FALLBACK = "姐姐，马老师是做短视频拍摄的，暂时不负责做头发、剪头和假发处理哦。🥰"
 MA_TEACHER_DIRECT_QUERY_FALLBACK = "姐姐，马老师是做短视频拍摄的，暂时无法安排🥰"
@@ -456,6 +458,8 @@ LIFESPAN_PRIORITY_KEYWORDS = (
     "耐用吗",
 )
 REQUIRED_MEDIA_TYPES = ("address_image", "contact_image", "delayed_video")
+REPLY_MODE_LEGACY = "legacy"
+REPLY_MODE_LLM_DIRECT = "llm_direct"
 
 
 DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
@@ -528,6 +532,12 @@ class AgentDecision:
     video_trigger_user_count: int = 0
     force_contact_image: bool = False
     kb_contact_trigger_type: str = ""
+    reply_mode: str = REPLY_MODE_LEGACY
+    standard_reply_hit: bool = False
+    standard_reply_question: str = ""
+    standard_reply_confidence: str = ""
+    standard_reply_intent: str = ""
+    brand_knowledge_used: bool = False
 
 
 class _SafeDict(dict):
@@ -547,6 +557,7 @@ class CustomerServiceAgent:
         image_categories_path: Path,
         system_prompt_doc_path: Path,
         playbook_doc_path: Path,
+        brand_knowledge_doc_path: Optional[Path] = None,
         reply_templates_path: Optional[Path] = None,
         media_whitelist_path: Optional[Path] = None,
         conversation_log_dir: Optional[Path] = None,
@@ -559,6 +570,7 @@ class CustomerServiceAgent:
         self.image_categories_path = image_categories_path
         self.system_prompt_doc_path = system_prompt_doc_path
         self.playbook_doc_path = playbook_doc_path
+        self.brand_knowledge_doc_path = brand_knowledge_doc_path or BRAND_KNOWLEDGE_FILE
         self.enterprise_guard_doc_path = ENTERPRISE_GUARD_DOC_PATH
         self.reply_templates_path = reply_templates_path or (Path("config") / "reply_templates.json")
         self.media_whitelist_path = media_whitelist_path or (Path("config") / "media_whitelist.json")
@@ -568,6 +580,7 @@ class CustomerServiceAgent:
         self.knowledge_threshold = 0.6
         self.memory_ttl_days = 30
         self.first_reply_video_enabled = False
+        self.reply_mode = REPLY_MODE_LLM_DIRECT
 
         self._address_index: Dict[str, List[str]] = {
             "beijing_chaoyang": [],
@@ -583,6 +596,7 @@ class CustomerServiceAgent:
         self._system_prompt_doc_text = ""
         self._playbook_doc_text = ""
         self._enterprise_guard_doc_text = ""
+        self._brand_knowledge_doc_text = ""
         self._reply_templates: Dict[str, Any] = dict(DEFAULT_REPLY_TEMPLATES)
         self._media_whitelist_sessions: set[str] = set()
 
@@ -597,6 +611,7 @@ class CustomerServiceAgent:
         self._system_prompt_doc_text = self._read_text(self.system_prompt_doc_path)
         self._playbook_doc_text = self._read_text(self.playbook_doc_path)
         self._enterprise_guard_doc_text = self._read_text(self.enterprise_guard_doc_path)
+        self._brand_knowledge_doc_text = self._read_text(self.brand_knowledge_doc_path)
         return bool(self._system_prompt_doc_text)
 
     def reload_media_library(self) -> None:
@@ -715,7 +730,8 @@ class CustomerServiceAgent:
             session_state=session_state,
         )
 
-        text = (latest_user_text or "").strip()
+        raw_text = (latest_user_text or "").strip()
+        text = self.knowledge_service.normalize_user_text(raw_text).strip()
         if self._looks_like_phone_submission(text):
             return AgentDecision(
                 reply_text=USER_PHONE_SUBMITTED_REPLY,
@@ -726,6 +742,7 @@ class CustomerServiceAgent:
                 reply_source="rule",
                 rule_id="CONTACT_PHONE_SUBMITTED",
                 rule_applied=True,
+                reply_mode=self.reply_mode,
             )
         route = self.knowledge_service.resolve_store_recommendation(text)
         if self._should_recover_to_shanghai_arrival_help(text, session_state):
@@ -747,7 +764,17 @@ class CustomerServiceAgent:
                 "detected_region": "外地",
             }
         intent = self._detect_intent(text)
-        price_priority_decision = self._decide_price_priority_reply(
+        decision: Optional[AgentDecision] = None
+        if self.reply_mode == REPLY_MODE_LLM_DIRECT:
+            decision = self._decide_llm_reply(
+                latest_user_text=raw_text,
+                intent=intent,
+                route_reason=str(route.get("reason", "unknown") or "unknown"),
+                conversation_history=conversation_history or [],
+                session_state=session_state,
+                allow_address_guardrails=False,
+            )
+        price_priority_decision = None if self.reply_mode == REPLY_MODE_LLM_DIRECT else self._decide_price_priority_reply(
             latest_user_text=text,
             route=route,
             conversation_history=conversation_history or [],
@@ -755,13 +782,13 @@ class CustomerServiceAgent:
             user_state=user_state,
             user_id_hash=user_hash,
         )
-        address_text_after_image_decision = self._build_address_text_after_image_decision(
+        address_text_after_image_decision = None if self.reply_mode == REPLY_MODE_LLM_DIRECT else self._build_address_text_after_image_decision(
             latest_user_text=text,
             route=route,
             intent=intent,
             session_state=session_state,
         )
-        address_contact_after_text_decision = self._build_address_contact_after_text_decision(
+        address_contact_after_text_decision = None if self.reply_mode == REPLY_MODE_LLM_DIRECT else self._build_address_contact_after_text_decision(
             latest_user_text=text,
             route=route,
             intent=intent,
@@ -796,7 +823,9 @@ class CustomerServiceAgent:
                 user_id_hash=user_hash,
             )
 
-        if price_priority_decision is not None:
+        if decision is not None:
+            pass
+        elif price_priority_decision is not None:
             decision = price_priority_decision
         elif business_block_priority_decision is not None:
             decision = business_block_priority_decision
@@ -847,7 +876,7 @@ class CustomerServiceAgent:
             knowledge_reply_count = int(session_state.get("knowledge_reply_count", 0) or 0)
             rewritten_text, _ = self._rewrite_if_repeated(
                 reply_text=decision.reply_text,
-                latest_user_text=text,
+                latest_user_text=raw_text,
                 conversation_history=conversation_history or [],
                 user_state=user_state,
                 user_id_hash=user_hash,
@@ -857,34 +886,44 @@ class CustomerServiceAgent:
         else:
             knowledge_reply_count = int(session_state.get("knowledge_reply_count", 0) or 0)
 
+        decision.reply_mode = self.reply_mode
         decision.purchase_both_first_hint_sent = bool(
             session_state.get("purchase_both_first_hint_sent", False)
         )
-        decision.is_first_turn_global = bool(is_first_turn_global)
+        decision.is_first_turn_global = False if self.reply_mode == REPLY_MODE_LLM_DIRECT else bool(is_first_turn_global)
         both_images_sent = self._has_both_images_sent(session_state)
         decision.both_images_sent_state = both_images_sent
         decision.video_trigger_user_count = int(session_state.get("session_user_message_count_after_contact", 0) or 0)
 
         original_media_plan = decision.media_plan
-        media_items, media_skip_reason = self._plan_media_items(
-            session_id=session_id,
-            text=text,
-            intent=decision.intent,
-            route=route,
-            route_reason=decision.route_reason,
-            media_plan=original_media_plan,
-            session_state=session_state,
-            user_state=user_state,
-            force_contact_image=bool(decision.force_contact_image),
-        )
+        if self.reply_mode == REPLY_MODE_LLM_DIRECT:
+            media_items, media_skip_reason = [], "reply_mode_llm_direct"
+        else:
+            media_items, media_skip_reason = self._plan_media_items(
+                session_id=session_id,
+                text=text,
+                intent=decision.intent,
+                route=route,
+                route_reason=decision.route_reason,
+                media_plan=original_media_plan,
+                session_state=session_state,
+                user_state=user_state,
+                force_contact_image=bool(decision.force_contact_image),
+            )
         decision.media_items = media_items
         decision.media_skip_reason = media_skip_reason
         decision.first_turn_media_guard_applied = False
-        self._populate_first_turn_media_plan(
-            session_id=session_id,
-            user_name=user_name,
-            decision=decision,
-        )
+        if self.reply_mode != REPLY_MODE_LLM_DIRECT:
+            self._populate_first_turn_media_plan(
+                session_id=session_id,
+                user_name=user_name,
+                decision=decision,
+            )
+        else:
+            decision.first_turn_image_items = []
+            decision.first_turn_video_items = []
+            decision.first_turn_text_required = False
+            decision.first_turn_retry_policy = {}
         if not decision.media_items:
             decision.media_plan = "none"
 
@@ -938,6 +977,19 @@ class CustomerServiceAgent:
         is_first_turn_global: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """文本发送成功后的状态推进；返回需要立即发送的视频媒体（若命中）"""
+        if self.reply_mode == REPLY_MODE_LLM_DIRECT:
+            user_hash = self._hash_user(user_name or session_id)
+            user_state = self.memory_store.get_user_state(user_hash)
+            normalized = self._normalize_for_dedupe(reply_text)
+            recent_hashes = list(user_state.get("recent_reply_hashes", []) or [])
+            if normalized:
+                recent_hashes.append(normalized)
+            if len(recent_hashes) > 40:
+                recent_hashes = recent_hashes[-40:]
+            user_state["recent_reply_hashes"] = recent_hashes
+            self.memory_store.update_user_state(user_hash, user_state)
+            self.memory_store.save()
+            return None
         user_hash = self._hash_user(user_name or session_id)
         user_state = self.memory_store.get_user_state(user_hash)
         normalized = self._normalize_for_dedupe(reply_text)
@@ -1104,11 +1156,14 @@ class CustomerServiceAgent:
         use_knowledge_first: bool,
         knowledge_threshold: float,
         first_reply_video_enabled: Optional[bool] = None,
+        reply_mode: Optional[str] = None,
     ) -> None:
         self.use_knowledge_first = bool(use_knowledge_first)
         self.knowledge_threshold = max(0.0, min(1.0, float(knowledge_threshold)))
         if first_reply_video_enabled is not None:
             self.first_reply_video_enabled = bool(first_reply_video_enabled)
+        if reply_mode in {REPLY_MODE_LEGACY, REPLY_MODE_LLM_DIRECT}:
+            self.reply_mode = str(reply_mode)
 
     def get_status(self) -> Dict[str, Any]:
         """给 UI 的状态快照"""
@@ -1116,9 +1171,11 @@ class CustomerServiceAgent:
             "use_knowledge_first": self.use_knowledge_first,
             "knowledge_threshold": self.knowledge_threshold,
             "first_reply_video_enabled": self.first_reply_video_enabled,
+            "reply_mode": self.reply_mode,
             "memory_ttl_days": self.memory_ttl_days,
             "system_prompt_loaded": bool(self._system_prompt_doc_text),
             "playbook_loaded": bool(self._playbook_doc_text),
+            "brand_knowledge_loaded": bool(self._brand_knowledge_doc_text),
             "address_image_count": sum(len(v) for v in self._address_index.values()),
             "contact_image_count": len(self._contact_images),
             "video_media_count": len(self._video_medias),
@@ -2668,11 +2725,28 @@ class CustomerServiceAgent:
         kb_variant_selected_index: int = -1,
         kb_variant_fallback_llm: bool = False,
         kb_confident: bool = False,
+        allow_address_guardrails: bool = True,
     ) -> AgentDecision:
-        composed_prompt = self._build_general_llm_prompt(latest_user_text)
+        composed_prompt, prompt_meta = self._build_general_llm_prompt(latest_user_text)
         self.llm_service.set_system_prompt(composed_prompt)
+        effective_user_message = user_message_override or latest_user_text
+        if (
+            not user_message_override
+            and bool(prompt_meta.get("standard_reply_hit", False))
+            and str(prompt_meta.get("standard_reply_answer", "") or "").strip()
+        ):
+            effective_user_message = (
+                f"用户刚问：{latest_user_text}\n"
+                f"高置信标准话术核心结论：{str(prompt_meta.get('standard_reply_answer', '') or '').strip()}\n"
+                "请严格保留关键事实、数字、时间或区间，再改写成自然的客服回复。"
+            )
+        direct_standard_reply = (
+            bool(prompt_meta.get("standard_reply_hit", False))
+            and str(prompt_meta.get("standard_reply_intent", "") or "") in {"service_hours", "lifespan"}
+            and str(prompt_meta.get("standard_reply_answer", "") or "").strip()
+        )
         success, result = self.llm_service.generate_reply_sync(
-            user_message=user_message_override or latest_user_text,
+            user_message=effective_user_message,
             conversation_history=conversation_history,
         )
         model_name = self.llm_service.get_current_model_name()
@@ -2698,14 +2772,24 @@ class CustomerServiceAgent:
                 kb_confident=kb_confident,
                 kb_blocked_by_polite_guard=kb_blocked_by_polite_guard,
                 kb_polite_guard_reason=kb_polite_guard_reason,
+                reply_mode=self.reply_mode,
+                standard_reply_hit=bool(prompt_meta.get("standard_reply_hit", False)),
+                standard_reply_question=str(prompt_meta.get("standard_reply_question", "") or ""),
+                standard_reply_confidence=str(prompt_meta.get("standard_reply_confidence", "") or ""),
+                standard_reply_intent=str(prompt_meta.get("standard_reply_intent", "") or ""),
+                brand_knowledge_used=bool(prompt_meta.get("brand_knowledge_used", False)),
             )
 
-        llm_reply = self._normalize_reply_text(result)
+        if direct_standard_reply:
+            llm_reply = self._normalize_reply_text(str(prompt_meta.get("standard_reply_answer", "") or ""))
+        else:
+            llm_reply = self._normalize_reply_text(result)
         llm_reply = self._apply_llm_reply_guardrails(
             latest_user_text=latest_user_text,
             reply_text=llm_reply,
             session_state=session_state or {},
             conversation_history=conversation_history,
+            allow_address_guardrails=allow_address_guardrails,
         )
 
         return AgentDecision(
@@ -2728,6 +2812,12 @@ class CustomerServiceAgent:
             kb_confident=kb_confident,
             kb_blocked_by_polite_guard=kb_blocked_by_polite_guard,
             kb_polite_guard_reason=kb_polite_guard_reason,
+            reply_mode=self.reply_mode,
+            standard_reply_hit=bool(prompt_meta.get("standard_reply_hit", False)),
+            standard_reply_question=str(prompt_meta.get("standard_reply_question", "") or ""),
+            standard_reply_confidence=str(prompt_meta.get("standard_reply_confidence", "") or ""),
+            standard_reply_intent=str(prompt_meta.get("standard_reply_intent", "") or ""),
+            brand_knowledge_used=bool(prompt_meta.get("brand_knowledge_used", False)),
         )
 
     def _select_kb_variant_answer(
@@ -2811,7 +2901,7 @@ class CustomerServiceAgent:
             f"用户刚问：{latest_user_text}\n"
             f"下面这句客服话术和历史重复，请保留核心意思但换一种自然表达：{reply_text}"
         )
-        composed_prompt = self._build_general_llm_prompt(latest_user_text)
+        composed_prompt, _ = self._build_general_llm_prompt(latest_user_text)
         self.llm_service.set_system_prompt(composed_prompt)
 
         for _ in range(2):
@@ -3150,6 +3240,8 @@ class CustomerServiceAgent:
 
     def build_first_turn_video_items(self, session_id: str) -> List[Dict[str, Any]]:
         """为首轮固定承接生成视频计划，不触发规则/知识库/LLM决策。"""
+        if self.reply_mode == REPLY_MODE_LLM_DIRECT:
+            return []
         session_video = self.summarize_session_video_from_log(session_id=session_id)
         if session_video.get("first_reply_video_sent"):
             return []
@@ -3166,6 +3258,12 @@ class CustomerServiceAgent:
         decision: AgentDecision,
     ) -> None:
         del user_name
+        if self.reply_mode == REPLY_MODE_LLM_DIRECT:
+            decision.first_turn_image_items = []
+            decision.first_turn_video_items = []
+            decision.first_turn_text_required = False
+            decision.first_turn_retry_policy = {}
+            return
         decision.first_turn_image_items = []
         decision.first_turn_video_items = []
         decision.first_turn_text_required = bool(decision.is_first_turn_global)
@@ -3466,26 +3564,66 @@ class CustomerServiceAgent:
     def _is_media_whitelist_session(self, session_id: str) -> bool:
         return session_id in self._media_whitelist_sessions
 
-    def _build_general_llm_prompt(self, latest_user_text: str) -> str:
-        kb_examples = self._top_kb_examples(latest_user_text, limit=2)
-        kb_block = "\n".join([f"- 问：{q}\n  答：{a}" for q, a in kb_examples]) or "（当前无高相关知识库样例）"
+    def _build_general_llm_prompt(self, latest_user_text: str) -> Tuple[str, Dict[str, Any]]:
+        normalized_text = self.knowledge_service.normalize_user_text(latest_user_text)
+        faq_detail = self.knowledge_service.find_answer_detail(normalized_text, threshold=self.knowledge_threshold)
+        faq_examples = self._top_kb_examples(normalized_text, limit=3)
+        faq_block = "\n".join([f"- 问：{q}\n  答：{a}" for q, a in faq_examples]) or "（当前无高相关标准话术）"
         enterprise_guard = self._enterprise_guard_doc_text or "（企业知识约束文档缺失，请按已有品牌口径稳妥回复）"
-
-        return (
+        store_fact_block = (
+            "【门店事实】\n"
+            "- 北京只有 1 家门店，位于朝阳区。\n"
+            "- 上海共有 5 家门店：静安、人民广场、虹口、五角场、徐汇。\n"
+            "- 如果用户没有明确所在城市或区域，请自然追问，不要生硬套模板。\n"
+            "- 不要编造路线、出口、导航、楼层、停车等不确定细节。"
+        )
+        faq_priority_block = "（当前无高置信标准话术命中）"
+        standard_reply_hit = False
+        standard_reply_question = ""
+        standard_reply_confidence = ""
+        standard_reply_answer = ""
+        standard_reply_intent = ""
+        if faq_detail.get("matched"):
+            standard_reply_hit = True
+            standard_reply_question = str(faq_detail.get("question", "") or "")
+            standard_reply_confidence = str(faq_detail.get("confidence", "") or "")
+            standard_reply_answer = str(faq_detail.get("answer", "") or "").strip()
+            standard_reply_intent = str(faq_detail.get("intent", "") or "").strip().lower()
+            faq_priority_block = (
+                f"问题：{standard_reply_question or '未知'}\n"
+                f"建议答案：{standard_reply_answer}\n"
+                f"置信度：{standard_reply_confidence or 'unknown'}\n"
+                "要求：如果用户问题与这条标准话术高度一致，优先遵循核心结论，再自然润色。"
+            )
+        brand_snippets = self._top_brand_knowledge_snippets(normalized_text, limit=3)
+        brand_block = "\n\n".join(brand_snippets) if brand_snippets else "（当前无高相关品牌知识片段）"
+        prompt = (
             "你是艾耐儿假发客服助理。\n"
-            "你只负责补充规则外的一般问答，不做任何地址/媒体/流程决策。\n"
             "语气自然、亲切、有耐心，接地气，拟人化口语，像真人客服。\n"
             "硬规则：结论先行；尽量1句话完成回复，不拖拉，不啰嗦，且必须是完整句；末尾只保留1个emoji表情。\n"
+            "禁止主动索要电话、微信或其他联系方式，除非用户明确在问怎么联系；即使如此也不要输出具体联系方式。\n"
+            "涉及价格区间、营业时间、使用年限、预约、远程定制等明确事实时，优先保留标准话术和品牌知识库里的核心数字与结论，不要省略或改写错。\n"
             "人物事实硬规则：马老师只负责短视频拍摄，不做假发、不做头发、不剪头、不加好友、不负责修剪造型，禁止把这些服务归给马老师。\n"
-            "超出知识库可常规发挥，但必须围绕企业知识口径；禁止编造活动承诺、禁止要求对方发图、联系方式或超出事实的信息。\n"
-            "若信息不确定，给稳妥结论并引导用户补充。\n\n"
+            "超出标准话术和品牌知识库可常规发挥，但必须围绕企业知识口径；禁止编造活动承诺、禁止要求对方发图、联系方式或超出事实的信息。\n"
+            "若信息不确定，给稳妥结论并自然引导用户补充。\n\n"
+            f"{store_fact_block}\n\n"
+            f"【高置信标准话术命中】\n{faq_priority_block}\n\n"
             f"【企业知识约束】\n{enterprise_guard}\n\n"
-            f"【知识库参考】\n{kb_block}\n\n"
+            f"【相关标准话术参考】\n{faq_block}\n\n"
+            f"【品牌知识库参考】\n{brand_block}\n\n"
             "仅输出最终客服话术纯文本，不要输出JSON、代码块或解释。"
         )
+        return prompt, {
+            "standard_reply_hit": standard_reply_hit,
+            "standard_reply_question": standard_reply_question,
+            "standard_reply_confidence": standard_reply_confidence,
+            "standard_reply_answer": standard_reply_answer,
+            "standard_reply_intent": standard_reply_intent,
+            "brand_knowledge_used": bool(brand_snippets),
+        }
 
     def _top_kb_examples(self, query: str, limit: int = 3) -> List[Tuple[str, str]]:
-        q = self._normalize_for_dedupe(query)
+        q = self._normalize_for_dedupe(self.knowledge_service.normalize_user_text(query))
         if not q:
             return []
 
@@ -3502,6 +3640,22 @@ class CustomerServiceAgent:
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [x[1] for x in scored[:limit]]
+
+    def _top_brand_knowledge_snippets(self, query: str, limit: int = 3) -> List[str]:
+        text = self._brand_knowledge_doc_text.strip()
+        q = self._normalize_for_dedupe(self.knowledge_service.normalize_user_text(query))
+        if not text or not q:
+            return []
+
+        chunks = [chunk.strip() for chunk in re.split(r"\n\s*\n", text) if chunk.strip()]
+        scored: List[Tuple[float, str]] = []
+        for chunk in chunks:
+            normalized_chunk = self._normalize_for_dedupe(self.knowledge_service.normalize_user_text(chunk))
+            score = self._simple_overlap_score(q, normalized_chunk)
+            if score > 0:
+                scored.append((score, chunk[:360]))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [item[1] for item in scored[:limit]]
 
     def _simple_overlap_score(self, a: str, b: str) -> float:
         if not a or not b:
@@ -3521,7 +3675,8 @@ class CustomerServiceAgent:
         if not value:
             return self._render_template("general_empty")
 
-        value = re.sub(r"\s*\d{1,2}:\d{2}\S*$", "", value)
+        # 仅移除独立的聊天时间戳，避免把营业时间这类正常业务内容误删。
+        value = re.sub(r"(?:\s+|^)(\d{1,2}:\d{2})(?:已读|未读|送达)?$", "", value).strip()
         value = " ".join(value.split())
         value = self._strip_inline_emoji_symbols(value)
 
@@ -3546,6 +3701,7 @@ class CustomerServiceAgent:
         reply_text: str,
         session_state: Optional[Dict[str, Any]] = None,
         conversation_history: Optional[List[Dict[str, str]]] = None,
+        allow_address_guardrails: bool = True,
     ) -> str:
         text = (latest_user_text or "").strip()
         reply = (reply_text or "").strip()
@@ -3553,6 +3709,10 @@ class CustomerServiceAgent:
         history = conversation_history or []
 
         if self._contains_explicit_phone_number(reply):
+            if self._has_price_priority(text):
+                return self._render_guardrail_reply(PRICE_GUARDRAIL_SAFE_REPLY)
+            if any(token in text for token in ("外地", "不在上海", "不在北京", "不方便到店", "远程定制")):
+                return self._render_guardrail_reply(REMOTE_SUPPORT_FACT_FALLBACK)
             return PHONE_LEAK_BLOCK_FALLBACK
 
         if self._contains_invalid_ma_teacher_claim(reply):
@@ -3564,13 +3724,17 @@ class CustomerServiceAgent:
             return MA_TEACHER_ROLE_FALLBACK
 
         if self._is_contact_fact_risk(text, reply):
+            if self._has_price_priority(text):
+                return self._render_guardrail_reply(PRICE_GUARDRAIL_SAFE_REPLY)
+            if any(token in text for token in ("外地", "不在上海", "不在北京", "不方便到店", "远程定制")):
+                return self._render_guardrail_reply(REMOTE_SUPPORT_FACT_FALLBACK)
             return self._render_guardrail_reply(CONTACT_FACT_FALLBACK)
 
         if self._has_price_priority(text):
             if self._contains_low_price_quote(reply) or self._contains_invalid_price_channel(reply):
                 return self._render_guardrail_reply(PRICE_GUARDRAIL_SAFE_REPLY)
 
-        if self._is_address_fact_risk(text, reply, state, history):
+        if allow_address_guardrails and self._is_address_fact_risk(text, reply, state, history):
             if self._is_address_unsupported_query(text):
                 return self._render_guardrail_reply(ADDRESS_FACT_FALLBACK)
             store_key = self._resolve_guardrail_store_key(text, reply, state, history)
@@ -3582,7 +3746,7 @@ class CustomerServiceAgent:
                 return self._render_guardrail_reply(ADDRESS_FACT_FALLBACK)
             return self._render_guardrail_reply(ADDRESS_FACT_FALLBACK)
 
-        if self._is_address_unsupported_query(text):
+        if allow_address_guardrails and self._is_address_unsupported_query(text):
             return self._normalize_reply_text(ADDRESS_UNSUPPORTED_FALLBACK)
         return reply_text
 
@@ -3757,7 +3921,8 @@ class CustomerServiceAgent:
             "",
             text or "",
         )
-        return re.sub(r"[~～]+", "", cleaned)
+        cleaned = re.sub(r"\s*[~～]+\s*", "到", cleaned)
+        return cleaned
 
     def _avoid_repeat(self, user_state: Dict[str, Any], reply_text: str) -> str:
         normalized = self._normalize_for_dedupe(reply_text)

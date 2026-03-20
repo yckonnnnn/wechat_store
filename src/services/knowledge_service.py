@@ -177,6 +177,40 @@ class KnowledgeService(QObject):
         "浙江": "浙江",
         "浙江省": "浙江",
     }
+    TRADITIONAL_CHAR_MAP = {
+        "們": "们",
+        "門": "门",
+        "哪裡": "哪里",
+        "裡": "里",
+        "區": "区",
+        "廣": "广",
+        "場": "场",
+        "號": "号",
+        "樓": "楼",
+        "這": "这",
+        "個": "个",
+        "麼": "么",
+        "來": "来",
+        "還": "还",
+        "能": "能",
+        "嗎": "吗",
+        "臺": "台",
+        "陽": "阳",
+        "華": "华",
+        "後": "后",
+        "髮": "发",
+        "長": "长",
+        "點": "点",
+        "問": "问",
+        "說": "说",
+        "價": "价",
+        "錢": "钱",
+        "預": "预",
+        "約": "约",
+        "廣場": "广场",
+        "朝陽": "朝阳",
+        "人民廣場": "人民广场",
+    }
 
     def __init__(
         self,
@@ -263,6 +297,22 @@ class KnowledgeService(QObject):
 
     def get_shanghai_route_alias_rows(self) -> List[Dict[str, str]]:
         return [dict(item) for item in self._shanghai_route_alias_rows]
+
+    def normalize_user_text(self, text: str) -> str:
+        normalized = str(text or "")
+        if not normalized:
+            return ""
+        for source, target in sorted(self.TRADITIONAL_CHAR_MAP.items(), key=lambda item: len(item[0]), reverse=True):
+            normalized = normalized.replace(source, target)
+        normalized = normalized.translate(str.maketrans({
+            "（": "(",
+            "）": ")",
+            "，": ",",
+            "：": ":",
+            "？": "?",
+            "！": "!",
+        }))
+        return normalized
 
     def get_shanghai_store_options(self) -> List[Tuple[str, str]]:
         return [
@@ -357,7 +407,7 @@ class KnowledgeService(QObject):
 
     def find_answer_detail(self, user_message: str, threshold: float = 0.6) -> Dict[str, object]:
         """根据用户消息查找最佳答案，并返回命中细节。"""
-        query = (user_message or "").strip()
+        query = self.normalize_user_text(user_message).strip()
         if not query:
             return {
                 "matched": False,
@@ -898,11 +948,11 @@ class KnowledgeService(QObject):
 
     def is_address_query(self, text: str) -> bool:
         """是否为地址相关咨询"""
-        text = (text or "").strip()
+        text = self.normalize_user_text(text).strip()
         return bool(text) and any(keyword in text for keyword in self.ADDRESS_KEYWORDS)
 
     def is_shanghai_route_alias_address_candidate(self, text: str) -> bool:
-        normalized = re.sub(r"\s+", "", str(text or ""))
+        normalized = re.sub(r"\s+", "", self.normalize_user_text(text))
         if not normalized:
             return False
         if self.is_address_query(normalized):
@@ -924,13 +974,13 @@ class KnowledgeService(QObject):
 
     def is_purchase_intent(self, text: str) -> bool:
         """是否包含明确购买意图关键词"""
-        normalized = re.sub(r"\s+", "", (text or ""))
+        normalized = re.sub(r"\s+", "", self.normalize_user_text(text))
         if not normalized:
             return False
         return any(keyword in normalized for keyword in self.PURCHASE_INTENT_KEYWORDS)
 
     def _match_shanghai_route_alias(self, text: str) -> Optional[Tuple[str, str]]:
-        normalized_text = re.sub(r"\s+", "", str(text or ""))
+        normalized_text = re.sub(r"\s+", "", self.normalize_user_text(text))
         if not normalized_text:
             return None
         for keyword, target_store, _note in self._shanghai_route_alias_pairs:
@@ -939,7 +989,7 @@ class KnowledgeService(QObject):
         return None
 
     def _score_shanghai_route_aliases(self, text: str) -> Dict[str, object]:
-        normalized_text = re.sub(r"\s+", "", str(text or ""))
+        normalized_text = re.sub(r"\s+", "", self.normalize_user_text(text))
         if not normalized_text:
             return {"matched_keywords": [], "store_scores": {}, "confidence": "none", "target_store": "unknown"}
 
@@ -982,7 +1032,7 @@ class KnowledgeService(QObject):
 
     def resolve_store_recommendation(self, user_text: str) -> dict:
         """根据用户地理位置解析推荐门店（仅路由，不生成文案）"""
-        text = (user_text or "").strip()
+        text = self.normalize_user_text(user_text).strip()
         if not text:
             return {
                 "city": "unknown",
@@ -1170,7 +1220,7 @@ class KnowledgeService(QObject):
         }
 
     def _extract_region_mention(self, text: str) -> str:
-        text = (text or "").strip()
+        text = self.normalize_user_text(text).strip()
         if not text:
             return ""
 

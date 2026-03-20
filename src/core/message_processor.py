@@ -506,7 +506,7 @@ class MessageProcessor(QObject):
             return
 
         history = self._convert_history(messages)
-        if is_first_turn_global:
+        if is_first_turn_global and str(getattr(self.agent, "reply_mode", "")) != "llm_direct":
             self._emit_log("🧭 首轮命中固定承接：跳过规则/知识库/LLM，直接发送固定文本和视频")
             decision = self._build_first_turn_opening_decision(
                 session_id=session_id,
@@ -594,6 +594,11 @@ class MessageProcessor(QObject):
                 "kb_repeat_rewritten": bool(decision.kb_repeat_rewritten),
                 "purchase_both_first_hint_sent": bool(decision.purchase_both_first_hint_sent),
                 "video_trigger_user_count": int(decision.video_trigger_user_count or 0),
+                "reply_mode": str(getattr(decision, "reply_mode", "") or ""),
+                "standard_reply_hit": bool(getattr(decision, "standard_reply_hit", False)),
+                "standard_reply_question": str(getattr(decision, "standard_reply_question", "") or ""),
+                "standard_reply_confidence": str(getattr(decision, "standard_reply_confidence", "") or ""),
+                "brand_knowledge_used": bool(getattr(decision, "brand_knowledge_used", False)),
             },
         )
 
