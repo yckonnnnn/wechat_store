@@ -5,14 +5,15 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from PySide6.QtCore import QObject, Signal, QTimer, QThread
+from PySide6.QtCore import QCoreApplication, QObject, Signal, QTimer, QThread
 
+from .message_processor_media import MediaSendCoordinator, MediaSendHooks
+from .message_processor_support import MessageProcessorSupport
 from .private_cs_agent import AgentDecision, CustomerServiceAgent
 from .session_manager import SessionManager
 from ..services.browser_service import BrowserService
@@ -46,6 +47,7 @@ class MessageProcessor(QObject):
         self.sessions = session_manager
         self.agent = agent
         self.conversation_logger = ConversationLogger(Path("data") / "conversations")
+        self._support = MessageProcessorSupport(self.agent.memory_store)
 
         self._running = False
         self._ai_enabled = False
@@ -67,6 +69,36 @@ class MessageProcessor(QObject):
 
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_cycle)
+        self._media_delivery = MediaSendCoordinator(
+            MediaSendHooks(
+                send_image=self.browser.send_image,
+                schedule=self._schedule_media_callback,
+                emit_log=self._emit_log,
+                emit_media_ui_log=self._emit_media_ui_log,
+                append_training_event=self._append_training_event,
+                append_media_delivery_event=self._append_media_delivery_event,
+                mark_media_sent=getattr(
+                    self.agent,
+                    "mark_media_sent",
+                    lambda session_id, user_name, media_item, success: None,
+                ),
+                enqueue_media_compensation=getattr(
+                    self.agent,
+                    "enqueue_media_compensation",
+                    lambda session_id, user_name, media_item, failure_code="", failure_detail="": None,
+                ),
+                build_user_hash=self._build_user_hash,
+                media_event_name=self._media_event_name,
+                pending_media_id=self._pending_media_id,
+                extract_failure_code=self._extract_failure_code,
+                extract_failure_detail=self._extract_failure_detail,
+                should_retry_media_send=self._should_retry_media_send,
+                reset_cycle=self._reset_cycle,
+                send_video_from_material_library=getattr(self.browser, "send_video_from_material_library", None),
+                clear_message_input=getattr(self.browser, "clear_message_input", None),
+                mark_active_session=self._mark_active_session,
+            )
+        )
 
         self.browser.page_loaded.connect(self._on_page_loaded)
         self.browser.url_changed.connect(self._on_url_changed)
@@ -200,6 +232,15 @@ class MessageProcessor(QObject):
 
     def _on_url_changed(self, url: str):
         self._emit_log(f"🌐 页面地址变化: {url}")
+
+    def _schedule_media_callback(self, delay_ms: int, callback: Callable[[], None]) -> None:
+        if delay_ms <= 0:
+            callback()
+            return
+        if not self._running or QCoreApplication.instance() is None:
+            callback()
+            return
+        QTimer.singleShot(delay_ms, callback)
 
     def _poll_cycle(self):
         if not self._running or not self._page_ready or self._poll_inflight or self._processing_reply:
@@ -534,6 +575,14 @@ class MessageProcessor(QObject):
     def _start_decision_worker(self, payload: Dict[str, Any]) -> None:
         if payload.get("use_first_turn_opening", False):
             self._emit_log("🧭 首轮命中固定承接：后台直接生成固定文本和视频")
+        if not self._running:
+            try:
+                decision = _DecisionWorker.compute_decision(self.agent, payload)
+            except Exception as exc:
+                self._on_decision_worker_failed(payload, str(exc))
+                return
+            self._on_decision_worker_ready(payload, decision)
+            return
         worker = _DecisionWorker(self.agent, payload, parent=self)
         worker.decision_ready.connect(self._on_decision_worker_ready)
         worker.decision_failed.connect(self._on_decision_worker_failed)
@@ -910,507 +959,21 @@ class MessageProcessor(QObject):
         defer_retry_media_types: Optional[set[str]] = None,
         deferred_retry_items: Optional[List[Dict[str, Any]]] = None,
     ):
-        if not media_queue:
-            if decision is not None:
-                self._append_training_event(
-                    session_id=session_id,
-                    user_id_hash=self._build_user_hash(user_name=user_name, session_id=session_id),
-                    event_type="assistant_reply",
-                    user_name=user_name,
-                    reply_source=decision.reply_source,
-                    rule_id=decision.rule_id,
-                    model_name=decision.llm_model,
-                    payload={
-                        "text": decision.reply_text,
-                        "intent": decision.intent,
-                        "route_reason": decision.route_reason,
-                        "llm_fallback_reason": decision.llm_fallback_reason,
-                        "round_media_sent": bool((media_summary or {}).get("sent_types")),
-                        "round_media_sent_types": list((media_summary or {}).get("sent_types", [])),
-                        "round_media_failed_types": list((media_summary or {}).get("failed_types", [])),
-                        "round_media_sent_details": list((media_summary or {}).get("sent_details", [])),
-                        "is_first_turn_global": bool(decision.is_first_turn_global),
-                        "first_turn_media_guard_applied": bool(decision.first_turn_media_guard_applied),
-                        "kb_repeat_rewritten": bool(decision.kb_repeat_rewritten),
-                        "purchase_both_first_hint_sent": bool(decision.purchase_both_first_hint_sent),
-                        "kb_variant_total": int(decision.kb_variant_total or 0),
-                        "kb_variant_selected_index": int(
-                            decision.kb_variant_selected_index
-                            if decision.kb_variant_selected_index is not None
-                            else -1
-                        ),
-                        "kb_variant_fallback_llm": bool(decision.kb_variant_fallback_llm),
-                        "force_contact_image": bool(decision.force_contact_image),
-                        "kb_contact_trigger_type": str(decision.kb_contact_trigger_type or ""),
-                    },
-                )
-            if on_complete is not None:
-                on_complete()
-                return
-            self._reset_cycle()
-            return
-
-        item = media_queue.pop(0)
-        media_type = item.get("type", "unknown")
-        media_path = item.get("path", "")
-        pending_media_id = str(item.get("pending_media_id", "") or self._pending_media_id(item))
-        item["pending_media_id"] = pending_media_id
-        if not media_path:
-            self._record_required_media_terminal_failure(
-                session_id=session_id,
-                user_name=user_name,
-                item=item,
-                media_summary=media_summary,
-                failure_code="missing_media_path",
-                detail="媒体路径缺失",
-            )
-            self._send_media_queue(
-                session_id,
-                user_name,
-                media_queue,
-                decision=decision,
-                media_summary=media_summary,
-            )
-            return
-
-        self._mark_active_session(
+        self._media_delivery.send_media_queue(
             session_id=session_id,
             user_name=user_name,
-            stage="sending_media",
-            detail=f"type={media_type}",
+            media_queue=media_queue,
+            decision=decision,
+            media_summary=media_summary,
+            on_complete=on_complete,
+            defer_retry_media_types=defer_retry_media_types,
+            deferred_retry_items=deferred_retry_items,
         )
-        if media_type == "delayed_video":
-            trigger_source = str(item.get("trigger_source", "") or "")
-            retry_count = int(item.get("_retry_count", 0) or 0)
-            if trigger_source == "first_reply":
-                self._emit_media_ui_log(
-                    media_type,
-                    f"开始触发首轮视频发送 (重试次数: {retry_count}/2)",
-                    level="info"
-                )
-            elif trigger_source:
-                self._emit_media_ui_log(
-                    media_type,
-                    f"开始触发视频发送: source={trigger_source} (重试次数: {retry_count}/2)",
-                    level="info"
-                )
-            else:
-                self._emit_media_ui_log(
-                    media_type,
-                    f"开始触发视频发送 (重试次数: {retry_count}/2)",
-                    level="info"
-                )
-        self._emit_media_ui_log(media_type, f"准备发送媒体: type={media_type}", level="info")
-        self._append_media_delivery_event(
-            session_id=session_id,
-            user_name=user_name,
-            event_type=self._media_event_name(media_type, "planned"),
-            item=item,
-            payload={
-                "media_type": media_type,
-                "delivery_stage": "planned",
-                "pending_media_id": pending_media_id,
-                "retry_attempt": int(item.get("_retry_count", 0) or 0),
-                "compensation_enqueued": False,
-                "failure_code": "",
-            },
-        )
-        self._append_training_event(
-            session_id=session_id,
-            user_id_hash=self._build_user_hash(user_name=user_name, session_id=session_id),
-            event_type="media_attempt",
-            user_name=user_name,
-            payload={
-                "type": media_type,
-                "media_type": media_type,
-                "path": media_path,
-                "target_store": item.get("target_store", ""),
-                "store_name": item.get("store_name", ""),
-                "store_address": item.get("store_address", ""),
-                "detected_region": item.get("detected_region", ""),
-                "route_reason": item.get("route_reason", ""),
-                "trigger_source": item.get("trigger_source", ""),
-                "delivery_stage": "attempting",
-                "failure_code": "",
-                "retry_attempt": int(item.get("_retry_count", 0) or 0),
-                "compensation_enqueued": False,
-                "pending_media_id": pending_media_id,
-            },
-        )
-        self._append_media_delivery_event(
-            session_id=session_id,
-            user_name=user_name,
-            event_type=self._media_event_name(media_type, "attempt"),
-            item=item,
-            payload={
-                "media_type": media_type,
-                "delivery_stage": "attempting",
-                "pending_media_id": pending_media_id,
-                "retry_attempt": int(item.get("_retry_count", 0) or 0),
-                "compensation_enqueued": False,
-                "failure_code": "",
-            },
-        )
-
-        def on_media_sent(success, result):
-            retry_count = int(item.get("_retry_count", 0) or 0)
-            failure_code = self._extract_failure_code(result)
-            detail = self._extract_failure_detail(result)
-            compensation_enqueued = False
-            defer_retry_set = set(defer_retry_media_types or set())
-            if not success and self._should_retry_media_send(
-                media_type=media_type,
-                result=result,
-                retry_count=retry_count,
-            ):
-                retry_item = dict(item)
-                retry_item["_retry_count"] = retry_count + 1
-
-                # 增强视频重试日志
-                if media_type == "delayed_video":
-                    trigger_source = str(item.get("trigger_source", "") or "")
-                    if trigger_source == "first_reply":
-                        self._emit_media_ui_log(
-                            media_type,
-                            f"⚠️ 首轮视频发送失败，准备重试 ({retry_count + 1}/2): failure={failure_code or 'unknown'}",
-                            level="warning",
-                        )
-                    else:
-                        self._emit_media_ui_log(
-                            media_type,
-                            f"⚠️ 视频发送失败，准备重试 ({retry_count + 1}/2): failure={failure_code or 'unknown'}",
-                            level="warning",
-                        )
-
-                if media_type in defer_retry_set and deferred_retry_items is not None:
-                    # 增强图片延迟重试日志
-                    if media_type in ("address_image", "contact_image"):
-                        self._emit_media_ui_log(
-                            media_type,
-                            f"⚠️ 图片发送未确认，先继续后续流程，尾部重试一次 ({retry_count + 1}/2): type={media_type}, failure={failure_code or 'unknown'}",
-                            level="warning",
-                        )
-                    else:
-                        self._emit_media_ui_log(
-                            media_type,
-                            f"媒体发送未确认，先继续后续流程，尾部重试一次: type={media_type}, failure={failure_code or 'unknown'}",
-                            level="warning",
-                        )
-                    deferred_retry_items.append(retry_item)
-                    self._append_training_event(
-                        session_id=session_id,
-                        user_id_hash=self._build_user_hash(user_name=user_name, session_id=session_id),
-                        event_type="media_result",
-                        user_name=user_name,
-                        payload={
-                            "type": media_type,
-                            "path": media_path,
-                            "target_store": item.get("target_store", ""),
-                            "store_name": item.get("store_name", ""),
-                            "store_address": item.get("store_address", ""),
-                            "detected_region": item.get("detected_region", ""),
-                            "route_reason": item.get("route_reason", ""),
-                            "success": False,
-                            "retry_scheduled": True,
-                            "retry_attempt": retry_count + 1,
-                            "delivery_stage": "retry_deferred",
-                            "failure_code": failure_code,
-                            "compensation_enqueued": False,
-                            "pending_media_id": pending_media_id,
-                            "result": result if isinstance(result, (dict, str, int, float, bool, type(None))) else str(result),
-                        },
-                    )
-                    next_call = lambda: self._send_media_queue(
-                        session_id,
-                        user_name,
-                        media_queue,
-                        decision=decision,
-                        media_summary=media_summary,
-                        on_complete=on_complete,
-                        defer_retry_media_types=defer_retry_media_types,
-                        deferred_retry_items=deferred_retry_items,
-                    )
-                    if media_queue:
-                        QTimer.singleShot(1200, next_call)
-                    else:
-                        next_call()
-                    return
-                # 增强立即重试日志
-                if media_type == "delayed_video":
-                    trigger_source = str(item.get("trigger_source", "") or "")
-                    if trigger_source == "first_reply":
-                        self._emit_media_ui_log(
-                            media_type,
-                            f"⚠️ 首轮视频发送失败，立即重试 ({retry_count + 1}/2): failure={failure_code or 'unknown'}",
-                            level="warning",
-                        )
-                    else:
-                        self._emit_media_ui_log(
-                            media_type,
-                            f"⚠️ 视频发送失败，立即重试 ({retry_count + 1}/2): failure={failure_code or 'unknown'}",
-                            level="warning",
-                        )
-                elif media_type in ("address_image", "contact_image"):
-                    self._emit_media_ui_log(
-                        media_type,
-                        f"⚠️ 图片发送失败，立即重试 ({retry_count + 1}/2): type={media_type}, failure={failure_code or 'unknown'}",
-                        level="warning",
-                    )
-                else:
-                    self._emit_media_ui_log(
-                        media_type,
-                        f"媒体发送未确认，准备重试: type={media_type}, failure={failure_code or 'unknown'}",
-                        level="warning",
-                    )
-                self._append_training_event(
-                    session_id=session_id,
-                    user_id_hash=self._build_user_hash(user_name=user_name, session_id=session_id),
-                    event_type="media_result",
-                    user_name=user_name,
-                    payload={
-                        "type": media_type,
-                        "path": media_path,
-                        "target_store": item.get("target_store", ""),
-                        "store_name": item.get("store_name", ""),
-                        "store_address": item.get("store_address", ""),
-                        "detected_region": item.get("detected_region", ""),
-                        "route_reason": item.get("route_reason", ""),
-                        "success": False,
-                        "retry_scheduled": True,
-                        "retry_attempt": retry_count + 1,
-                        "delivery_stage": "retrying",
-                        "failure_code": failure_code,
-                        "compensation_enqueued": False,
-                        "pending_media_id": pending_media_id,
-                        "result": result if isinstance(result, (dict, str, int, float, bool, type(None))) else str(result),
-                    },
-                )
-                self._append_media_delivery_event(
-                    session_id=session_id,
-                    user_name=user_name,
-                    event_type=self._media_event_name(media_type, "retry"),
-                    item=item,
-                    payload={
-                        "media_type": media_type,
-                        "delivery_stage": "retrying",
-                        "pending_media_id": pending_media_id,
-                        "retry_attempt": retry_count + 1,
-                        "compensation_enqueued": False,
-                        "failure_code": failure_code,
-                        },
-                    )
-                # 延迟重试：等待 1500ms 后再重试，给页面时间恢复
-                QTimer.singleShot(
-                    1500,
-                    lambda: self._send_media_queue(
-                        session_id=session_id,
-                        user_name=user_name,
-                        media_queue=[retry_item] + list(media_queue),
-                        decision=decision,
-                        media_summary=media_summary,
-                        on_complete=on_complete,
-                        defer_retry_media_types=defer_retry_media_types,
-                        deferred_retry_items=deferred_retry_items,
-                    )
-                )
-                return
-
-            if success:
-                self._emit_media_ui_log(media_type, f"媒体发送成功: type={media_type}", level="success")
-                if media_summary is not None:
-                    media_summary.setdefault("sent_types", []).append(media_type)
-                    media_summary.setdefault("sent_details", []).append(
-                        {
-                            "type": media_type,
-                            "path": media_path,
-                            "target_store": item.get("target_store", ""),
-                            "store_name": item.get("store_name", ""),
-                            "store_address": item.get("store_address", ""),
-                            "detected_region": item.get("detected_region", ""),
-                            "route_reason": item.get("route_reason", ""),
-                            "trigger_source": item.get("trigger_source", ""),
-                        }
-                    )
-                self._append_media_delivery_event(
-                    session_id=session_id,
-                    user_name=user_name,
-                    event_type=self._media_event_name(media_type, "success"),
-                    item=item,
-                    payload={
-                        "media_type": media_type,
-                        "delivery_stage": "sent",
-                        "pending_media_id": pending_media_id,
-                        "retry_attempt": retry_count,
-                        "compensation_enqueued": False,
-                        "failure_code": "",
-                    },
-                )
-            else:
-                if detail:
-                    self._emit_media_ui_log(
-                        media_type,
-                        f"媒体发送失败: type={media_type}, detail={detail}, failure={failure_code or 'unknown'}, step={str((result or {}).get('step', '') or '')}",
-                        level="error",
-                    )
-                else:
-                    self._emit_media_ui_log(
-                        media_type,
-                        f"媒体发送失败: type={media_type}, failure={failure_code or 'unknown'}, step={str((result or {}).get('step', '') or '')}",
-                        level="error",
-                    )
-                if media_summary is not None:
-                    media_summary.setdefault("failed_types", []).append(media_type)
-                    media_summary.setdefault("failed_details", []).append(
-                        {
-                            "type": media_type,
-                            "path": media_path,
-                            "target_store": item.get("target_store", ""),
-                            "store_name": item.get("store_name", ""),
-                            "store_address": item.get("store_address", ""),
-                            "detected_region": item.get("detected_region", ""),
-                            "route_reason": item.get("route_reason", ""),
-                            "trigger_source": item.get("trigger_source", ""),
-                        }
-                    )
-                if not bool(item.get("disable_compensation", False)):
-                    pending_item = self.agent.enqueue_media_compensation(
-                        session_id=session_id,
-                        user_name=user_name,
-                        media_item=item,
-                        failure_code=failure_code,
-                        failure_detail=detail,
-                    )
-                    compensation_enqueued = bool(pending_item)
-                    if compensation_enqueued:
-                        self._emit_media_ui_log(
-                            media_type,
-                            f"媒体进入待补发队列: type={media_type}, failure={failure_code or 'unknown'}",
-                            level="warning",
-                        )
-                        self._append_media_delivery_event(
-                            session_id=session_id,
-                            user_name=user_name,
-                            event_type=self._media_event_name(media_type, "pending_compensation"),
-                            item=pending_item,
-                            payload={
-                                "media_type": media_type,
-                                "delivery_stage": "pending_compensation",
-                                "pending_media_id": str(pending_item.get("pending_media_id", "") or pending_media_id),
-                                "retry_attempt": retry_count,
-                                "compensation_enqueued": True,
-                                "failure_code": failure_code,
-                            },
-                        )
-                    else:
-                        self._append_media_delivery_event(
-                            session_id=session_id,
-                            user_name=user_name,
-                            event_type=self._media_event_name(media_type, "failed"),
-                            item=item,
-                            payload={
-                                "media_type": media_type,
-                                "delivery_stage": "failed_terminal",
-                                "pending_media_id": pending_media_id,
-                                "retry_attempt": retry_count,
-                                "compensation_enqueued": False,
-                                "failure_code": failure_code,
-                            },
-                        )
-                else:
-                    self._append_media_delivery_event(
-                        session_id=session_id,
-                        user_name=user_name,
-                        event_type=self._media_event_name(media_type, "failed"),
-                        item=item,
-                        payload={
-                            "media_type": media_type,
-                            "delivery_stage": "failed_terminal",
-                            "pending_media_id": pending_media_id,
-                            "retry_attempt": retry_count,
-                            "compensation_enqueued": False,
-                            "failure_code": failure_code,
-                        },
-                    )
-            self._append_training_event(
-                session_id=session_id,
-                user_id_hash=self._build_user_hash(user_name=user_name, session_id=session_id),
-                event_type="media_result",
-                user_name=user_name,
-                payload={
-                    "type": media_type,
-                    "path": media_path,
-                    "target_store": item.get("target_store", ""),
-                    "store_name": item.get("store_name", ""),
-                    "store_address": item.get("store_address", ""),
-                    "detected_region": item.get("detected_region", ""),
-                    "route_reason": item.get("route_reason", ""),
-                    "trigger_source": item.get("trigger_source", ""),
-                    "success": bool(success),
-                    "retry_scheduled": False,
-                    "retry_attempt": retry_count,
-                    "delivery_stage": "sent" if success else ("pending_compensation" if compensation_enqueued else "failed_terminal"),
-                    "failure_code": "" if success else failure_code,
-                    "compensation_enqueued": compensation_enqueued,
-                    "pending_media_id": pending_media_id,
-                    "result": result if isinstance(result, (dict, str, int, float, bool, type(None))) else str(result),
-                },
-            )
-            self.agent.mark_media_sent(session_id, user_name, item, success=bool(success))
-
-            if media_queue:
-                QTimer.singleShot(
-                    1200,
-                    lambda: self._send_media_queue(
-                        session_id,
-                        user_name,
-                        media_queue,
-                        decision=decision,
-                        media_summary=media_summary,
-                        on_complete=on_complete,
-                        defer_retry_media_types=defer_retry_media_types,
-                        deferred_retry_items=deferred_retry_items,
-                    ),
-                )
-            else:
-                self._send_media_queue(
-                    session_id,
-                    user_name,
-                    media_queue,
-                    decision=decision,
-                    media_summary=media_summary,
-                    on_complete=on_complete,
-                    defer_retry_media_types=defer_retry_media_types,
-                    deferred_retry_items=deferred_retry_items,
-                )
-
-        def send_media_after_clear():
-            if media_type == "delayed_video":
-                send_video = getattr(self.browser, "send_video_from_material_library", None)
-                if callable(send_video):
-                    send_video(on_media_sent)
-                    return
-            self.browser.send_image(media_path, on_media_sent)
-
-        clear_input = getattr(self.browser, "clear_message_input", None)
-        if callable(clear_input):
-            def on_input_cleared(success, result):
-                if not success:
-                    self._emit_media_ui_log(
-                        media_type,
-                        f"发送媒体前清空输入框失败: {result}，继续尝试发送",
-                        level="warning",
-                    )
-                send_media_after_clear()
-
-            clear_input(on_input_cleared)
-            return
-
-        send_media_after_clear()
 
     def _should_retry_media_send(self, media_type: str, result: Any, retry_count: int) -> bool:
         failure_code = self._extract_failure_code(result)
         if media_type in ("contact_image", "address_image"):
-            if retry_count >= 2:
+            if retry_count >= 1:
                 return False
             return failure_code in {
                 "locate_image_button_failed",
@@ -1421,7 +984,7 @@ class MessageProcessor(QObject):
                 "verified_soft_timeout",
             }
         if media_type == "delayed_video":
-            if retry_count >= 2:
+            if retry_count >= 1:
                 return False
             return failure_code in {
                 "locate_material_library_failed",
@@ -1456,123 +1019,59 @@ class MessageProcessor(QObject):
         self._active_session_context = None
 
     def _parse_js_payload(self, payload: Any) -> Dict[str, Any]:
-        if isinstance(payload, dict):
-            return payload
-        if isinstance(payload, str):
-            try:
-                parsed = json.loads(payload)
-                if isinstance(parsed, dict):
-                    return parsed
-            except Exception:
-                return {}
-        return {}
+        return self._support.parse_js_payload(payload)
 
     def _latest_user_text(self, messages: List[Dict[str, Any]]) -> str:
-        if not messages:
-            return ""
-        if not messages[-1].get("is_user", False):
-            return ""
-        return (messages[-1].get("text") or "").strip()
+        return self._support.latest_user_text(messages)
 
     def _maybe_append_unread_hint_message(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        hint = self._pending_unread_hint or {}
-        preview_type = str(hint.get("preview_type", "") or "").strip().lower()
-        if preview_type not in {"image", "video"}:
-            return messages
-        if messages and messages[-1].get("is_user", False):
-            return messages
-
-        synthetic = {
-            "text": "[图片]" if preview_type == "image" else "[视频]",
-            "message_type": preview_type,
-            "is_user": True,
-            "is_kf": False,
-            "source": "unread_preview",
-        }
-        self._emit_log(f"🧩 使用未读预览补全最后一条用户消息: {synthetic['text']}")
-        return [*messages, synthetic]
+        updated_messages, log_message = self._support.maybe_append_unread_hint_message(
+            messages,
+            self._pending_unread_hint,
+        )
+        if log_message:
+            self._emit_log(log_message)
+        return updated_messages
 
     def _restrict_media_placeholders_to_unread_context(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        hint = self._pending_unread_hint or {}
-        preview_type = str(hint.get("preview_type", "") or "").strip().lower()
-        if preview_type in {"image", "video", "emoji"}:
-            return list(messages or [])
-
-        filtered: List[Dict[str, Any]] = []
-        for item in list(messages or []):
-            if not isinstance(item, dict):
-                filtered.append(item)
-                continue
-
-            message_type = str(item.get("message_type", "") or "").strip().lower()
-            text = str(item.get("text", "") or "").strip()
-            if message_type in {"image", "video", "emoji"}:
-                continue
-            if text in {"[图片]", "[视频]", "[表情]"}:
-                continue
-            filtered.append(item)
-        return filtered
+        return self._support.restrict_media_placeholders_to_unread_context(messages, self._pending_unread_hint)
 
     def _format_unread_preview_hint(self, hint: Dict[str, str]) -> str:
-        preview_type = str(hint.get("preview_type", "") or "").strip().lower()
-        mapping = {
-            "image": "图片",
-            "video": "视频",
-            "emoji": "表情",
-        }
-        if preview_type in mapping:
-            return mapping[preview_type]
-        preview_text = str(hint.get("preview_text", "") or "").strip()
-        return preview_text or "未知"
+        return self._support.format_unread_preview_hint(hint)
 
     def _build_message_marker(self, user_name: str, latest_user_text: str, messages: List[Dict[str, Any]]) -> str:
-        media_marker = self._build_media_message_marker(user_name=user_name, latest_user_text=latest_user_text)
-        if media_marker:
-            return media_marker
-        user_count = len([m for m in messages if m.get("is_user")])
-        raw = f"{user_name}|{latest_user_text}|{user_count}"
-        return self._hash_id(raw)
+        return self._support.build_message_marker(
+            user_name,
+            latest_user_text,
+            messages,
+            self._pending_unread_hint,
+        )
 
     def _build_media_message_marker(self, user_name: str, latest_user_text: str) -> str:
-        normalized = str(latest_user_text or "").strip()
-        if normalized not in {"[图片]", "[视频]"}:
-            return ""
-        hint = self._pending_unread_hint or {}
-        preview_type = str(hint.get("preview_type", "") or "").strip().lower()
-        if preview_type not in {"image", "video"}:
-            return ""
-        session_text = str(hint.get("session_text", "") or "").strip()
-        preview_text = str(hint.get("preview_text", "") or "").strip()
-        badge_text = str(hint.get("badge_text", "") or "").strip()
-        raw = f"media|{user_name}|{preview_type}|{preview_text}|{session_text}|{badge_text}"
-        return self._hash_id(raw)
+        return self._support.build_media_message_marker(
+            user_name,
+            latest_user_text,
+            self._pending_unread_hint,
+        )
 
     def _is_duplicate_marker(self, marker: str, latest_user_text: str) -> bool:
-        normalized = str(latest_user_text or "").strip()
-        if normalized in {"[图片]", "[视频]"}:
-            return marker in self._recent_processed_media_markers
-        return marker == self._last_processed_marker
+        return self._support.is_duplicate_marker(
+            marker,
+            latest_user_text,
+            last_processed_marker=self._last_processed_marker,
+            recent_processed_media_markers=self._recent_processed_media_markers,
+        )
 
     def _remember_processed_marker(self, marker: str, latest_user_text: str) -> None:
-        normalized = str(latest_user_text or "").strip()
-        if normalized in {"[图片]", "[视频]"}:
-            if marker:
-                self._recent_processed_media_markers.append(marker)
-                if len(self._recent_processed_media_markers) > 10:
-                    self._recent_processed_media_markers = self._recent_processed_media_markers[-10:]
-            return
-        self._last_processed_marker = marker
+        self._last_processed_marker, self._recent_processed_media_markers = self._support.remember_processed_marker(
+            marker,
+            latest_user_text,
+            last_processed_marker=self._last_processed_marker,
+            recent_processed_media_markers=self._recent_processed_media_markers,
+        )
 
     def _convert_history(self, messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-        history: List[Dict[str, str]] = []
-        source = messages[:-1] if messages and messages[-1].get("is_user", False) else messages
-        for msg in source[-12:]:
-            text = (msg.get("text") or "").strip()
-            if not text:
-                continue
-            role = "user" if msg.get("is_user") else "assistant"
-            history.append({"role": role, "content": text})
-        return history
+        return self._support.convert_history(messages)
 
     def _mark_active_session(self, session_id: str, user_name: str, stage: str, detail: str = "") -> None:
         stage_text = str(stage or "").strip() or "unknown"
@@ -1609,27 +1108,13 @@ class MessageProcessor(QObject):
         )
 
     def _hash_id(self, text: str) -> str:
-        return hashlib.md5((text or "").encode("utf-8", errors="ignore")).hexdigest()[:10]
+        return self._support.hash_id(text)
 
     def _build_session_id(self, user_name: str, chat_session_key: str, chat_session_fingerprint: str = "") -> str:
-        key = (chat_session_key or "").strip()
-        if key:
-            return f"chat_{self._hash_id(key)}"
-        user_key = f"user_{self._hash_id(user_name)}"
-        fingerprint = (chat_session_fingerprint or "").strip()
-        if not fingerprint:
-            return user_key
-
-        existing = self.agent.memory_store.get_existing_session_state(user_key)
-        existing_fp = (existing or {}).get("session_fingerprint", "") if isinstance(existing, dict) else ""
-        if not existing_fp or existing_fp == fingerprint:
-            return user_key
-
-        return f"{user_key}_{self._hash_id(fingerprint)[:6]}"
+        return self._support.build_session_id(user_name, chat_session_key, chat_session_fingerprint)
 
     def _build_user_hash(self, user_name: str, session_id: str) -> str:
-        base = (user_name or "").strip() or session_id
-        return self._hash_id(base)
+        return self._support.build_user_hash(user_name, session_id)
 
     def _emit_stale_followup_status(self, message: str) -> None:
         text = str(message or "").strip()
@@ -1861,15 +1346,7 @@ class MessageProcessor(QObject):
             self._emit_log(f"{role}: {self._format_log_message_text(msg)}")
 
     def _format_log_message_text(self, msg: Dict[str, Any]) -> str:
-        text = str(msg.get("text") or "").strip()
-        message_type = str(msg.get("message_type") or "").strip().lower()
-        if text == "[图片]" or message_type == "image":
-            return "发送了一张图片"
-        if text == "[视频]" or message_type == "video":
-            return "发送了一个视频"
-        if text == "[表情]" or message_type == "emoji":
-            return "发送了一个表情"
-        return text
+        return self._support.format_log_message_text(msg)
 
     def _append_media_delivery_event(
         self,
@@ -1901,42 +1378,16 @@ class MessageProcessor(QObject):
         )
 
     def _media_event_name(self, media_type: str, stage: str) -> str:
-        alias = "contact_image" if media_type == "contact_image" else "address_image" if media_type == "address_image" else media_type
-        return f"{alias}_send_{stage}"
+        return self._support.media_event_name(media_type, stage)
 
     def _pending_media_id(self, item: Dict[str, Any]) -> str:
-        media_type = str(item.get("type", "") or "")
-        if media_type == "address_image":
-            return f"address_image:{str(item.get('target_store', '') or '')}"
-        if media_type == "contact_image":
-            return "contact_image"
-        return f"{media_type}:{str(item.get('path', '') or '')}"
+        return self._support.pending_media_id(item)
 
     def _extract_failure_code(self, result: Any) -> str:
-        if isinstance(result, dict):
-            code = str(result.get("failure_code", "") or "").strip()
-            if code:
-                return code
-            step = str(result.get("step", "") or "").strip()
-            mapping = {
-                "locate_image_button": "locate_image_button_failed",
-                "native_click_image_button": "native_click_image_button_failed",
-                "confirm_click": "confirm_click_failed",
-                "confirm_click_after_enter": "confirm_click_after_enter_failed",
-                "verify_timeout": "verify_timeout",
-                "verified_soft_timeout": "verified_soft_timeout",
-            }
-            return mapping.get(step, step or "unknown_media_failure")
-        if isinstance(result, str) and result.strip():
-            return "unknown_media_failure"
-        return ""
+        return self._support.extract_failure_code(result)
 
     def _extract_failure_detail(self, result: Any) -> str:
-        if isinstance(result, dict):
-            return str(result.get("error") or result.get("detail") or result.get("warning") or "")
-        if isinstance(result, str):
-            return result
-        return ""
+        return self._support.extract_failure_detail(result)
 
     def _emit_media_ui_log(self, media_type: str, message: str, level: str = "info") -> None:
         if media_type == "address_image":
@@ -1993,21 +1444,24 @@ class _DecisionWorker(QThread):
         self._agent = agent
         self._payload = dict(payload or {})
 
+    @staticmethod
+    def compute_decision(agent: CustomerServiceAgent, payload: Dict[str, Any]) -> AgentDecision:
+        if payload.get("use_first_turn_opening", False):
+            return payload["build_first_turn_opening_decision"](
+                session_id=payload["session_id"],
+                user_name=payload["user_name"],
+            )
+        return agent.decide(
+            session_id=payload["session_id"],
+            user_name=payload["user_name"],
+            latest_user_text=payload["latest_user_text"],
+            conversation_history=list(payload.get("conversation_history", []) or []),
+            first_turn_global_override=bool(payload.get("is_first_turn_global", False)),
+        )
+
     def run(self):
         try:
-            if self._payload.get("use_first_turn_opening", False):
-                decision = self._payload["build_first_turn_opening_decision"](
-                    session_id=self._payload["session_id"],
-                    user_name=self._payload["user_name"],
-                )
-            else:
-                decision = self._agent.decide(
-                    session_id=self._payload["session_id"],
-                    user_name=self._payload["user_name"],
-                    latest_user_text=self._payload["latest_user_text"],
-                    conversation_history=list(self._payload.get("conversation_history", []) or []),
-                    first_turn_global_override=bool(self._payload.get("is_first_turn_global", False)),
-                )
+            decision = self.compute_decision(self._agent, self._payload)
             self.decision_ready.emit(dict(self._payload), decision)
         except Exception as exc:
             self.decision_failed.emit(dict(self._payload), str(exc))

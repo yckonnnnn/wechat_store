@@ -814,6 +814,11 @@ def summarize_session_video_from_log(agent, session_id: str) -> Dict[str, Any]:
 
 
 def build_video_media_item(agent, trigger_source: str) -> Optional[Dict[str, Any]]:
+    custom_builder = getattr(agent, "_build_video_media_item", None)
+    if callable(custom_builder):
+        item = custom_builder(trigger_source)
+        if isinstance(item, dict):
+            return dict(item)
     video_path = pick_video_media(agent)
     if not video_path:
         return None
@@ -918,17 +923,19 @@ def session_log_file(agent, session_id: str) -> Path:
     if candidates:
         return candidates[0]
     safe = re.sub(r"[^0-9A-Za-z_\\-]", "_", session_id or "unknown")
-    return agent.conversation_log_dir / f"{safe}.jsonl"
+    root_dir = getattr(agent, "conversation_log_dir", Path("data") / "conversations")
+    return root_dir / f"{safe}.jsonl"
 
 
 def session_log_candidates(agent, session_id: str) -> List[Path]:
     safe = re.sub(r"[^0-9A-Za-z_\\-]", "_", session_id or "unknown")
-    legacy_path = agent.conversation_log_dir / f"{safe}.jsonl"
+    root_dir = getattr(agent, "conversation_log_dir", Path("data") / "conversations")
+    legacy_path = root_dir / f"{safe}.jsonl"
     results: List[Path] = []
     if legacy_path.exists():
         results.append(legacy_path)
 
-    for log_path in sorted(agent.conversation_log_dir.glob("*.jsonl")):
+    for log_path in sorted(root_dir.glob("*.jsonl")):
         if log_path == legacy_path:
             continue
         try:
