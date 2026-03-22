@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..data.memory_store import MemoryStore
+from . import agent_media
 from .agent_guardrails import apply_llm_reply_guardrails, normalize_reply_text
 from .agent_prompt_builder import build_general_llm_prompt, summarize_llm_conversation_state
 from .agent_types import AgentDecision, MediaJudgeDecision, _SafeDict
@@ -948,44 +949,13 @@ class CustomerServiceAgent:
         *,
         is_first_turn_global: bool = False,
     ) -> Optional[Dict[str, Any]]:
-        """文本发送成功后的状态推进；返回需要立即发送的视频媒体（若命中）"""
-        if self.reply_mode == REPLY_MODE_LLM_DIRECT:
-            user_hash = self._hash_user(user_name or session_id)
-            user_state = self.memory_store.get_user_state(user_hash)
-            normalized = self._normalize_for_dedupe(reply_text)
-            recent_hashes = list(user_state.get("recent_reply_hashes", []) or [])
-            if normalized:
-                recent_hashes.append(normalized)
-            if len(recent_hashes) > 40:
-                recent_hashes = recent_hashes[-40:]
-            user_state["recent_reply_hashes"] = recent_hashes
-            self.memory_store.update_user_state(user_hash, user_state)
-            self.memory_store.save()
-            return None
-        user_hash = self._hash_user(user_name or session_id)
-        user_state = self.memory_store.get_user_state(user_hash)
-        normalized = self._normalize_for_dedupe(reply_text)
-
-        recent_hashes = list(user_state.get("recent_reply_hashes", []) or [])
-        if normalized:
-            recent_hashes.append(normalized)
-        if len(recent_hashes) > 40:
-            recent_hashes = recent_hashes[-40:]
-        user_state["recent_reply_hashes"] = recent_hashes
-
-        session_video = self.summarize_session_video_from_log(session_id=session_id)
-        if session_video.get("contact_sent") and not session_video.get("contact_followup_video_sent"):
-            user_messages_after_contact = int(session_video.get("user_message_count_after_contact", 0) or 0)
-            if user_messages_after_contact >= 2:
-                video_item = self._build_video_media_item(trigger_source="contact_followup")
-                if video_item:
-                    self.memory_store.update_user_state(user_hash, user_state)
-                    self.memory_store.save()
-                    return video_item
-
-        self.memory_store.update_user_state(user_hash, user_state)
-        self.memory_store.save()
-        return None
+        return agent_media.mark_reply_sent(
+            self,
+            session_id=session_id,
+            user_name=user_name,
+            reply_text=reply_text,
+            is_first_turn_global=is_first_turn_global,
+        )
 
     def build_post_text_media_queue(
         self,
@@ -994,28 +964,13 @@ class CustomerServiceAgent:
         planned_media_items: List[Dict[str, Any]],
         extra_media_items: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
-        user_hash = self._hash_user(user_name or session_id)
-        session_state = self.memory_store.get_session_state(session_id, user_hash=user_hash)
-        pending_items = self._sanitize_pending_required_media(
-            session_state.get("pending_required_media", []),
-            latest_planned=planned_media_items,
+        return agent_media.build_post_text_media_queue(
+            self,
+            session_id=session_id,
+            user_name=user_name,
+            planned_media_items=planned_media_items,
+            extra_media_items=extra_media_items,
         )
-        queue: List[Dict[str, Any]] = []
-        queue.extend(pending_items)
-
-        for item in planned_media_items or []:
-            if not isinstance(item, dict):
-                continue
-            item_type = str(item.get("type", "") or "")
-            if item_type == "address_image":
-                queue = [x for x in queue if not (str(x.get("type", "")) == "address_image" and x.get("target_store") == item.get("target_store"))]
-            queue.append(dict(item))
-
-        for item in extra_media_items or []:
-            if isinstance(item, dict):
-                queue.append(dict(item))
-
-        return queue
 
     def judge_post_reply_media(
         self,
@@ -1026,135 +981,18 @@ class CustomerServiceAgent:
         conversation_history: Optional[List[Dict[str, str]]] = None,
         decision: Optional[AgentDecision] = None,
     ) -> MediaJudgeDecision:
-        user_hash = self._hash_user(user_name or session_id)
-        session_state = self.memory_store.get_session_state(session_id, user_hash=user_hash)
-        normalized_text = self.knowledge_service.normalize_user_text(latest_user_text).strip()
-        history = conversation_history or []
-        route = self.knowledge_service.resolve_store_recommendation(normalized_text)
-        intent = decision.intent if decision is not None else self._detect_intent(normalized_text)
-
-        if decision is not None and str(decision.reply_source or "") == "fallback":
-            media_items, skip_reason = self._plan_media_items(
-                session_id=session_id,
-                text=normalized_text,
-                intent="contact",
-                route=route,
-                route_reason="llm_fallback_contact",
-                media_plan="contact_image",
-                session_state=session_state,
-                user_state=self.memory_store.get_user_state(user_hash),
-                force_contact_image=True,
-            )
-            return MediaJudgeDecision(
-                send_contact_image=bool(media_items),
-                reason="llm_fallback_contact",
-                reminder_only=False,
-                skip_reason=str(skip_reason or ""),
-                media_items=media_items,
-            )
-
-        if self._looks_like_direct_contact_request(normalized_text):
-            media_items, skip_reason = self._plan_media_items(
-                session_id=session_id,
-                text=normalized_text,
-                intent="contact",
-                route=route,
-                route_reason="direct_contact_request",
-                media_plan="contact_image",
-                session_state=session_state,
-                user_state=self.memory_store.get_user_state(user_hash),
-                force_contact_image=True,
-            )
-            return MediaJudgeDecision(
-                send_contact_image=bool(media_items),
-                reason="direct_contact_request",
-                reminder_only=False,
-                skip_reason=str(skip_reason or ""),
-                media_items=media_items,
-            )
-
-        if self._should_trigger_precise_address_contact_image(
+        return agent_media.judge_post_reply_media(
+            self,
+            session_id=session_id,
+            user_name=user_name,
             latest_user_text=latest_user_text,
-            normalized_text=normalized_text,
             reply_text=reply_text,
-            intent=intent,
-            route=route,
-            session_state=session_state,
-            conversation_history=history,
-        ):
-            media_items, skip_reason = self._plan_media_items(
-                session_id=session_id,
-                text=normalized_text,
-                intent="contact",
-                route=route,
-                route_reason="precise_address_followup",
-                media_plan="contact_image",
-                session_state=session_state,
-                user_state=self.memory_store.get_user_state(user_hash),
-                force_contact_image=True,
-            )
-            return MediaJudgeDecision(
-                send_contact_image=bool(media_items),
-                reason="precise_address_followup",
-                reminder_only=False,
-                skip_reason=str(skip_reason or ""),
-                media_items=media_items,
-            )
-
-        return MediaJudgeDecision(skip_reason="no_media_rule_matched")
+            conversation_history=conversation_history,
+            decision=decision,
+        )
 
     def mark_media_sent(self, session_id: str, user_name: str, media_item: Dict[str, Any], success: bool) -> None:
-        """媒体发送回执"""
-        if not success or not media_item:
-            return
-
-        user_hash = self._hash_user(user_name or session_id)
-        session_state = self.memory_store.get_session_state(session_id, user_hash=user_hash)
-        user_state = self.memory_store.get_user_state(user_hash)
-        now = datetime.now().isoformat()
-
-        media_type = media_item.get("type", "")
-
-        if media_type == "address_image":
-            sent_count = int(session_state.get("address_image_sent_count", 0) or 0)
-            session_state["address_image_sent_count"] = sent_count + 1
-            stores = set(session_state.get("sent_address_stores", []) or [])
-            target_store = media_item.get("target_store", "")
-            if target_store:
-                stores.add(target_store)
-                sent_map = session_state.get("address_image_last_sent_at_by_store", {}) or {}
-                if not isinstance(sent_map, dict):
-                    sent_map = {}
-                sent_map[target_store] = now
-                session_state["address_image_last_sent_at_by_store"] = sent_map
-                session_state["last_target_store"] = target_store
-            session_state["sent_address_stores"] = list(stores)
-
-        elif media_type == "contact_image":
-            sent_count = int(session_state.get("contact_image_sent_count", 0) or 0)
-            session_state["contact_image_sent_count"] = sent_count + 1
-            session_state["contact_image_last_sent_at"] = now
-            sent_paths = [
-                str(path).strip()
-                for path in (session_state.get("contact_image_sent_paths", []) or [])
-                if str(path).strip()
-            ]
-            media_path = str(media_item.get("path", "") or "").strip()
-            if media_path and media_path not in sent_paths:
-                sent_paths.append(media_path)
-            session_state["contact_image_sent_paths"] = sent_paths
-            session_state["contact_warmup"] = False
-            session_state["last_geo_pending"] = False
-
-        if media_type in REQUIRED_MEDIA_TYPES:
-            self._remove_pending_required_media(session_state, media_item)
-            budget = session_state.get("required_media_retry_budget", {}) or {}
-            budget.pop(self._pending_media_key(media_item), None)
-            session_state["required_media_retry_budget"] = budget
-
-        self.memory_store.update_session_state(session_id, session_state, user_hash=user_hash)
-        self.memory_store.update_user_state(user_hash, user_state)
-        self.memory_store.save()
+        agent_media.mark_media_sent(self, session_id=session_id, user_name=user_name, media_item=media_item, success=success)
 
     def enqueue_media_compensation(
         self,
@@ -1164,57 +1002,17 @@ class CustomerServiceAgent:
         failure_code: str = "",
         failure_detail: str = "",
     ) -> Optional[Dict[str, Any]]:
-        if not media_item:
-            return None
-        media_type = str(media_item.get("type", "") or "")
-        if media_type not in REQUIRED_MEDIA_TYPES:
-            return None
-
-        user_hash = self._hash_user(user_name or session_id)
-        session_state = self.memory_store.get_session_state(session_id, user_hash=user_hash)
-        pending_items = self._sanitize_pending_required_media(session_state.get("pending_required_media", []))
-        clean_item = dict(media_item)
-        pending_id = self._pending_media_key(clean_item)
-        clean_item["pending_media_id"] = pending_id
-        clean_item["pending_required"] = True
-        clean_item["queued_at"] = datetime.now().isoformat()
-
-        if media_type == "contact_image":
-            pending_items = [x for x in pending_items if str(x.get("type", "")) != "contact_image"]
-        elif media_type == "address_image":
-            target_store = str(clean_item.get("target_store", "") or "")
-            pending_items = [
-                x for x in pending_items
-                if not (str(x.get("type", "")) == "address_image" and str(x.get("target_store", "") or "") == target_store)
-            ]
-        pending_items.append(clean_item)
-
-        budget = session_state.get("required_media_retry_budget", {}) or {}
-        budget[pending_id] = int(budget.get(pending_id, 0) or 0) + 1
-
-        self.memory_store.update_session_state(
-            session_id,
-            {
-                "pending_required_media": pending_items,
-                "pending_required_media_updated_at": datetime.now().isoformat(),
-                "last_required_media_failure_code": str(failure_code or ""),
-                "last_required_media_failure_detail": str(failure_detail or ""),
-                "required_media_retry_budget": budget,
-            },
-            user_hash=user_hash,
+        return agent_media.enqueue_media_compensation(
+            self,
+            session_id=session_id,
+            user_name=user_name,
+            media_item=media_item,
+            failure_code=failure_code,
+            failure_detail=failure_detail,
         )
-        self.memory_store.save()
-        return clean_item
 
     def clear_media_compensation(self, session_id: str, user_name: str, media_item: Dict[str, Any]) -> None:
-        user_hash = self._hash_user(user_name or session_id)
-        session_state = self.memory_store.get_session_state(session_id, user_hash=user_hash)
-        self._remove_pending_required_media(session_state, media_item)
-        budget = session_state.get("required_media_retry_budget", {}) or {}
-        budget.pop(self._pending_media_key(media_item), None)
-        session_state["required_media_retry_budget"] = budget
-        self.memory_store.update_session_state(session_id, session_state, user_hash=user_hash)
-        self.memory_store.save()
+        agent_media.clear_media_compensation(self, session_id=session_id, user_name=user_name, media_item=media_item)
 
     def set_options(
         self,
@@ -3136,46 +2934,18 @@ class CustomerServiceAgent:
         user_state: Dict[str, Any],
         force_contact_image: bool = False,
     ) -> Tuple[List[Dict[str, Any]], str]:
-        items: List[Dict[str, Any]] = []
-        skip_reason = ""
-        target_store = route.get("target_store", "unknown")
-        if media_plan == "address_image" and target_store in ("", "unknown"):
-            target_store = str(session_state.get("last_target_store", "") or "unknown")
-        reason = route_reason or route.get("reason", "unknown")
-        detected_region = route.get("detected_region", "") or ""
-
-        if media_plan == "address_image":
-            if target_store == "unknown":
-                skip_reason = "address_target_unknown"
-            item, reason_hint = self._queue_address_image(
-                session_id=session_id,
-                session_state=session_state,
-                target_store=target_store,
-                route_reason=reason,
-                detected_region=detected_region,
-            )
-            if item:
-                items.append(item)
-            elif reason_hint:
-                skip_reason = reason_hint
-
-        if media_plan == "contact_image" and not items:
-            item, reason_hint = self._queue_contact_image(
-                session_id=session_id,
-                text=text,
-                intent=intent,
-                reason=reason,
-                route=route,
-                session_state=session_state,
-                force_contact_image=force_contact_image,
-            )
-            if item:
-                items.append(item)
-            elif reason_hint and not skip_reason:
-                skip_reason = reason_hint
-
-        # delayed_video 不即时发送，仍由发送回执推进。
-        return items, skip_reason
+        return agent_media.plan_media_items(
+            self,
+            session_id=session_id,
+            text=text,
+            intent=intent,
+            route=route,
+            route_reason=route_reason,
+            media_plan=media_plan,
+            session_state=session_state,
+            user_state=user_state,
+            force_contact_image=force_contact_image,
+        )
 
     def _queue_address_image(
         self,
@@ -3185,26 +2955,13 @@ class CustomerServiceAgent:
         route_reason: str,
         detected_region: str,
     ) -> Tuple[Optional[Dict[str, Any]], str]:
-        if target_store == "unknown":
-            return None, "address_target_unknown"
-
-        image_path = self._pick_address_image(target_store)
-        if not image_path:
-            return None, "address_image_missing"
-
-        store = self.knowledge_service.get_store_display(target_store)
-
-        return (
-            {
-                "type": "address_image",
-                "path": image_path,
-                "target_store": target_store,
-                "store_name": store.get("store_name", ""),
-                "store_address": store.get("store_address", ""),
-                "detected_region": detected_region,
-                "route_reason": route_reason,
-            },
-            "",
+        return agent_media.queue_address_image(
+            self,
+            session_id=session_id,
+            session_state=session_state,
+            target_store=target_store,
+            route_reason=route_reason,
+            detected_region=detected_region,
         )
 
     def _queue_contact_image(
@@ -3217,74 +2974,31 @@ class CustomerServiceAgent:
         session_state: Dict[str, Any],
         force_contact_image: bool = False,
     ) -> Tuple[Optional[Dict[str, Any]], str]:
-        if not self._contact_images:
-            return None, "contact_image_missing"
-
-        if force_contact_image or reason == "out_of_coverage" or intent in ("contact", "purchase"):
-            image_path = self._pick_contact_image_for_session(session_state)
-            if not image_path:
-                return None, "contact_image_unique_exhausted"
-            return (
-                {
-                    "type": "contact_image",
-                    "path": image_path,
-                    "detected_region": route.get("detected_region", "") or route_region(reason, text),
-                    "route_reason": reason,
-                    "target_store": route.get("target_store", ""),
-                },
-                "",
-            )
-
-        return None, "contact_image_not_applicable"
+        return agent_media.queue_contact_image(
+            self,
+            session_id=session_id,
+            text=text,
+            intent=intent,
+            reason=reason,
+            route=route,
+            session_state=session_state,
+            force_contact_image=force_contact_image,
+        )
 
     def _pick_contact_image_for_session(self, session_state: Dict[str, Any]) -> Optional[str]:
-        pool = [str(path) for path in self._contact_images if str(path).strip()]
-        if not pool:
-            return None
-        sent_paths = {
-            str(path).strip()
-            for path in (session_state.get("contact_image_sent_paths", []) or [])
-            if str(path).strip()
-        }
-        available = [path for path in pool if path not in sent_paths]
-        if not available:
-            return None
-        return random.choice(available)
+        return agent_media.pick_contact_image_for_session(self, session_state)
 
     def _resolve_kb_contact_trigger_type(self, latest_user_text: str, kb_detail: Dict[str, Any]) -> str:
-        normalized_text = re.sub(r"\s+", "", (latest_user_text or ""))
-        if any(keyword in normalized_text for keyword in CONTACT_TRIGGER_KEYWORDS):
-            if any(keyword in normalized_text for keyword in APPOINTMENT_PRIORITY_KEYWORDS):
-                return "appointment"
-            return "shipping"
-
-        tags = kb_detail.get("tags", [])
-        if isinstance(tags, list):
-            normalized_tags = {str(tag).strip().lower() for tag in tags if str(tag).strip()}
-            if "预约" in normalized_tags:
-                return "appointment"
-            if any(tag.lower() in normalized_tags for tag in CONTACT_TRIGGER_TAGS):
-                return "shipping"
-
-        kb_intent = str(kb_detail.get("intent", "") or "").strip().lower()
-        if kb_intent in CONTACT_TRIGGER_INTENTS:
-            return "appointment"
-        return ""
+        return agent_media.resolve_kb_contact_trigger_type(self, latest_user_text, kb_detail)
 
     def _looks_like_appointment_query(self, text: str) -> bool:
-        normalized_text = re.sub(r"\s+", "", (text or ""))
-        if not normalized_text:
-            return False
-        return any(keyword in normalized_text for keyword in APPOINTMENT_PRIORITY_KEYWORDS)
+        return agent_media.looks_like_appointment_query(self, text)
 
     def _is_contact_image_sent_for_current_geo(self, session_state: Dict[str, Any]) -> bool:
-        return int(session_state.get("contact_image_sent_count", 0) or 0) > 0
+        return agent_media.is_contact_image_sent_for_current_geo(self, session_state)
 
     def _has_both_images_sent(self, session_state: Dict[str, Any]) -> bool:
-        return (
-            int(session_state.get("address_image_sent_count", 0) or 0) > 0
-            and int(session_state.get("contact_image_sent_count", 0) or 0) > 0
-        )
+        return agent_media.has_both_images_sent(self, session_state)
 
     def _sync_media_state_from_conversation_log(
         self,
@@ -3292,187 +3006,35 @@ class CustomerServiceAgent:
         user_hash: str,
         session_state: Dict[str, Any],
     ) -> None:
-        user_summary = self.summarize_user_media_from_logs(user_id_hash=user_hash)
-        session_state["address_image_sent_count"] = int(user_summary.get("address_image_sent_count", 0) or 0)
-        session_state["contact_image_sent_count"] = int(user_summary.get("contact_image_sent_count", 0) or 0)
-        session_state["address_image_last_sent_at_by_store"] = dict(user_summary.get("address_image_last_sent_at_by_store", {}) or {})
-        session_state["sent_address_stores"] = list(user_summary.get("sent_address_stores", []) or [])
-        session_state["contact_image_last_sent_at"] = str(user_summary.get("contact_image_last_sent_at", "") or "")
-        session_state["contact_image_sent_paths"] = list(user_summary.get("contact_image_sent_paths", []) or [])
-
-        latest_store = str(user_summary.get("last_target_store", "") or "").strip()
-        if latest_store:
-            session_state["last_target_store"] = latest_store
-
-        session_video = self.summarize_session_video_from_log(session_id=session_id)
-        session_state["session_video_armed"] = bool(session_video.get("contact_sent"))
-        session_state["session_video_sent"] = bool(
-            session_video.get("first_reply_video_sent") or session_video.get("contact_followup_video_sent")
-        )
-        session_state["session_post_contact_reply_count"] = int(session_video.get("assistant_reply_count_after_contact", 0) or 0)
-        session_state["session_user_message_count_after_contact"] = int(session_video.get("user_message_count_after_contact", 0) or 0)
+        agent_media.sync_media_state_from_conversation_log(self, session_id, user_hash, session_state)
 
     def _sanitize_pending_required_media(
         self,
         items: Any,
         latest_planned: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
-        sanitized: List[Dict[str, Any]] = []
-        latest_address_targets = {
-            str(item.get("target_store", "") or "")
-            for item in (latest_planned or [])
-            if isinstance(item, dict) and str(item.get("type", "")) == "address_image"
-        }
-        for raw in items or []:
-            if not isinstance(raw, dict):
-                continue
-            media_type = str(raw.get("type", "") or "")
-            if media_type not in REQUIRED_MEDIA_TYPES:
-                continue
-            item = copy.deepcopy(raw)
-            if media_type == "address_image":
-                target_store = str(item.get("target_store", "") or "")
-                if latest_address_targets and target_store and target_store not in latest_address_targets:
-                    continue
-            item["pending_media_id"] = self._pending_media_key(item)
-            item["pending_required"] = True
-            sanitized.append(item)
-        return sanitized
+        return agent_media.sanitize_pending_required_media(self, items, latest_planned=latest_planned)
 
     def _remove_pending_required_media(self, session_state: Dict[str, Any], media_item: Dict[str, Any]) -> None:
-        media_type = str((media_item or {}).get("type", "") or "")
-        media_key = self._pending_media_key(media_item)
-        pending_items = []
-        for item in session_state.get("pending_required_media", []) or []:
-            if not isinstance(item, dict):
-                continue
-            item_type = str(item.get("type", "") or "")
-            if item_type != media_type:
-                pending_items.append(item)
-                continue
-            if self._pending_media_key(item) == media_key:
-                continue
-            pending_items.append(item)
-        session_state["pending_required_media"] = pending_items
-        session_state["pending_required_media_updated_at"] = datetime.now().isoformat()
+        agent_media.remove_pending_required_media(self, session_state, media_item)
 
     def _pending_media_key(self, media_item: Dict[str, Any]) -> str:
-        media_type = str((media_item or {}).get("type", "") or "")
-        if media_type == "address_image":
-            return f"address_image:{str((media_item or {}).get('target_store', '') or '')}"
-        if media_type == "contact_image":
-            return "contact_image"
-        return f"{media_type}:{str((media_item or {}).get('path', '') or '')}"
+        return agent_media.pending_media_key(self, media_item)
 
     def summarize_user_media_from_logs(self, user_id_hash: str) -> Dict[str, Any]:
-        summary = {
-            "address_image_sent_count": 0,
-            "contact_image_sent_count": 0,
-            "address_image_last_sent_at_by_store": {},
-            "sent_address_stores": [],
-            "contact_image_last_sent_at": "",
-            "contact_image_sent_paths": [],
-            "last_target_store": "",
-        }
-        if not user_id_hash:
-            return summary
-
-        address_ts_map: Dict[str, datetime] = {}
-        sent_address_stores: set[str] = set()
-        last_target_store = ""
-        last_target_store_ts: Optional[datetime] = None
-        contact_last_ts: Optional[datetime] = None
-        contact_sent_paths: List[str] = []
-
-        for log_path in self.conversation_log_dir.glob("*.jsonl"):
-            records = self._scan_session_media_records(log_path=log_path, user_id_hash=user_id_hash)
-            for rec in records:
-                media_type = rec.get("type", "")
-                ts = self._parse_iso(str(rec.get("timestamp", "") or ""))
-                if media_type == "address_image":
-                    summary["address_image_sent_count"] += 1
-                    target_store = str(rec.get("target_store", "") or "")
-                    if target_store:
-                        sent_address_stores.add(target_store)
-                        if ts and (target_store not in address_ts_map or ts > address_ts_map[target_store]):
-                            address_ts_map[target_store] = ts
-                        if ts and (not last_target_store_ts or ts > last_target_store_ts):
-                            last_target_store = target_store
-                            last_target_store_ts = ts
-                        elif not ts and not last_target_store:
-                            last_target_store = target_store
-                elif media_type == "contact_image":
-                    summary["contact_image_sent_count"] += 1
-                    media_path = str(rec.get("path", "") or "").strip()
-                    if media_path and media_path not in contact_sent_paths:
-                        contact_sent_paths.append(media_path)
-                    if ts and (not contact_last_ts or ts > contact_last_ts):
-                        contact_last_ts = ts
-
-        summary["sent_address_stores"] = sorted(sent_address_stores)
-        summary["last_target_store"] = last_target_store
-        summary["address_image_last_sent_at_by_store"] = {
-            store: dt.isoformat() for store, dt in address_ts_map.items()
-        }
-        if contact_last_ts:
-            summary["contact_image_last_sent_at"] = contact_last_ts.isoformat()
-        summary["contact_image_sent_paths"] = contact_sent_paths
-        return summary
+        return agent_media.summarize_user_media_from_logs(self, user_id_hash)
 
     def _store_recommend_display_name(self, target_store: str, fallback_name: str = "") -> str:
-        if target_store == "beijing_chaoyang":
-            return "北京朝阳店"
-        return str(fallback_name or "门店")
+        return agent_media.store_recommend_display_name(self, target_store, fallback_name)
 
     def summarize_user_turns_from_logs(self, user_id_hash: str) -> Dict[str, int]:
-        summary = {
-            "event_count": 0,
-            "user_message_count": 0,
-            "assistant_reply_count": 0,
-        }
-        if not user_id_hash:
-            return summary
-
-        for log_path in self.conversation_log_dir.glob("*.jsonl"):
-            try:
-                for raw_line in log_path.read_text(encoding="utf-8").splitlines():
-                    line = raw_line.strip()
-                    if not line:
-                        continue
-                    try:
-                        record = json.loads(line)
-                    except Exception:
-                        continue
-                    if not isinstance(record, dict):
-                        continue
-                    if str(record.get("user_id_hash", "") or "") != user_id_hash:
-                        continue
-                    summary["event_count"] += 1
-                    event_type = str(record.get("event_type", "") or "")
-                    if event_type == "user_message":
-                        summary["user_message_count"] += 1
-                    elif event_type == "assistant_reply":
-                        summary["assistant_reply_count"] += 1
-            except Exception:
-                continue
-        return summary
+        return agent_media.summarize_user_turns_from_logs(self, user_id_hash)
 
     def is_user_first_turn_global(self, user_id_hash: str) -> bool:
-        turns = self.summarize_user_turns_from_logs(user_id_hash=user_id_hash)
-        return int(turns.get("event_count", 0) or 0) == 0
+        return agent_media.is_user_first_turn_global(self, user_id_hash)
 
     def build_first_turn_video_items(self, session_id: str) -> List[Dict[str, Any]]:
-        """为首轮固定承接生成视频计划，不触发规则/知识库/LLM决策。"""
-        if self.reply_mode == REPLY_MODE_LLM_DIRECT:
-            return []
-        session_video = self.summarize_session_video_from_log(session_id=session_id)
-        if session_video.get("first_reply_video_sent"):
-            return []
-        video_item = self._build_video_media_item(trigger_source="first_reply")
-        if not video_item:
-            return []
-        video_item["first_turn_media"] = True
-        return [video_item]
+        return agent_media.build_first_turn_video_items(self, session_id)
 
     def _populate_first_turn_media_plan(
         self,
@@ -3480,312 +3042,43 @@ class CustomerServiceAgent:
         user_name: str,
         decision: AgentDecision,
     ) -> None:
-        del user_name
-        if self.reply_mode == REPLY_MODE_LLM_DIRECT:
-            decision.first_turn_image_items = []
-            decision.first_turn_video_items = []
-            decision.first_turn_text_required = False
-            decision.first_turn_retry_policy = {}
-            return
-        decision.first_turn_image_items = []
-        decision.first_turn_video_items = []
-        decision.first_turn_text_required = bool(decision.is_first_turn_global)
-        decision.first_turn_retry_policy = {}
-
-        if not decision.is_first_turn_global:
-            return
-
-        image_items = [
-            dict(item)
-            for item in (decision.media_items or [])
-            if isinstance(item, dict) and str(item.get("type", "") or "") in ("address_image", "contact_image")
-        ]
-        for item in image_items:
-            item["disable_compensation"] = True
-            item["first_turn_media"] = True
-
-        video_items: List[Dict[str, Any]] = []
-        # 只要是全局首轮，就优先挂上首轮视频，避免普通问候场景因未命中图片或开关关闭而跳过。
-        should_attach_first_reply_video = bool(decision.is_first_turn_global)
-        if should_attach_first_reply_video:
-            session_video = self.summarize_session_video_from_log(session_id=session_id)
-            if not session_video.get("first_reply_video_sent"):
-                video_item = self._build_video_media_item(trigger_source="first_reply")
-                if video_item:
-                    video_item["first_turn_media"] = True
-                    video_items.append(video_item)
-
-        decision.first_turn_image_items = image_items
-        decision.first_turn_video_items = video_items
-        decision.first_turn_retry_policy = {
-            "image_retry_once_deferred": True,
-            "video_retry_once_inline": True,
-        }
+        agent_media.populate_first_turn_media_plan(self, session_id, user_name, decision)
 
     def summarize_session_video_from_log(self, session_id: str) -> Dict[str, Any]:
-        summary = {
-            "contact_sent": False,
-            "first_reply_video_sent": False,
-            "contact_followup_video_sent": False,
-            "assistant_reply_count_after_contact": 0,
-            "user_message_count_after_contact": 0,
-        }
-        lines = self._read_session_log_records(session_id)
-        if not lines:
-            return summary
-
-        latest_contact_idx = -1
-        for idx, record in enumerate(lines):
-            if not isinstance(record, dict):
-                continue
-            if str(record.get("event_type", "") or "") != "media_result":
-                continue
-            payload = record.get("payload", {})
-            if not isinstance(payload, dict):
-                continue
-            if str(payload.get("type", "") or "") == "contact_image" and bool(payload.get("success")):
-                latest_contact_idx = idx
-
-        if latest_contact_idx < 0:
-            return summary
-        summary["contact_sent"] = True
-
-        reply_count = 0
-        user_count = 0
-        for idx in range(latest_contact_idx + 1, len(lines)):
-            record = lines[idx]
-            if not isinstance(record, dict):
-                continue
-            event_type = str(record.get("event_type", "") or "")
-            payload = record.get("payload", {})
-            if not isinstance(payload, dict):
-                payload = {}
-
-            if event_type == "media_result":
-                if str(payload.get("type", "") or "") == "delayed_video" and bool(payload.get("success")):
-                    trigger_source = str(payload.get("trigger_source", "") or "contact_followup")
-                    if trigger_source == "first_reply":
-                        summary["first_reply_video_sent"] = True
-                    elif trigger_source == "contact_followup":
-                        summary["contact_followup_video_sent"] = True
-            elif event_type == "user_message":
-                user_count += 1
-            elif event_type == "assistant_reply":
-                sent_types = payload.get("round_media_sent_types", [])
-                if isinstance(sent_types, list) and "contact_image" in sent_types:
-                    continue
-                reply_count += 1
-
-        summary["assistant_reply_count_after_contact"] = reply_count
-        summary["user_message_count_after_contact"] = user_count
-        return summary
+        return agent_media.summarize_session_video_from_log(self, session_id)
 
     def _build_video_media_item(self, trigger_source: str) -> Optional[Dict[str, Any]]:
-        video_path = self._pick_video_media()
-        if not video_path:
-            return None
-        return {
-            "type": "delayed_video",
-            "path": video_path,
-            "trigger_source": str(trigger_source or ""),
-        }
+        return agent_media.build_video_media_item(self, trigger_source)
 
     def _read_session_log_records(self, session_id: str) -> List[Dict[str, Any]]:
-        records: List[Dict[str, Any]] = []
-        for log_path in self._session_log_candidates(session_id):
-            try:
-                for raw_line in log_path.read_text(encoding="utf-8").splitlines():
-                    line = raw_line.strip()
-                    if not line:
-                        continue
-                    record = json.loads(line)
-                    if not isinstance(record, dict):
-                        continue
-                    if str(record.get("session_id", "") or "") != session_id:
-                        continue
-                    records.append(record)
-            except Exception:
-                continue
-        return records
+        return agent_media.read_session_log_records(self, session_id)
 
     def _scan_session_media_records(self, log_path: Path, user_id_hash: str) -> List[Dict[str, Any]]:
-        records: List[Dict[str, Any]] = []
-        pending_attempts: Dict[str, List[Dict[str, Any]]] = {
-            "address_image": [],
-            "contact_image": [],
-            "delayed_video": [],
-        }
-        try:
-            for raw_line in log_path.read_text(encoding="utf-8").splitlines():
-                line = raw_line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except Exception:
-                    continue
-                if not isinstance(record, dict):
-                    continue
-                if str(record.get("user_id_hash", "") or "") != user_id_hash:
-                    continue
-                event_type = str(record.get("event_type", "") or "")
-                payload = record.get("payload", {})
-                if not isinstance(payload, dict):
-                    payload = {}
-
-                if event_type == "media_attempt":
-                    media_type = str(payload.get("type", "") or "")
-                    if media_type in pending_attempts:
-                        pending_attempts[media_type].append(payload)
-                    continue
-
-                if event_type != "media_result":
-                    continue
-
-                media_type = str(payload.get("type", "") or "")
-                if media_type not in pending_attempts:
-                    continue
-                if not bool(payload.get("success")):
-                    queue = pending_attempts.get(media_type, [])
-                    if queue:
-                        queue.pop(0)
-                    continue
-
-                attempt_payload = {}
-                queue = pending_attempts.get(media_type, [])
-                if queue:
-                    attempt_payload = queue.pop(0)
-
-                path = str((attempt_payload or {}).get("path", "") or "")
-                target_store = str((attempt_payload or {}).get("target_store", "") or "").strip()
-                if media_type == "address_image" and not target_store:
-                    target_store = self._infer_store_from_image_path(path)
-
-                records.append(
-                    {
-                        "type": media_type,
-                        "timestamp": str(record.get("timestamp", "") or ""),
-                        "path": path,
-                        "target_store": target_store,
-                        "store_name": str((attempt_payload or {}).get("store_name", "") or ""),
-                        "store_address": str((attempt_payload or {}).get("store_address", "") or ""),
-                        "detected_region": str((attempt_payload or {}).get("detected_region", "") or ""),
-                        "route_reason": str((attempt_payload or {}).get("route_reason", "") or ""),
-                    }
-                )
-        except Exception:
-            return records
-        return records
+        return agent_media.scan_session_media_records(self, log_path, user_id_hash)
 
     def _session_log_file(self, session_id: str) -> Path:
-        candidates = self._session_log_candidates(session_id)
-        if candidates:
-            return candidates[0]
-        safe = re.sub(r"[^0-9A-Za-z_\-]", "_", session_id or "unknown")
-        return self.conversation_log_dir / f"{safe}.jsonl"
+        return agent_media.session_log_file(self, session_id)
 
     def _session_log_candidates(self, session_id: str) -> List[Path]:
-        safe = re.sub(r"[^0-9A-Za-z_\-]", "_", session_id or "unknown")
-        legacy_path = self.conversation_log_dir / f"{safe}.jsonl"
-        results: List[Path] = []
-        if legacy_path.exists():
-            results.append(legacy_path)
-
-        for log_path in sorted(self.conversation_log_dir.glob("*.jsonl")):
-            if log_path == legacy_path:
-                continue
-            try:
-                for raw_line in log_path.read_text(encoding="utf-8").splitlines():
-                    line = raw_line.strip()
-                    if not line:
-                        continue
-                    record = json.loads(line)
-                    if not isinstance(record, dict):
-                        continue
-                    if str(record.get("session_id", "") or "") == session_id:
-                        results.append(log_path)
-                        break
-            except Exception:
-                continue
-        return results
+        return agent_media.session_log_candidates(self, session_id)
 
     def _infer_store_from_image_path(self, media_path: str) -> str:
-        name = Path(str(media_path or "")).name
-        return self._infer_store_from_name(name)
+        return agent_media.infer_store_from_image_path(self, media_path)
 
     def _infer_store_from_name(self, name: str) -> str:
-        raw = str(name or "")
-        if not raw:
-            return ""
-        if "北京" in raw:
-            return "beijing_chaoyang"
-        if "徐汇" in raw or "徐家汇" in raw:
-            return "sh_xuhui"
-        if "静安" in raw:
-            return "sh_jingan"
-        if "虹口" in raw:
-            return "sh_hongkou"
-        if "五角场" in raw or "杨浦" in raw:
-            return "sh_wujiaochang"
-        if any(k in raw for k in ("人广", "人民广场", "黄浦", "黄埔")):
-            return "sh_renmin"
-        return ""
+        return agent_media.infer_store_from_name(self, name)
 
     def _pick_address_image(self, target_store: str) -> Optional[str]:
-        pool = self._address_index.get(target_store, [])
-        if not pool and target_store.startswith("sh_"):
-            pool = self._address_index.get("sh_renmin", [])
-        if not pool and target_store == "beijing_chaoyang":
-            pool = self._address_index.get("beijing_chaoyang", [])
-        if not pool:
-            return None
-        return random.choice(pool)
+        return agent_media.pick_address_image(self, target_store)
 
     def _pick_video_media(self) -> Optional[str]:
-        if self._video_medias:
-            return random.choice(self._video_medias)
-        # 视频实际发送已统一走页面素材库；没有本地视频文件时，仍允许触发 delayed_video。
-        return MATERIAL_LIBRARY_VIDEO_SENTINEL
+        return agent_media.pick_video_media(self)
 
     def summarize_recent_assistant_hashes_from_logs(self, user_id_hash: str, limit: int = 40) -> set[str]:
-        if not user_id_hash:
-            return set()
-        entries: List[Tuple[Optional[datetime], str]] = []
-        for log_path in sorted(self.conversation_log_dir.glob("*.jsonl")):
-            try:
-                for raw_line in log_path.read_text(encoding="utf-8").splitlines():
-                    line = raw_line.strip()
-                    if not line:
-                        continue
-                    try:
-                        record = json.loads(line)
-                    except Exception:
-                        continue
-                    if not isinstance(record, dict):
-                        continue
-                    if str(record.get("user_id_hash", "") or "") != user_id_hash:
-                        continue
-                    if str(record.get("event_type", "") or "") != "assistant_reply":
-                        continue
-                    payload = record.get("payload", {})
-                    if not isinstance(payload, dict):
-                        continue
-                    text = str(payload.get("text", "") or "").strip()
-                    if not text:
-                        continue
-                    norm = self._normalize_for_dedupe(text)
-                    if not norm:
-                        continue
-                    ts = self._parse_iso(str(record.get("timestamp", "") or ""))
-                    entries.append((ts, norm))
-            except Exception:
-                continue
-        entries.sort(key=lambda item: (item[0] is None, item[0] or datetime.min))
-        tail = entries[-max(1, int(limit or 1)) :]
-        return {norm for _, norm in tail}
+        return agent_media.summarize_recent_assistant_hashes_from_logs(self, user_id_hash, limit=limit)
 
     def _is_media_whitelist_session(self, session_id: str) -> bool:
-        return session_id in self._media_whitelist_sessions
+        return agent_media.is_media_whitelist_session(self, session_id)
 
     def _build_general_llm_prompt(self, latest_user_text: str) -> Tuple[str, Dict[str, Any]]:
         return build_general_llm_prompt(self, latest_user_text)
