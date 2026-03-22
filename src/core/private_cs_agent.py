@@ -17,6 +17,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..data.memory_store import MemoryStore
 from . import agent_media
+from . import agent_llm_reply
+from . import agent_rule_engine
 from .agent_guardrails import apply_llm_reply_guardrails, normalize_reply_text
 from .agent_prompt_builder import build_general_llm_prompt, summarize_llm_conversation_state
 from .agent_types import AgentDecision, MediaJudgeDecision, _SafeDict
@@ -1047,35 +1049,7 @@ class CustomerServiceAgent:
         }
 
     def _detect_intent(self, text: str) -> str:
-        # 特殊处理1：如果包含售后关键词（清洗、保养等），优先识别为售后问题
-        aftercare_keywords = ("清洗", "售后", "保养", "打理", "维护", "怎么洗", "如何洗", "自己洗", "不会洗", "洗发", "护理")
-        if any(k in (text or "") for k in aftercare_keywords):
-            return "general"  # 让它走通用流程，匹配清洗相关的知识库
-
-        # 特殊处理2：如果包含"不在XX地"+"到店"等模糊问题，走LLM
-        # 考虑各种表达：不在上海、不在北京、在异地、外地、不在本地等
-        remote_location_keywords = ("不在上海", "不是上海", "不去上海", "不在北京", "不是北京", "不去北京",
-                                   "在异地", "在外地", "不在本地", "外地的", "异地的", "没办法到店", "无法到店", "不能到店")
-        ambiguous_keywords = ("怎么办", "如何", "怎么做", "怎么弄")
-        if any(k in (text or "") for k in remote_location_keywords) and any(k in (text or "") for k in ambiguous_keywords):
-            # 如果同时包含售后关键词，优先走售后
-            if any(k in (text or "") for k in aftercare_keywords):
-                return "general"
-            # 否则也走general，让系统根据上下文判断
-            return "general"
-
-        if self._looks_like_direct_contact_request(text):
-            return "contact"
-
-        if self.knowledge_service.is_shanghai_route_alias_address_candidate(text):
-            return "address"
-        if self.knowledge_service.is_address_query(text):
-            return "address"
-        if self.knowledge_service.is_purchase_intent(text):
-            return "purchase"
-        if any(k in (text or "") for k in CONTACT_INTENT_KEYWORDS):
-            return "contact"
-        return "general"
+        return agent_rule_engine.detect_intent(self, text)
 
     def _looks_like_direct_contact_request(self, text: str) -> bool:
         normalized = re.sub(r"\s+", "", str(text or "")).lower()
@@ -1216,21 +1190,10 @@ class CustomerServiceAgent:
         return any(keyword in normalized_text for keyword in ADDRESS_FOLLOWUP_BLOCK_KEYWORDS)
 
     def _is_ambiguous_short_fragment(self, text: str, intent: str, route: Dict[str, Any]) -> bool:
-        normalized = re.sub(r"\s+", "", str(text or ""))
-        if not normalized or len(normalized) > 2:
-            return False
-        if intent != "general":
-            return False
-        if str(route.get("reason", "unknown") or "unknown") != "unknown":
-            return False
-        ambiguous_tokens = {"址", "店", "路", "位", "地址", "位置"}
-        return normalized in ambiguous_tokens
+        return agent_rule_engine.is_ambiguous_short_fragment(self, text, intent, route)
 
     def _looks_like_phone_submission(self, text: str) -> bool:
-        normalized = re.sub(r"[^\d]", "", str(text or ""))
-        if not normalized:
-            return False
-        return bool(re.fullmatch(r"1[3-9]\d{9}", normalized))
+        return agent_rule_engine.looks_like_phone_submission(self, text)
 
     def _should_apply_rule_decision(
         self,
@@ -1239,76 +1202,16 @@ class CustomerServiceAgent:
         route: Dict[str, Any],
         session_state: Dict[str, Any],
     ) -> bool:
-        # 如果包含售后关键词，不走规则决策，让它走知识库或LLM
-        aftercare_keywords = ("清洗", "售后", "保养", "打理", "维护", "怎么洗", "如何洗", "自己洗", "不会洗", "洗发", "护理")
-        if any(k in (text or "") for k in aftercare_keywords):
-            return False
-
-        route_type = route.get("route_type", "unknown")
-        target_store = route.get("target_store", "unknown")
-
-        will_send_address_image = (
-            route_type in ("coverage", "non_coverage", "need_district", "need_clarify") or
-            intent == "address"
-        )
-
-        if intent == "address":
-            session_target_store = str(session_state.get("last_target_store", "") or "")
-            sent_stores = set(session_state.get("sent_address_stores", []) or [])
-            text_reply_count_by_store = dict(session_state.get("address_text_reply_count_by_store", {}) or {})
-            contact_reply_count_by_store = dict(session_state.get("address_contact_reply_count_by_store", {}) or {})
-            if (
-                target_store == "unknown"
-                and session_target_store
-                and session_target_store != "unknown"
-                and session_target_store in sent_stores
-                and int(text_reply_count_by_store.get(session_target_store, 0) or 0) >= 1
-                and int(contact_reply_count_by_store.get(session_target_store, 0) or 0) >= 1
-            ):
-                # 已经给过一次真实文字地址和一次联系方式兜底后，后续泛地址追问直接走 LLM，避免继续追问地区。
-                return False
-
-        # 原有的规则决策逻辑
-        if route_type in ("coverage", "non_coverage", "need_district", "need_clarify"):
-            return True
-        if intent in ("address", "purchase"):
-            return True
-        if bool(session_state.get("last_geo_pending", False)) and self._looks_like_geo_reply(text=text, route=route):
-            return True
-        return False
+        return agent_rule_engine.should_apply_rule_decision(self, text, intent, route, session_state)
 
     def _looks_like_geo_reply(self, text: str, route: Dict[str, Any]) -> bool:
-        reason = route.get("reason", "unknown")
-        if reason != "unknown":
-            return True
-
-        normalized = re.sub(r"[^\u4e00-\u9fa5A-Za-z0-9]", "", (text or ""))
-        if not normalized:
-            return False
-
-        geo_tokens = (
-            "北京", "上海", "徐汇", "徐家汇", "静安", "虹口", "杨浦", "五角场", "人广", "人民广场",
-            "河北", "石家庄", "天津", "内蒙古", "江苏", "浙江", "苏州", "杭州", "东北", "省", "市", "区", "县", "州", "盟", "旗"
-        )
-        return any(token in normalized for token in geo_tokens)
+        return agent_rule_engine.looks_like_geo_reply(self, text, route)
 
     def _is_remote_geo_followup_reply(self, text: str) -> bool:
-        normalized = re.sub(r"\s+", "", str(text or ""))
-        if not normalized:
-            return False
-        return "外地" in normalized
+        return agent_rule_engine.is_remote_geo_followup_reply(self, text)
 
     def _should_force_out_of_coverage_from_geo_followup(self, text: str, session_state: Dict[str, Any]) -> bool:
-        if not bool(session_state.get("last_geo_pending", False)):
-            return False
-        if not self._is_remote_geo_followup_reply(text):
-            return False
-        normalized = re.sub(r"\s+", "", str(text or ""))
-        last_geo_route_reason = str(session_state.get("last_geo_route_reason", "") or "")
-        if last_geo_route_reason in ("need_district", "shanghai_need_district"):
-            if any(keyword in normalized for keyword in SHANGHAI_ROUTE_HELP_KEYWORDS):
-                return False
-        return True
+        return agent_rule_engine.should_force_out_of_coverage_from_geo_followup(self, text, session_state)
 
     def _build_address_text_after_image_decision(
         self,
@@ -1317,40 +1220,7 @@ class CustomerServiceAgent:
         intent: str,
         session_state: Dict[str, Any],
     ) -> Optional[AgentDecision]:
-        if intent != "address" and not self.knowledge_service.is_shanghai_route_alias_address_candidate(latest_user_text):
-            return None
-        if not self._should_continue_address_followup(latest_user_text=latest_user_text, session_state=session_state):
-            return None
-
-        target_store = str(route.get("target_store", "") or "")
-        if not target_store or target_store == "unknown":
-            target_store = str(session_state.get("last_target_store", "") or "")
-        if not target_store or target_store == "unknown":
-            return None
-
-        sent_stores = set(session_state.get("sent_address_stores", []) or [])
-        last_target_store = str(session_state.get("last_target_store", "") or "")
-        has_sent_address = int(session_state.get("address_image_sent_count", 0) or 0) > 0
-        if target_store not in sent_stores and not (has_sent_address and last_target_store == target_store):
-            return None
-
-        text_reply_count_by_store = dict(session_state.get("address_text_reply_count_by_store", {}) or {})
-        if int(text_reply_count_by_store.get(target_store, 0) or 0) >= 1:
-            return None
-
-        store = self.knowledge_service.get_store_display(target_store)
-        store_name = str(store.get("store_name", "") or "门店")
-
-        return AgentDecision(
-            reply_text=self._normalize_reply_text(f"姐姐，{store_name}位置可以看图中圈圈的位置哦"),
-            intent="address",
-            route_reason=str(route.get("reason", "unknown") or "unknown"),
-            reply_goal="解答",
-            media_plan="address_image",
-            reply_source="rule",
-            rule_id="ADDR_TEXT_AFTER_IMAGE",
-            rule_applied=True,
-        )
+        return agent_rule_engine.build_address_text_after_image_decision(self, latest_user_text, route, intent, session_state)
 
     def _build_address_contact_after_text_decision(
         self,
@@ -1359,119 +1229,13 @@ class CustomerServiceAgent:
         intent: str,
         session_state: Dict[str, Any],
     ) -> Optional[AgentDecision]:
-        if intent != "address" and not self.knowledge_service.is_shanghai_route_alias_address_candidate(latest_user_text):
-            return None
-        if not self._should_continue_address_followup(latest_user_text=latest_user_text, session_state=session_state):
-            return None
-
-        target_store = str(route.get("target_store", "") or "")
-        if not target_store or target_store == "unknown":
-            target_store = str(session_state.get("last_target_store", "") or "")
-        if not target_store or target_store == "unknown":
-            return None
-
-        sent_stores = set(session_state.get("sent_address_stores", []) or [])
-        last_target_store = str(session_state.get("last_target_store", "") or "")
-        has_sent_address = int(session_state.get("address_image_sent_count", 0) or 0) > 0
-        if target_store not in sent_stores and not (has_sent_address and last_target_store == target_store):
-            return None
-
-        text_reply_count_by_store = dict(session_state.get("address_text_reply_count_by_store", {}) or {})
-        if int(text_reply_count_by_store.get(target_store, 0) or 0) < 1:
-            return None
-
-        contact_reply_count_by_store = dict(session_state.get("address_contact_reply_count_by_store", {}) or {})
-        if int(contact_reply_count_by_store.get(target_store, 0) or 0) >= 1:
-            return None
-
-        return AgentDecision(
-            reply_text=ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK,
-            intent="address",
-            route_reason=str(route.get("reason", "unknown") or "unknown"),
-            reply_goal="解答",
-            media_plan="none",
-            reply_source="rule",
-            rule_id="ADDR_CONTACT_AFTER_TEXT",
-            rule_applied=True,
-        )
+        return agent_rule_engine.build_address_contact_after_text_decision(self, latest_user_text, route, intent, session_state)
 
     def _should_continue_address_followup(self, latest_user_text: str, session_state: Dict[str, Any]) -> bool:
-        normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
-        if not normalized:
-            return False
-
-        if self.knowledge_service.is_shanghai_route_alias_address_candidate(normalized):
-            has_sent_address = int(session_state.get("address_image_sent_count", 0) or 0) > 0
-            has_target_store = str(session_state.get("last_target_store", "") or "").strip() not in ("", "unknown")
-            if has_sent_address and has_target_store:
-                return True
-
-        if any(keyword in normalized for keyword in ADDRESS_FOLLOWUP_PRIORITY_KEYWORDS):
-            return True
-
-        if any(keyword in normalized for keyword in ADDRESS_FOLLOWUP_BLOCK_KEYWORDS):
-            return False
-
-        if any(keyword in normalized for keyword in ADDRESS_FOLLOWUP_EXPLICIT_KEYWORDS):
-            return True
-
-        if any(keyword in normalized for keyword in ADDRESS_FOLLOWUP_RESIDUAL_KEYWORDS):
-            has_sent_address = int(session_state.get("address_image_sent_count", 0) or 0) > 0
-            has_target_store = str(session_state.get("last_target_store", "") or "").strip() not in ("", "unknown")
-            return has_sent_address and has_target_store
-
-        return False
+        return agent_rule_engine.should_continue_address_followup(self, latest_user_text, session_state)
 
     def _resolve_geo_context(self, route: Dict[str, Any], session_state: Dict[str, Any]) -> Dict[str, Any]:
-        target_store = route.get("target_store", "unknown")
-        detected_region = route.get("detected_region", "") or ""
-        if target_store and target_store != "unknown":
-            return {
-                "known": True,
-                "source": "route_target_store",
-                "target_store": target_store,
-                "region": detected_region,
-            }
-        if detected_region:
-            return {
-                "known": True,
-                "source": "route_detected_region",
-                "target_store": session_state.get("last_target_store", ""),
-                "region": detected_region,
-            }
-
-        last_target_store = session_state.get("last_target_store", "")
-        if last_target_store and last_target_store != "unknown":
-            return {
-                "known": True,
-                "source": "session_last_target_store",
-                "target_store": last_target_store,
-                "region": session_state.get("last_detected_region", ""),
-            }
-
-        last_region = session_state.get("last_detected_region", "")
-        if last_region:
-            return {
-                "known": True,
-                "source": "session_last_detected_region",
-                "target_store": "",
-                "region": last_region,
-            }
-
-        if int(session_state.get("address_image_sent_count", 0) or 0) > 0:
-            return {
-                "known": True,
-                "source": "session_address_image_history",
-                "target_store": "",
-                "region": "",
-            }
-
-        return {
-            "known": False,
-            "source": "",
-            "target_store": "",
-            "region": "",
-        }
+        return agent_rule_engine.resolve_geo_context(self, route, session_state)
 
     def _decide_rule_reply(
         self,
@@ -1483,344 +1247,25 @@ class CustomerServiceAgent:
         user_state: Dict[str, Any],
         is_first_turn_global: bool = False,
     ) -> AgentDecision:
-        reason = route.get("reason", "unknown")
-        target_store = route.get("target_store", "unknown")
-        geo_context = self._resolve_geo_context(route, session_state)
-        both_images_sent = self._has_both_images_sent(session_state)
-        neg_shanghai_hint = self._has_neg_shanghai_hint(text)
-
-        if is_first_turn_global and intent == "purchase" and reason in ("unknown", "need_region"):
-            return self._build_geo_followup_decision(session_state=session_state, route_reason="need_region", intent="purchase")
-
-        if reason == "shanghai_need_arrival_point":
-            session_state["last_geo_pending"] = True
-            session_state["last_geo_route_reason"] = "need_arrival_point"
-            return AgentDecision(
-                reply_text=self._render_template("ask_sh_arrival_point"),
-                intent="address",
-                route_reason="need_arrival_point",
-                reply_goal="追问地区",
-                media_plan="none",
-                reply_source="rule",
-                rule_id="ADDR_ASK_ARRIVAL_POINT",
-                rule_applied=True,
-                geo_context_source=geo_context.get("source", ""),
-            )
-
-        if reason == "shanghai_need_district":
-            return self._build_geo_followup_decision(session_state=session_state, route_reason="need_district", intent="address")
-
-        if reason == "sh_route_need_clarify":
-            session_state["last_geo_pending"] = True
-            session_state["last_geo_route_reason"] = "need_clarify"
-            return AgentDecision(
-                reply_text=self._render_template("ask_sh_route_clarify"),
-                intent="address",
-                route_reason="need_clarify",
-                reply_goal="追问地区",
-                media_plan="none",
-                reply_source="rule",
-                rule_id="ADDR_SH_ROUTE_NEED_CLARIFY",
-                rule_applied=True,
-                geo_context_source=geo_context.get("source", ""),
-            )
-
-        # “不在上海怎么买”优先走远程联系方式逻辑，避免被历史上海门店上下文误导。
-        if (
-            intent == "purchase"
-            and neg_shanghai_hint
-            and geo_context.get("known")
-            and not (reason == "out_of_coverage" and route.get("detected_region"))
-        ):
-            session_state["last_geo_pending"] = False
-            session_state["geo_followup_round"] = 0
-            session_state["geo_choice_offered"] = False
-            if self._is_contact_image_sent_for_current_geo(session_state):
-                return AgentDecision(
-                    reply_text=self._render_template("purchase_contact_remote_remind_only"),
-                    intent="purchase",
-                    route_reason="not_in_shanghai_remote",
-                    reply_goal="推进购买意图",
-                    media_plan="none",
-                    reply_source="rule",
-                    rule_id="PURCHASE_REMOTE_CONTACT_REMIND_ONLY",
-                    rule_applied=True,
-                    geo_context_source=geo_context.get("source", ""),
-                )
-            return AgentDecision(
-                reply_text=self._render_template("purchase_contact_intro"),
-                intent="purchase",
-                route_reason="not_in_shanghai_remote",
-                reply_goal="推进购买意图",
-                media_plan="contact_image",
-                reply_source="rule",
-                rule_id="PURCHASE_REMOTE_CONTACT_IMAGE",
-                rule_applied=True,
-                geo_context_source=geo_context.get("source", ""),
-            )
-
-        if reason == "out_of_coverage":
-            if self._should_recover_to_shanghai_arrival_help(text, session_state):
-                session_state["last_geo_pending"] = True
-                session_state["last_geo_route_reason"] = "need_arrival_point"
-                return AgentDecision(
-                    reply_text=self._render_template("ask_sh_arrival_point"),
-                    intent="address",
-                    route_reason="need_arrival_point",
-                    reply_goal="追问地区",
-                    media_plan="none",
-                    reply_source="rule",
-                    rule_id="ADDR_ASK_ARRIVAL_POINT",
-                    rule_applied=True,
-                    geo_context_source=geo_context.get("source", ""),
-                )
-            region = route.get("detected_region") or route_region(reason, text) or session_state.get("last_detected_region", "") or "您所在地区"
-            session_state["last_geo_pending"] = False
-            session_state["geo_followup_round"] = 0
-            session_state["geo_choice_offered"] = False
-            session_state["last_geo_route_reason"] = ""
-
-            # 如果已经发送过联系方式图片，只用固定话术提醒
-            if self._is_contact_image_sent_for_current_geo(session_state):
-                return AgentDecision(
-                    reply_text="姐姐，请往上滑看图中画框框的地方找我～♥️",
-                    intent="purchase" if intent == "purchase" else "address",
-                    route_reason="out_of_coverage",
-                    reply_goal="推进购买意图",
-                    media_plan="none",
-                    reply_source="rule",
-                    rule_id="ADDR_OUT_OF_COVERAGE_REMIND_ONLY",
-                    rule_applied=True,
-                    geo_context_source=geo_context.get("source", ""),
-                )
-
-            return AgentDecision(
-                reply_text=self._render_template("non_coverage_contact", region=region),
-                intent="purchase" if intent == "purchase" else "address",
-                route_reason="out_of_coverage",
-                reply_goal="推进购买意图",
-                media_plan="contact_image",
-                reply_source="rule",
-                rule_id="ADDR_OUT_OF_COVERAGE",
-                rule_applied=True,
-                geo_context_source=geo_context.get("source", ""),
-            )
-
-        # 北方（天津/河北/内蒙古）默认走北京门店地址导向；
-        # 若已发过联系方式图，则优先固定“画圈”提醒，避免偏航到包邮话术。
-        if reason == "north_fallback_beijing" and intent in ("purchase", "address"):
-            session_state["last_geo_pending"] = False
-            session_state["geo_followup_round"] = 0
-            session_state["geo_choice_offered"] = False
-            if self._is_contact_image_sent_for_current_geo(session_state):
-                return AgentDecision(
-                    reply_text=self._render_template("purchase_contact_remote_remind_only"),
-                    intent="purchase",
-                    route_reason=reason,
-                    reply_goal="推进购买意图",
-                    media_plan="none",
-                    reply_source="rule",
-                    rule_id="PURCHASE_REMOTE_CONTACT_REMIND_ONLY",
-                    rule_applied=True,
-                    geo_context_source=geo_context.get("source", ""),
-                )
-
-            store = self.knowledge_service.get_store_display("beijing_chaoyang")
-            store_name = self._store_recommend_display_name(
-                "beijing_chaoyang",
-                store.get("store_name", "北京朝阳门店"),
-            )
-            return AgentDecision(
-                reply_text=self._render_template("store_recommend", store_name=store_name),
-                intent="address",
-                route_reason=reason,
-                reply_goal="解答",
-                media_plan="address_image",
-                reply_source="rule",
-                rule_id="ADDR_STORE_RECOMMEND",
-                rule_applied=True,
-                geo_context_source=geo_context.get("source", ""),
-            )
-
-        if intent == "purchase" and reason != "shanghai_need_district" and geo_context.get("known") and both_images_sent:
-            strong_count = int(session_state.get("strong_intent_after_both_count", 0) or 0)
-            session_state["strong_intent_after_both_count"] = strong_count + 1
-            hint_sent = bool(session_state.get("purchase_both_first_hint_sent", False))
-            if not hint_sent:
-                session_state["purchase_both_first_hint_sent"] = True
-                return AgentDecision(
-                    reply_text=self._render_template("strong_intent_after_both_first"),
-                    intent="purchase",
-                    route_reason=reason if reason != "unknown" else "both_images_lock",
-                    reply_goal="推进购买意图",
-                    media_plan="none",
-                    reply_source="rule",
-                    rule_id="PURCHASE_AFTER_BOTH_FIRST_HINT",
-                    rule_applied=True,
-                    geo_context_source=geo_context.get("source", ""),
-                    both_images_sent_state=True,
-                    purchase_both_first_hint_sent=True,
-                )
-
-            follow_decision = self._decide_general_reply(
-                latest_user_text=text,
-                intent=intent,
-                route=route,
-                conversation_history=conversation_history,
-                session_state=session_state,
-                user_state=user_state,
-            )
-            follow_decision.media_plan = "none"
-            follow_decision.geo_context_source = geo_context.get("source", "")
-            follow_decision.both_images_sent_state = True
-            follow_decision.purchase_both_first_hint_sent = bool(
-                session_state.get("purchase_both_first_hint_sent", False)
-            )
-            return follow_decision
-
-        if intent == "purchase" and reason != "shanghai_need_district" and geo_context.get("known"):
-            contact_sent = self._is_contact_image_sent_for_current_geo(session_state)
-            session_state["last_geo_pending"] = False
-            session_state["geo_followup_round"] = 0
-            session_state["geo_choice_offered"] = False
-            if contact_sent:
-                return AgentDecision(
-                    reply_text=self._render_template("purchase_contact_remind_only"),
-                    intent="purchase",
-                    route_reason=reason if reason != "unknown" else "known_geo_context",
-                    reply_goal="推进购买意图",
-                    media_plan="none",
-                    reply_source="rule",
-                    rule_id="PURCHASE_CONTACT_REMIND_ONLY",
-                    rule_applied=True,
-                    geo_context_source=geo_context.get("source", ""),
-                )
-
-            return AgentDecision(
-                reply_text=self._render_template("purchase_contact_intro"),
-                intent="purchase",
-                route_reason=reason if reason != "unknown" else "known_geo_context",
-                reply_goal="推进购买意图",
-                media_plan="contact_image",
-                reply_source="rule",
-                rule_id="PURCHASE_CONTACT_FROM_KNOWN_GEO",
-                rule_applied=True,
-                geo_context_source=geo_context.get("source", ""),
-            )
-
-        if target_store != "unknown":
-            store = self.knowledge_service.get_store_display(target_store)
-            store_name = self._store_recommend_display_name(target_store, store.get("store_name", "门店"))
-            session_state["last_geo_pending"] = False
-            session_state["geo_followup_round"] = 0
-            session_state["geo_choice_offered"] = False
-            session_state["last_geo_route_reason"] = ""
-            return AgentDecision(
-                reply_text=self._render_template("store_recommend", store_name=store_name),
-                intent="address",
-                route_reason=reason,
-                reply_goal="解答",
-                media_plan="address_image",
-                reply_source="rule",
-                rule_id="ADDR_STORE_RECOMMEND",
-                rule_applied=True,
-                geo_context_source=geo_context.get("source", ""),
-            )
-
-        # address / purchase 未识别到地区：进入 2次追问 + 1次选择题
-        return self._build_geo_followup_decision(session_state=session_state, route_reason="need_region", intent=intent)
-
-    def _build_geo_followup_decision(self, session_state: Dict[str, Any], route_reason: str, intent: str) -> AgentDecision:
-        round_count = int(session_state.get("geo_followup_round", 0) or 0)
-        choice_offered = bool(session_state.get("geo_choice_offered", False))
-
-        if round_count < 2:
-            next_round = round_count + 1
-            session_state["geo_followup_round"] = next_round
-            session_state["geo_choice_offered"] = False
-            session_state["last_geo_pending"] = True
-            session_state["last_geo_route_reason"] = route_reason
-            if route_reason == "need_district":
-                template_key = "ask_sh_district_r1" if next_round == 1 else "ask_sh_district_r2"
-                rule_id = f"ADDR_ASK_DISTRICT_R{next_round}"
-            else:
-                template_key = "ask_region_r1" if next_round == 1 else "ask_region_r2"
-                rule_id = f"ADDR_ASK_REGION_R{next_round}"
-        elif not choice_offered:
-            session_state["geo_choice_offered"] = True
-            session_state["last_geo_pending"] = True
-            session_state["last_geo_route_reason"] = route_reason
-            template_key = "ask_sh_district_choice" if route_reason == "need_district" else "ask_region_choice"
-            rule_id = "ADDR_ASK_DISTRICT_CHOICE" if route_reason == "need_district" else "ADDR_ASK_REGION_CHOICE"
-        else:
-            # 用户持续地址/购买类但仍不给地区，重置到下一轮 2+1 循环
-            session_state["geo_followup_round"] = 1
-            session_state["geo_choice_offered"] = False
-            session_state["last_geo_pending"] = True
-            session_state["last_geo_route_reason"] = route_reason
-            template_key = "ask_sh_district_r1_reset" if route_reason == "need_district" else "ask_region_r1_reset"
-            rule_id = "ADDR_ASK_DISTRICT_R1_RESET" if route_reason == "need_district" else "ADDR_ASK_REGION_R1_RESET"
-
-        out_intent = intent if intent in ("address", "purchase") else "address"
-        return AgentDecision(
-            reply_text=self._render_template(template_key),
-            intent=out_intent,
-            route_reason=route_reason,
-            reply_goal="追问地区",
-            media_plan="none",
-            reply_source="rule",
-            rule_id=rule_id,
-            rule_applied=True,
+        return agent_rule_engine.decide_rule_reply(
+            self,
+            text=text,
+            intent=intent,
+            route=route,
+            session_state=session_state,
+            conversation_history=conversation_history,
+            user_state=user_state,
+            is_first_turn_global=is_first_turn_global,
         )
 
+    def _build_geo_followup_decision(self, session_state: Dict[str, Any], route_reason: str, intent: str) -> AgentDecision:
+        return agent_rule_engine.build_geo_followup_decision(self, session_state, route_reason, intent)
+
     def _should_recover_to_shanghai_arrival_help(self, text: str, session_state: Dict[str, Any]) -> bool:
-        if not bool(session_state.get("last_geo_pending", False)):
-            return False
-        if str(session_state.get("last_geo_route_reason", "") or "") not in ("need_district", "shanghai_need_district"):
-            return False
-        normalized = re.sub(r"\s+", "", str(text or ""))
-        if not normalized:
-            return False
-        return any(keyword in normalized for keyword in SHANGHAI_ROUTE_HELP_KEYWORDS)
+        return agent_rule_engine.should_recover_to_shanghai_arrival_help(self, text, session_state)
 
     def _is_follow_up_question(self, text: str, conversation_history: List[Dict[str, str]]) -> bool:
-        """检测是否为追问，根据用户选择的策略"""
-        text_stripped = text.strip()
-
-        if any(keyword in text_stripped for keyword in SERVICE_HOURS_PRIORITY_KEYWORDS):
-            return False
-
-        # 场景1：简短回复（<10字符）
-        if len(text_stripped) < 10:
-            return True
-
-        # 场景2：包含追问关键词
-        follow_up_keywords = ["怎么", "如何", "为什么", "那", "呢", "吗", "太", "很", "什么"]
-        if any(k in text for k in follow_up_keywords) and len(text_stripped) < 20:
-            return True
-
-        # 场景3：与上一轮对话高度相关（关键词重叠>30%）
-        if conversation_history and len(conversation_history) >= 2:
-            last_user_msg = conversation_history[-2].get("content", "")
-            last_assistant_msg = conversation_history[-1].get("content", "")
-
-            # 提取关键词（去除标点和常见词）
-            def extract_keywords(s):
-                import re
-                s = re.sub(r'[，。！？、,.!?~\s]+', '', s)
-                # 去除常见词
-                common_words = set("的了吗呢啊哦嗯姐姐我们您")
-                return set(c for c in s if c not in common_words)
-
-            user_words = extract_keywords(text_stripped)
-            last_words = extract_keywords(last_user_msg + last_assistant_msg)
-
-            if user_words and last_words:
-                overlap = len(user_words & last_words) / len(user_words)
-                if overlap > 0.3:
-                    return True
-
-        return False
+        return agent_rule_engine.is_follow_up_question(self, text, conversation_history)
 
     def _has_price_priority(self, text: str) -> bool:
         normalized = re.sub(r"\s+", "", str(text or "")).lower()
@@ -2402,189 +1847,15 @@ class CustomerServiceAgent:
         user_state: Dict[str, Any],
         user_id_hash: str = "",
     ) -> AgentDecision:
-        route_reason = route.get("reason", "unknown")
-        contact_sent = int(session_state.get("contact_image_sent_count", 0) or 0) >= 1
-        kb_blocked_by_polite_guard = False
-        kb_polite_guard_reason = ""
-
-        media_placeholder_decision = self._decide_media_placeholder_reply(
-            latest_user_text=latest_user_text,
-            route_reason=route_reason,
-            user_state=user_state,
-            user_id_hash=user_id_hash,
-        )
-        if media_placeholder_decision is not None:
-            return media_placeholder_decision
-
-        lifespan_priority_decision = self._decide_lifespan_priority_reply(
-            latest_user_text=latest_user_text,
-            route=route,
-            user_state=user_state,
-            user_id_hash=user_id_hash,
-        )
-        if lifespan_priority_decision is not None:
-            return lifespan_priority_decision
-
-        if intent == "contact":
-            if contact_sent:
-                prompt_count = int(session_state.get("contact_followup_prompt_count", 0) or 0)
-                session_state["contact_followup_prompt_count"] = prompt_count + 1
-                template_key = "contact_followup_1" if (prompt_count % 2) == 0 else "contact_followup_2"
-                return AgentDecision(
-                    reply_text=self._render_template(template_key),
-                    intent="contact",
-                    route_reason=route_reason,
-                    reply_goal="推进购买意图",
-                    media_plan="none",
-                    reply_source="rule",
-                    rule_id="CONTACT_FOLLOWUP",
-                    rule_applied=True,
-                )
-            return AgentDecision(
-                reply_text=self._render_template("contact_intro"),
-                intent="contact",
-                route_reason=route_reason,
-                reply_goal="推进购买意图",
-                media_plan="contact_image",
-                reply_source="rule",
-                rule_id="CONTACT_SEND_IMAGE",
-                rule_applied=True,
-            )
-
-        if self._is_ambiguous_short_fragment(latest_user_text, intent=intent, route=route):
-            return AgentDecision(
-                reply_text=self._render_template("ask_ambiguous_short_fragment"),
-                intent="address",
-                route_reason="ambiguous_short_fragment",
-                reply_goal="追问地区",
-                media_plan="none",
-                reply_source="rule",
-                rule_id="ADDR_AMBIGUOUS_SHORT_FRAGMENT",
-                rule_applied=True,
-            )
-
-        # 追问检测：优先走 LLM
-        if self._is_follow_up_question(latest_user_text, conversation_history):
-            return self._decide_llm_reply(
-                latest_user_text=latest_user_text,
-                intent=intent,
-                route_reason=route_reason,
-                conversation_history=conversation_history,
-                session_state=session_state,
-                rule_id="LLM_FOLLOW_UP",
-            )
-
-        # 规则外：先知识库，未命中再 LLM
-        if self.use_knowledge_first:
-            kb_detail = self.knowledge_service.find_answer_detail(
-                latest_user_text,
-                threshold=self.knowledge_threshold,
-            )
-            kb_blocked_by_polite_guard = bool(kb_detail.get("blocked_by_polite_guard", False))
-            kb_polite_guard_reason = str(kb_detail.get("polite_guard_reason", "") or "")
-            if kb_detail.get("matched"):
-                kb_intent = str(kb_detail.get("intent", "") or "").strip().lower()
-                kb_tags = {
-                    str(tag).strip()
-                    for tag in (kb_detail.get("tags", []) or [])
-                    if str(tag).strip()
-                }
-                force_direct_kb = kb_intent == "service_hours" or "营业时间" in kb_tags
-                # 场景4：低置信度（0.5-0.7）走 LLM
-                confidence = kb_detail.get("confidence", "high")
-                if confidence in ["low", "medium"] and not force_direct_kb:
-                    # 使用知识库答案作为参考，但让 LLM 结合上下文重新生成
-                    return self._decide_llm_reply(
-                        latest_user_text=latest_user_text,
-                        intent=intent,
-                        route_reason=route_reason,
-                        conversation_history=conversation_history,
-                        session_state=session_state,
-                        kb_match_score=kb_detail.get("score", 0.0),
-                        kb_match_question=kb_detail.get("question", ""),
-                        kb_match_mode=kb_detail.get("mode", ""),
-                        kb_item_id=kb_detail.get("item_id", ""),
-                        rule_id="LLM_LOW_CONFIDENCE_KB",
-                    )
-
-                # 高置信度（>=0.7），返回知识库答案
-                kb_contact_trigger_type = self._resolve_kb_contact_trigger_type(
-                    latest_user_text=latest_user_text,
-                    kb_detail=kb_detail,
-                )
-                force_contact_image = bool(kb_contact_trigger_type)
-                kb_answer = str(kb_detail.get("answer", "") or "").strip()
-                kb_answers = [
-                    str(x).strip()
-                    for x in (kb_detail.get("answers", []) or [])
-                    if str(x).strip()
-                ]
-                if kb_answer and kb_answer not in kb_answers:
-                    kb_answers.insert(0, kb_answer)
-
-                selected_answer, selected_index, exhausted = self._select_kb_variant_answer(
-                    answers=kb_answers,
-                    user_state=user_state,
-                    user_id_hash=user_id_hash,
-                )
-                if selected_answer:
-                    return AgentDecision(
-                        reply_text=selected_answer,
-                        intent=intent,
-                        route_reason=route_reason,
-                        reply_goal="解答",
-                        media_plan="contact_image" if force_contact_image else "none",
-                        reply_source="knowledge",
-                        rule_id="KB_MATCH_CONTACT_IMAGE" if force_contact_image else "KB_MATCH",
-                        rule_applied=False,
-                        kb_match_score=float(kb_detail.get("score", 0.0) or 0.0),
-                        kb_match_question=str(kb_detail.get("question", "") or ""),
-                        kb_match_mode=str(kb_detail.get("mode", "") or ""),
-                        kb_item_id=str(kb_detail.get("item_id", "") or ""),
-                        kb_variant_total=len(kb_answers),
-                        kb_variant_selected_index=selected_index,
-                        kb_variant_fallback_llm=False,
-                        kb_confident=True,
-                        kb_blocked_by_polite_guard=False,
-                        kb_polite_guard_reason="",
-                        force_contact_image=force_contact_image,
-                        kb_contact_trigger_type=kb_contact_trigger_type,
-                    )
-
-                if exhausted:
-                    rewrite_prompt = self._build_kb_variant_fallback_prompt(
-                        latest_user_text=latest_user_text,
-                        kb_question=str(kb_detail.get("question", "") or ""),
-                        kb_answer=kb_answer or (kb_answers[0] if kb_answers else ""),
-                    )
-                    return self._decide_llm_reply(
-                        latest_user_text=latest_user_text,
-                        intent=intent,
-                        route_reason=route_reason,
-                        conversation_history=conversation_history,
-                        session_state=session_state,
-                        kb_blocked_by_polite_guard=False,
-                        kb_polite_guard_reason="",
-                        user_message_override=rewrite_prompt,
-                        rule_id="LLM_KB_VARIANT_FALLBACK",
-                        kb_match_score=float(kb_detail.get("score", 0.0) or 0.0),
-                        kb_match_question=str(kb_detail.get("question", "") or ""),
-                        kb_match_mode=str(kb_detail.get("mode", "") or ""),
-                        kb_item_id=str(kb_detail.get("item_id", "") or ""),
-                        kb_variant_total=len(kb_answers),
-                        kb_variant_selected_index=-1,
-                        kb_variant_fallback_llm=True,
-                        kb_confident=True,
-                    )
-
-        return self._decide_llm_reply(
+        return agent_rule_engine.decide_general_reply(
+            self,
             latest_user_text=latest_user_text,
             intent=intent,
-            route_reason=route_reason,
+            route=route,
             conversation_history=conversation_history,
             session_state=session_state,
-            kb_blocked_by_polite_guard=kb_blocked_by_polite_guard,
-            kb_polite_guard_reason=kb_polite_guard_reason,
+            user_state=user_state,
+            user_id_hash=user_id_hash,
         )
 
     def _decide_media_placeholder_reply(
@@ -2702,103 +1973,17 @@ class CustomerServiceAgent:
         kb_confident: bool = False,
         allow_address_guardrails: bool = True,
     ) -> AgentDecision:
-        self._current_prompt_conversation_history = conversation_history or []
-        llm_started_at = time.perf_counter()
-        prompt_started_at = time.perf_counter()
-        composed_prompt, prompt_meta = self._build_general_llm_prompt(latest_user_text)
-        prompt_build_ms = int((time.perf_counter() - prompt_started_at) * 1000)
-        self.llm_service.set_system_prompt(composed_prompt)
-        effective_user_message = user_message_override or latest_user_text
-        conversation_state = prompt_meta.get("conversation_state", {}) if isinstance(prompt_meta, dict) else {}
-        if (
-            not user_message_override
-            and bool(prompt_meta.get("standard_reply_hit", False))
-            and str(prompt_meta.get("standard_reply_answer", "") or "").strip()
-        ):
-            effective_user_message = (
-                f"用户刚问：{latest_user_text}\n"
-                f"高置信标准话术核心结论：{str(prompt_meta.get('standard_reply_answer', '') or '').strip()}\n"
-                "请严格保留关键事实、数字、时间或区间，再改写成自然的客服回复。"
-            )
-        if (
-            not user_message_override
-            and str(prompt_meta.get("standard_reply_intent", "") or "") == "appointment"
-            and str(conversation_state.get("last_answer_type", "") or "") == "appointment"
-        ):
-            effective_user_message = (
-                f"用户刚问：{latest_user_text}\n"
-                "用户上一轮已经知道需要预约了，这一轮是在追问具体怎么预约。\n"
-                "请直接说明下一步怎么操作，避免重复“我们是预约制的呢”。"
-            )
-        direct_standard_reply = (
-            bool(prompt_meta.get("standard_reply_hit", False))
-            and str(prompt_meta.get("standard_reply_intent", "") or "") in {"service_hours", "lifespan"}
-            and str(prompt_meta.get("standard_reply_answer", "") or "").strip()
-        )
-        success, result, llm_metrics = self.llm_service.generate_reply_sync(
-            user_message=effective_user_message,
-            conversation_history=conversation_history,
-        )
-        llm_metrics = dict(llm_metrics or {})
-        model_name = self.llm_service.get_current_model_name()
-        if not success:
-            return AgentDecision(
-                reply_text=self._render_template("llm_fallback"),
-                intent=intent,
-                route_reason=route_reason,
-                reply_goal="解答",
-                media_plan="none",
-                reply_source="fallback",
-                rule_id="LLM_FALLBACK",
-                rule_applied=False,
-                llm_model=model_name,
-                llm_fallback_reason=str(result or ""),
-                kb_match_score=kb_match_score,
-                kb_match_question=kb_match_question,
-                kb_match_mode=kb_match_mode,
-                kb_item_id=kb_item_id,
-                kb_variant_total=kb_variant_total,
-                kb_variant_selected_index=kb_variant_selected_index,
-                kb_variant_fallback_llm=kb_variant_fallback_llm,
-                kb_confident=kb_confident,
-                kb_blocked_by_polite_guard=kb_blocked_by_polite_guard,
-                kb_polite_guard_reason=kb_polite_guard_reason,
-                reply_mode=self.reply_mode,
-                standard_reply_hit=bool(prompt_meta.get("standard_reply_hit", False)),
-                standard_reply_question=str(prompt_meta.get("standard_reply_question", "") or ""),
-                standard_reply_confidence=str(prompt_meta.get("standard_reply_confidence", "") or ""),
-                standard_reply_intent=str(prompt_meta.get("standard_reply_intent", "") or ""),
-                brand_knowledge_used=bool(prompt_meta.get("brand_knowledge_used", False)),
-                prompt_build_ms=prompt_build_ms,
-                llm_request_ms=int(llm_metrics.get("request_ms", 0) or 0),
-                llm_total_ms=int((time.perf_counter() - llm_started_at) * 1000),
-                llm_attempt_count=int(llm_metrics.get("attempt_count", 0) or 0),
-                llm_message_count=int(llm_metrics.get("message_count", 0) or 0),
-                system_prompt_chars=int(llm_metrics.get("system_prompt_chars", 0) or 0),
-            )
-
-        if direct_standard_reply:
-            llm_reply = self._normalize_reply_text(str(prompt_meta.get("standard_reply_answer", "") or ""))
-        else:
-            llm_reply = self._normalize_reply_text(result)
-        llm_reply = self._apply_llm_reply_guardrails(
+        return agent_llm_reply.decide_llm_reply(
+            self,
             latest_user_text=latest_user_text,
-            reply_text=llm_reply,
-            session_state=session_state or {},
-            conversation_history=conversation_history,
-            allow_address_guardrails=allow_address_guardrails,
-        )
-
-        return AgentDecision(
-            reply_text=llm_reply,
             intent=intent,
             route_reason=route_reason,
-            reply_goal="解答",
-            media_plan="none",
-            reply_source="llm",
+            conversation_history=conversation_history,
+            session_state=session_state,
+            kb_blocked_by_polite_guard=kb_blocked_by_polite_guard,
+            kb_polite_guard_reason=kb_polite_guard_reason,
+            user_message_override=user_message_override,
             rule_id=rule_id,
-            rule_applied=False,
-            llm_model=model_name,
             kb_match_score=kb_match_score,
             kb_match_question=kb_match_question,
             kb_match_mode=kb_match_mode,
@@ -2807,20 +1992,7 @@ class CustomerServiceAgent:
             kb_variant_selected_index=kb_variant_selected_index,
             kb_variant_fallback_llm=kb_variant_fallback_llm,
             kb_confident=kb_confident,
-            kb_blocked_by_polite_guard=kb_blocked_by_polite_guard,
-            kb_polite_guard_reason=kb_polite_guard_reason,
-            reply_mode=self.reply_mode,
-            standard_reply_hit=bool(prompt_meta.get("standard_reply_hit", False)),
-            standard_reply_question=str(prompt_meta.get("standard_reply_question", "") or ""),
-            standard_reply_confidence=str(prompt_meta.get("standard_reply_confidence", "") or ""),
-            standard_reply_intent=str(prompt_meta.get("standard_reply_intent", "") or ""),
-            brand_knowledge_used=bool(prompt_meta.get("brand_knowledge_used", False)),
-            prompt_build_ms=prompt_build_ms,
-            llm_request_ms=int(llm_metrics.get("request_ms", 0) or 0),
-            llm_total_ms=int((time.perf_counter() - llm_started_at) * 1000),
-            llm_attempt_count=int(llm_metrics.get("attempt_count", 0) or 0),
-            llm_message_count=int(llm_metrics.get("message_count", 0) or 0),
-            system_prompt_chars=int(llm_metrics.get("system_prompt_chars", 0) or 0),
+            allow_address_guardrails=allow_address_guardrails,
         )
 
     def _select_kb_variant_answer(
@@ -2829,28 +2001,7 @@ class CustomerServiceAgent:
         user_state: Dict[str, Any],
         user_id_hash: str = "",
     ) -> Tuple[str, int, bool]:
-        candidates: List[str] = []
-        seen: set[str] = set()
-        for raw in answers or []:
-            text = str(raw or "").strip()
-            if not text:
-                continue
-            norm = self._normalize_for_dedupe(text)
-            if not norm or norm in seen:
-                continue
-            seen.add(norm)
-            candidates.append(text)
-            if len(candidates) >= 5:
-                break
-        if not candidates:
-            return "", -1, False
-
-        previous = self.summarize_recent_assistant_hashes_from_logs(user_id_hash=user_id_hash, limit=80)
-        previous |= set(user_state.get("recent_reply_hashes", []) or [])
-        for idx, candidate in enumerate(candidates):
-            if self._normalize_for_dedupe(candidate) not in previous:
-                return candidate, idx, False
-        return "", -1, True
+        return agent_llm_reply.select_kb_variant_answer(self, answers, user_state, user_id_hash=user_id_hash)
 
     def _remember_selected_kb_answer(
         self,
@@ -2858,27 +2009,10 @@ class CustomerServiceAgent:
         user_id_hash: str,
         answer_text: str,
     ) -> None:
-        normalized = self._normalize_for_dedupe(answer_text)
-        if not normalized:
-            return
-
-        recent_hashes = list(user_state.get("recent_reply_hashes", []) or [])
-        recent_hashes.append(normalized)
-        if len(recent_hashes) > 40:
-            recent_hashes = recent_hashes[-40:]
-        user_state["recent_reply_hashes"] = recent_hashes
-
-        if user_id_hash:
-            self.memory_store.update_user_state(user_id_hash, user_state)
-            self.memory_store.save()
+        agent_llm_reply.remember_selected_kb_answer(self, user_state, user_id_hash, answer_text)
 
     def _build_kb_variant_fallback_prompt(self, latest_user_text: str, kb_question: str, kb_answer: str) -> str:
-        return (
-            f"用户刚问：{latest_user_text}\n"
-            f"命中的知识库问题：{kb_question}\n"
-            f"核心结论：{kb_answer}\n"
-            "请保持核心结论不变，改写成结论先行、完整自然的客服回复。"
-        )
+        return agent_llm_reply.build_kb_variant_fallback_prompt(self, latest_user_text, kb_question, kb_answer)
 
     def _rewrite_if_repeated(
         self,
@@ -2888,39 +2022,14 @@ class CustomerServiceAgent:
         user_state: Dict[str, Any],
         user_id_hash: str = "",
     ) -> Tuple[str, bool]:
-        normalized = self._normalize_for_dedupe(reply_text)
-        if not normalized:
-            return reply_text, False
-
-        previous = self.summarize_recent_assistant_hashes_from_logs(user_id_hash=user_id_hash, limit=40)
-        memory_hashes = set(user_state.get("recent_reply_hashes", []) or [])
-        if memory_hashes:
-            previous |= memory_hashes
-        if normalized not in previous:
-            return reply_text, False
-
-        # 优先让 LLM 改写，最多 2 次；仍重复则走去重池兜底。
-        rewrite_prompt = (
-            f"用户刚问：{latest_user_text}\n"
-            f"下面这句客服话术和历史重复，请保留核心意思但换一种自然表达：{reply_text}"
+        return agent_llm_reply.rewrite_if_repeated(
+            self,
+            reply_text=reply_text,
+            latest_user_text=latest_user_text,
+            conversation_history=conversation_history,
+            user_state=user_state,
+            user_id_hash=user_id_hash,
         )
-        composed_prompt, _ = self._build_general_llm_prompt(latest_user_text)
-        self.llm_service.set_system_prompt(composed_prompt)
-
-        for _ in range(2):
-            ok, result, _metrics = self.llm_service.generate_reply_sync(
-                user_message=rewrite_prompt,
-                conversation_history=conversation_history,
-            )
-            if not ok:
-                continue
-            candidate = self._normalize_reply_text(result)
-            if self._normalize_for_dedupe(candidate) not in previous:
-                return candidate, True
-            rewrite_prompt = f"仍重复，请再次改写这句客服回复：{candidate}"
-
-        fallback = self._avoid_repeat(user_state, reply_text)
-        return fallback, self._normalize_for_dedupe(fallback) != normalized
 
     def _plan_media_items(
         self,
@@ -3092,74 +2201,16 @@ class CustomerServiceAgent:
         return summarize_llm_conversation_state(self, latest_user_text, conversation_history, standard_reply_intent)
 
     def _infer_answer_type(self, text: str) -> str:
-        normalized = self.knowledge_service.normalize_user_text(text)
-        if not normalized:
-            return "未知"
-        if any(token in normalized for token in ("愚园路", "汉口路", "花园路", "政通路", "漕溪北路", "建外soho", "亚洲大厦")):
-            return "store_address"
-        if any(token in normalized for token in ("上海有5家", "上海共有5家", "北京只有1家", "北京1家", "静安", "人民广场", "人广", "虹口", "五角场", "徐汇", "朝阳区")) and any(
-            token in normalized for token in ("门店", "地址", "位置", "区域", "城市")
-        ):
-            return "address_general"
-        if "预约" in normalized:
-            return "appointment"
-        if any(token in normalized for token in ("9:30", "18:00", "营业时间", "周一到周五")):
-            return "service_hours"
-        if any(token in normalized for token in ("3到5年", "3-5年", "三到五年")):
-            return "lifespan"
-        if any(token in normalized for token in ("远程定制", "不方便到店")):
-            return "remote_support"
-        if any(token in normalized for token in ("3000", "4000", "5000", "6000", "价格")):
-            return "price"
-        return "general"
+        return agent_llm_reply.infer_answer_type(self, text)
 
     def _top_kb_examples(self, query: str, limit: int = 3) -> List[Tuple[str, str]]:
-        q = self._normalize_for_dedupe(self.knowledge_service.normalize_user_text(query))
-        if not q:
-            return []
-
-        scored: List[Tuple[float, Tuple[str, str]]] = []
-        items = self.knowledge_service.get_all_items()
-        for item in items:
-            question = (item.question or "").strip()
-            answer = (item.answer or "").strip()
-            if not question or not answer:
-                continue
-            score = self._simple_overlap_score(q, self._normalize_for_dedupe(question))
-            if score > 0:
-                scored.append((score, (question, answer)))
-
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [x[1] for x in scored[:limit]]
+        return agent_llm_reply.top_kb_examples(self, query, limit=limit)
 
     def _top_brand_knowledge_snippets(self, query: str, limit: int = 3) -> List[str]:
-        text = self._brand_knowledge_doc_text.strip()
-        q = self._normalize_for_dedupe(self.knowledge_service.normalize_user_text(query))
-        if not text or not q:
-            return []
-
-        chunks = [chunk.strip() for chunk in re.split(r"\n\s*\n", text) if chunk.strip()]
-        scored: List[Tuple[float, str]] = []
-        for chunk in chunks:
-            normalized_chunk = self._normalize_for_dedupe(self.knowledge_service.normalize_user_text(chunk))
-            score = self._simple_overlap_score(q, normalized_chunk)
-            if score > 0:
-                scored.append((score, chunk[:360]))
-        scored.sort(key=lambda item: item[0], reverse=True)
-        return [item[1] for item in scored[:limit]]
+        return agent_llm_reply.top_brand_knowledge_snippets(self, query, limit=limit)
 
     def _simple_overlap_score(self, a: str, b: str) -> float:
-        if not a or not b:
-            return 0.0
-        if a == b:
-            return 1.0
-        if a in b or b in a:
-            return 0.9
-        sa = set(a)
-        sb = set(b)
-        if not sa or not sb:
-            return 0.0
-        return len(sa & sb) / len(sa | sb)
+        return agent_llm_reply.simple_overlap_score(self, a, b)
 
     def _normalize_reply_text(self, text: str) -> str:
         return normalize_reply_text(self, text)
