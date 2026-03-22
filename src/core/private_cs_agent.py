@@ -12,11 +12,13 @@ import random
 import re
 import time
 from datetime import datetime, timedelta
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..data.memory_store import MemoryStore
+from .agent_guardrails import apply_llm_reply_guardrails, normalize_reply_text
+from .agent_prompt_builder import build_general_llm_prompt, summarize_llm_conversation_state
+from .agent_types import AgentDecision, MediaJudgeDecision, _SafeDict
 from ..services.knowledge_service import KnowledgeService
 from ..services.llm_service import LLMService
 from ..utils.constants import BRAND_KNOWLEDGE_FILE
@@ -496,74 +498,6 @@ DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
 
 ADDRESS_IMAGE_COOLDOWN_HOURS = 24
 
-
-@dataclass
-class AgentDecision:
-    reply_text: str
-    intent: str
-    route_reason: str
-    reply_goal: str
-    media_plan: str
-    media_items: List[Dict[str, Any]] = field(default_factory=list)
-    reply_source: str = "rule"
-    rule_id: str = ""
-    rule_applied: bool = False
-    llm_model: str = ""
-    llm_fallback_reason: str = ""
-    geo_context_source: str = ""
-    media_skip_reason: str = ""
-    both_images_sent_state: bool = False
-    kb_match_score: float = 0.0
-    kb_match_question: str = ""
-    kb_match_mode: str = ""
-    kb_item_id: str = ""
-    kb_variant_total: int = 0
-    kb_variant_selected_index: int = -1
-    kb_variant_fallback_llm: bool = False
-    kb_confident: bool = False
-    kb_blocked_by_polite_guard: bool = False
-    kb_polite_guard_reason: str = ""
-    is_first_turn_global: bool = False
-    first_turn_media_guard_applied: bool = False
-    first_turn_image_items: List[Dict[str, Any]] = field(default_factory=list)
-    first_turn_video_items: List[Dict[str, Any]] = field(default_factory=list)
-    first_turn_text_required: bool = False
-    first_turn_retry_policy: Dict[str, Any] = field(default_factory=dict)
-    kb_repeat_rewritten: bool = False
-    purchase_both_first_hint_sent: bool = False
-    video_trigger_user_count: int = 0
-    force_contact_image: bool = False
-    kb_contact_trigger_type: str = ""
-    reply_mode: str = REPLY_MODE_LEGACY
-    standard_reply_hit: bool = False
-    standard_reply_question: str = ""
-    standard_reply_confidence: str = ""
-    standard_reply_intent: str = ""
-    brand_knowledge_used: bool = False
-    prompt_build_ms: int = 0
-    llm_request_ms: int = 0
-    llm_total_ms: int = 0
-    llm_attempt_count: int = 0
-    llm_message_count: int = 0
-    system_prompt_chars: int = 0
-
-
-@dataclass
-class MediaJudgeDecision:
-    send_contact_image: bool = False
-    send_address_image: bool = False
-    send_delayed_video: bool = False
-    reason: str = ""
-    reminder_only: bool = False
-    skip_reason: str = ""
-    media_items: List[Dict[str, Any]] = field(default_factory=list)
-
-
-class _SafeDict(dict):
-    def __missing__(self, key):
-        return ""
-
-
 class CustomerServiceAgent:
     """客服 Agent 主决策器（规则优先，LLM仅规则外回复）。"""
 
@@ -621,6 +555,19 @@ class CustomerServiceAgent:
         self._current_prompt_conversation_history: List[Dict[str, str]] = []
 
         self._dedupe_reply_pool = list(DEFAULT_REPLY_TEMPLATES.get("repeat_pool", []))
+        self._reply_emoji_pool = REPLY_EMOJI_POOL
+        self._contact_compliance_block_keywords = CONTACT_COMPLIANCE_BLOCK_KEYWORDS
+        self._shipping_block_keywords = SHIPPING_BLOCK_KEYWORDS
+        self._shipping_block_replacement = SHIPPING_BLOCK_REPLACEMENT
+        self._price_guardrail_safe_reply = PRICE_GUARDRAIL_SAFE_REPLY
+        self._empathy_remote_support_fallback = EMPATHY_REMOTE_SUPPORT_FALLBACK
+        self._remote_support_fact_fallback = REMOTE_SUPPORT_FACT_FALLBACK
+        self._phone_leak_block_fallback = PHONE_LEAK_BLOCK_FALLBACK
+        self._contact_fact_fallback = CONTACT_FACT_FALLBACK
+        self._address_fact_fallback = ADDRESS_FACT_FALLBACK
+        self._address_unsupported_fallback = ADDRESS_UNSUPPORTED_FALLBACK
+        self._ma_teacher_direct_query_fallback = MA_TEACHER_DIRECT_QUERY_FALLBACK
+        self._ma_teacher_role_fallback = MA_TEACHER_ROLE_FALLBACK
 
         self.reload_prompt_docs()
         self.reload_media_library()
@@ -3841,85 +3788,7 @@ class CustomerServiceAgent:
         return session_id in self._media_whitelist_sessions
 
     def _build_general_llm_prompt(self, latest_user_text: str) -> Tuple[str, Dict[str, Any]]:
-        normalized_text = self.knowledge_service.normalize_user_text(latest_user_text)
-        faq_detail = self.knowledge_service.find_answer_detail(normalized_text, threshold=self.knowledge_threshold)
-        faq_examples = self._top_kb_examples(normalized_text, limit=3)
-        faq_block = "\n".join([f"- 问：{q}\n  答：{a}" for q, a in faq_examples]) or "（当前无高相关标准话术）"
-        enterprise_guard = self._enterprise_guard_doc_text or "（企业知识约束文档缺失，请按已有品牌口径稳妥回复）"
-        store_fact_block = (
-            "【门店事实】\n"
-            "- 北京只有 1 家门店，位于朝阳区。\n"
-            "- 上海共有 5 家门店：静安、人民广场、虹口、五角场、徐汇。\n"
-            "- 如果用户没有明确所在城市或区域，请自然追问，不要生硬套模板。\n"
-            "- 不要编造路线、出口、导航、楼层、停车等不确定细节。"
-        )
-        faq_priority_block = "（当前无高置信标准话术命中）"
-        standard_reply_hit = False
-        standard_reply_question = ""
-        standard_reply_confidence = ""
-        standard_reply_answer = ""
-        standard_reply_intent = ""
-        if faq_detail.get("matched"):
-            standard_reply_hit = True
-            standard_reply_question = str(faq_detail.get("question", "") or "")
-            standard_reply_confidence = str(faq_detail.get("confidence", "") or "")
-            standard_reply_answer = str(faq_detail.get("answer", "") or "").strip()
-            standard_reply_intent = str(faq_detail.get("intent", "") or "").strip().lower()
-            faq_priority_block = (
-                f"问题：{standard_reply_question or '未知'}\n"
-                f"建议答案：{standard_reply_answer}\n"
-                f"置信度：{standard_reply_confidence or 'unknown'}\n"
-                "要求：如果用户问题与这条标准话术高度一致，优先遵循核心结论，再自然润色。"
-            )
-        brand_snippets = self._top_brand_knowledge_snippets(normalized_text, limit=3)
-        brand_block = "\n\n".join(brand_snippets) if brand_snippets else "（当前无高相关品牌知识片段）"
-        conversation_state = self._summarize_llm_conversation_state(
-            latest_user_text=latest_user_text,
-            conversation_history=getattr(self, "_current_prompt_conversation_history", []) or [],
-            standard_reply_intent=standard_reply_intent,
-        )
-        conversation_state_block = (
-            "【最近对话状态】\n"
-            f"- 已确认城市：{conversation_state.get('city_confirmed', '未知')}\n"
-            f"- 已确认门店：{conversation_state.get('store_confirmed', '未知')}\n"
-            f"- 到店条件：{conversation_state.get('visit_status', '未说明')}\n"
-            f"- 上一轮已回答：{conversation_state.get('last_answer_type', '未知')}\n"
-            f"- 当前阶段：{conversation_state.get('current_stage', '信息确认')}\n"
-            f"- 本轮回复目标：{conversation_state.get('reply_goal', '自然承接并回答当前问题')}\n"
-            f"- 避免重复：{conversation_state.get('avoid_repeat', '无')}"
-        )
-        prompt = (
-            "你是艾耐儿假发客服助理。\n"
-            "语气自然、亲切、有耐心，接地气，拟人化口语，像真人客服。\n"
-            "硬规则：结论先行；尽量1句话完成回复，不拖拉，不啰嗦，且必须是完整句；末尾只保留1个emoji表情。\n"
-            "禁止主动索要电话、微信或其他联系方式，除非用户明确在问怎么联系；即使如此也不要输出具体联系方式。\n"
-            "涉及价格区间、营业时间、使用年限、预约、远程定制等明确事实时，优先保留标准话术和品牌知识库里的核心数字与结论，不要省略或改写错。\n"
-            "人物事实硬规则：马老师只负责短视频拍摄，不做假发、不做头发、不剪头、不加好友、不负责修剪造型，禁止把这些服务归给马老师。\n"
-            "超出标准话术和品牌知识库可常规发挥，但必须围绕企业知识口径；禁止编造活动承诺、禁止要求对方发图、联系方式或超出事实的信息。\n"
-            "若信息不确定，给稳妥结论并自然引导用户补充。\n\n"
-            "多轮对话时，优先判断用户是在确认已有信息、推进下一步还是提出新问题。\n"
-            "如果上一轮已经明确回答过地址、本店信息或预约信息，本轮不要原样重复；除非用户明确要求再说一遍。\n"
-            "如果用户表达“知道了”“可以去”“那就这个店”“那我过去”等，视为已经确认门店，应推进到预约、营业时间、到店安排等下一步。\n"
-            "如果用户只是简短承接，不要把整段标准话术或整段地址重新说一遍，优先接着往下聊。\n\n"
-            "如果用户提到受伤、生病、不方便出门、摔跤、腿脚不方便等情况，先简短安慰或共情，再继续给方案。\n"
-            "如果用户上一轮已经知道需要预约，这一轮再问“怎么预约”，应直接说明预约操作或下一步，不要重复“我们是预约制的呢”。\n\n"
-            f"{store_fact_block}\n\n"
-            f"{conversation_state_block}\n\n"
-            f"【高置信标准话术命中】\n{faq_priority_block}\n\n"
-            f"【企业知识约束】\n{enterprise_guard}\n\n"
-            f"【相关标准话术参考】\n{faq_block}\n\n"
-            f"【品牌知识库参考】\n{brand_block}\n\n"
-            "仅输出最终客服话术纯文本，不要输出JSON、代码块或解释。"
-        )
-        return prompt, {
-            "standard_reply_hit": standard_reply_hit,
-            "standard_reply_question": standard_reply_question,
-            "standard_reply_confidence": standard_reply_confidence,
-            "standard_reply_answer": standard_reply_answer,
-            "standard_reply_intent": standard_reply_intent,
-            "brand_knowledge_used": bool(brand_snippets),
-            "conversation_state": conversation_state,
-        }
+        return build_general_llm_prompt(self, latest_user_text)
 
     def _summarize_llm_conversation_state(
         self,
@@ -3927,104 +3796,7 @@ class CustomerServiceAgent:
         conversation_history: List[Dict[str, str]],
         standard_reply_intent: str = "",
     ) -> Dict[str, str]:
-        history = conversation_history or []
-        combined_text = " ".join(str(item.get("content", "") or "") for item in history[-6:])
-        current_text = f"{combined_text} {latest_user_text}".strip()
-        normalized = self.knowledge_service.normalize_user_text(current_text)
-
-        city_confirmed = "未知"
-        if "北京" in normalized or "朝阳" in normalized:
-            city_confirmed = "北京"
-        if "上海" in normalized or any(token in normalized for token in ("静安", "人民广场", "人广", "虹口", "五角场", "徐汇")):
-            city_confirmed = "上海"
-
-        store_confirmed = "未知"
-        if any(token in normalized for token in ("人民广场", "人广", "黄埔", "汉口路")):
-            store_confirmed = "人民广场店"
-        elif any(token in normalized for token in ("静安", "愚园路")):
-            store_confirmed = "静安店"
-        elif any(token in normalized for token in ("虹口", "花园路")):
-            store_confirmed = "虹口店"
-        elif any(token in normalized for token in ("五角场", "政通路", "万达广场")):
-            store_confirmed = "五角场店"
-        elif any(token in normalized for token in ("徐汇", "漕溪北路", "中航德必")):
-            store_confirmed = "徐汇店"
-        elif any(token in normalized for token in ("朝阳", "建外soho")):
-            store_confirmed = "北京朝阳店"
-
-        visit_status = "未说明"
-        if any(token in normalized for token in ("不方便去", "不能去", "不去上海", "外地", "远程")):
-            visit_status = "不方便到店"
-        elif any(token in normalized for token in ("可以去", "过去", "到店", "去店里", "能过去")):
-            visit_status = "可以到店"
-
-        empathy_need = "无"
-        if any(token in normalized for token in ("摔了", "摔跤", "受伤", "腿伤", "腿现在", "不方便出门", "生病", "腿脚不方便")):
-            empathy_need = "需要先安慰共情"
-
-        last_answer_type = "未知"
-        if history:
-            last_assistant = ""
-            for item in reversed(history):
-                if str(item.get("role", "")) == "assistant":
-                    last_assistant = str(item.get("content", "") or "")
-                    break
-            last_answer_type = self._infer_answer_type(last_assistant)
-
-        latest_norm = self.knowledge_service.normalize_user_text(latest_user_text)
-        reply_goal = "自然承接并回答当前问题"
-        avoid_repeat = "无"
-        if empathy_need != "无":
-            reply_goal = "先简短安慰共情，再给可行方案"
-            avoid_repeat = "不要一上来就直接索要联系方式"
-        elif self._looks_like_appointment_query(latest_norm):
-            reply_goal = "回答预约方式，并推进到预约时间安排"
-            avoid_repeat = "不要重复完整地址或门店列表"
-        elif any(token in latest_norm for token in ("可以去", "知道", "那就", "就去", "过去")) and store_confirmed != "未知":
-            reply_goal = "承接用户已确认门店，推进到预约或到店安排"
-            avoid_repeat = "不要重复完整地址，除非用户明确要求重说"
-        elif any(token in latest_norm for token in ("地址", "在哪", "位置")):
-            if store_confirmed != "未知":
-                reply_goal = "直接回答已确认门店地址"
-                avoid_repeat = "不要重复整段上海5店列表"
-            else:
-                reply_goal = "回答门店分布，并自然确认城市或区域"
-                avoid_repeat = "不要直接索要联系方式"
-        elif standard_reply_intent == "service_hours":
-            reply_goal = "准确回答营业时间"
-        elif standard_reply_intent == "lifespan":
-            reply_goal = "准确回答使用年限"
-
-        current_stage = "信息确认"
-        if visit_status == "不方便到店":
-            current_stage = "远程定制引导"
-        elif self._looks_like_appointment_query(latest_norm):
-            current_stage = "预约引导"
-        elif store_confirmed != "未知" and visit_status == "可以到店":
-            current_stage = "门店已确认，推进预约"
-        elif store_confirmed != "未知":
-            current_stage = "门店已确认"
-        elif city_confirmed != "未知":
-            current_stage = "城市已确认，待确认门店"
-
-        if last_answer_type == "store_address" and "地址" not in latest_norm and store_confirmed != "未知":
-            avoid_repeat = "上一轮已回答地址，本轮优先推进下一步"
-            if current_stage == "门店已确认":
-                current_stage = "门店已确认，等待推进"
-        if self._looks_like_appointment_query(latest_norm) and last_answer_type == "appointment":
-            reply_goal = "直接说明预约操作或具体下一步，不要重复预约定义"
-            avoid_repeat = "不要重复“我们是预约制的呢”"
-
-        return {
-            "city_confirmed": city_confirmed,
-            "store_confirmed": store_confirmed,
-            "visit_status": visit_status,
-            "last_answer_type": last_answer_type,
-            "current_stage": current_stage,
-            "reply_goal": reply_goal,
-            "avoid_repeat": avoid_repeat,
-            "empathy_need": empathy_need,
-        }
+        return summarize_llm_conversation_state(self, latest_user_text, conversation_history, standard_reply_intent)
 
     def _infer_answer_type(self, text: str) -> str:
         normalized = self.knowledge_service.normalize_user_text(text)
@@ -4097,32 +3869,7 @@ class CustomerServiceAgent:
         return len(sa & sb) / len(sa | sb)
 
     def _normalize_reply_text(self, text: str) -> str:
-        value = (text or "").strip()
-        if not value:
-            return self._render_template("general_empty")
-
-        # 仅移除独立的聊天时间戳，避免把营业时间这类正常业务内容误删。
-        value = re.sub(r"(?:\s+|^)(\d{1,2}:\d{2})(?:已读|未读|送达)?$", "", value).strip()
-        value = " ".join(value.split())
-        value = self._strip_inline_emoji_symbols(value)
-        # 清理模型偶发生成的明显病句尾缀，避免输出类似“沟通吧到”这类错误表达。
-        value = re.sub(r"吧到(?=[。！？!?，,；;]|$)", "吧", value)
-        value = re.sub(r"呢到(?=[。！？!?，,；;]|$)", "呢", value)
-
-        # 联系方式合规拦截
-        if any(k in value for k in CONTACT_COMPLIANCE_BLOCK_KEYWORDS):
-            value = "姐姐，您留个☎️方式，我来加您好友"
-        elif any(k in value for k in SHIPPING_BLOCK_KEYWORDS):
-            value = SHIPPING_BLOCK_REPLACEMENT
-
-        if not value:
-            value = "姐姐我在呢"
-        value = value.rstrip("，,；; ")
-        if not re.search(r"[。！？!?]$", value):
-            value = f"{value}。"
-        # 随机选择emoji
-        emoji = random.choice(REPLY_EMOJI_POOL)
-        return f"{value}{emoji}"
+        return normalize_reply_text(self, text)
 
     def _apply_llm_reply_guardrails(
         self,
@@ -4132,58 +3879,14 @@ class CustomerServiceAgent:
         conversation_history: Optional[List[Dict[str, str]]] = None,
         allow_address_guardrails: bool = True,
     ) -> str:
-        text = (latest_user_text or "").strip()
-        reply = (reply_text or "").strip()
-        state = session_state or {}
-        history = conversation_history or []
-
-        if self._contains_explicit_phone_number(reply):
-            if self._has_price_priority(text):
-                return self._render_guardrail_reply(PRICE_GUARDRAIL_SAFE_REPLY)
-            if self._needs_empathy_remote_support(text):
-                return self._render_guardrail_reply(EMPATHY_REMOTE_SUPPORT_FALLBACK)
-            if any(token in text for token in ("外地", "不在上海", "不在北京", "不方便到店", "远程定制", "不能去上海", "不能来上海")):
-                return self._render_guardrail_reply(REMOTE_SUPPORT_FACT_FALLBACK)
-            return PHONE_LEAK_BLOCK_FALLBACK
-
-        if self._contains_invalid_ma_teacher_claim(reply):
-            if self._is_ma_teacher_direct_query(text):
-                return MA_TEACHER_DIRECT_QUERY_FALLBACK
-            cleaned_reply = self._strip_invalid_ma_teacher_service_clauses(reply)
-            if cleaned_reply and cleaned_reply != reply:
-                return cleaned_reply
-            return MA_TEACHER_ROLE_FALLBACK
-
-        if self._is_contact_fact_risk(text, reply):
-            if self._has_price_priority(text):
-                return self._render_guardrail_reply(PRICE_GUARDRAIL_SAFE_REPLY)
-            if self._needs_empathy_remote_support(text):
-                return self._render_guardrail_reply(EMPATHY_REMOTE_SUPPORT_FALLBACK)
-            if any(token in text for token in ("外地", "不在上海", "不在北京", "不方便到店", "远程定制", "不能去上海", "不能来上海")):
-                return self._render_guardrail_reply(REMOTE_SUPPORT_FACT_FALLBACK)
-            return self._render_guardrail_reply(CONTACT_FACT_FALLBACK)
-
-        if self._has_price_priority(text):
-            if self._contains_low_price_quote(reply) or self._contains_invalid_price_channel(reply):
-                return self._render_guardrail_reply(PRICE_GUARDRAIL_SAFE_REPLY)
-
-        if allow_address_guardrails and self._is_address_fact_risk(text, reply, state, history):
-            if self._is_address_unsupported_query(text):
-                return self._render_guardrail_reply(ADDRESS_FACT_FALLBACK)
-            store_key = self._resolve_guardrail_store_key(text, reply, state, history)
-            if store_key:
-                store = self.knowledge_service.get_store_display(store_key)
-                store_name = str(store.get("store_name", "") or "门店")
-                return self._normalize_reply_text(f"姐姐，{store_name}位置可以看图中圈圈的位置哦")
-            if self._reply_contains_unsupported_address_detail(reply):
-                return self._render_guardrail_reply(ADDRESS_FACT_FALLBACK)
-            return self._render_guardrail_reply(ADDRESS_FACT_FALLBACK)
-
-        if allow_address_guardrails and self._is_address_unsupported_query(text):
-            return self._normalize_reply_text(ADDRESS_UNSUPPORTED_FALLBACK)
-        if self._needs_empathy_remote_support(text) and not self._reply_has_empathy(reply):
-            return self._normalize_reply_text(f"姐姐那您先注意休息，身体要紧，{reply.lstrip('姐姐，').lstrip('姐姐').strip()}")
-        return reply_text
+        return apply_llm_reply_guardrails(
+            self,
+            latest_user_text=latest_user_text,
+            reply_text=reply_text,
+            session_state=session_state,
+            conversation_history=conversation_history,
+            allow_address_guardrails=allow_address_guardrails,
+        )
 
     def _needs_empathy_remote_support(self, text: str) -> bool:
         normalized = self.knowledge_service.normalize_user_text(text)
