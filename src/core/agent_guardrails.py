@@ -171,6 +171,24 @@ def reply_has_correct_service_hours(reply_text: str) -> bool:
     return has_open_time and has_close_time
 
 
+def reply_has_non_whitelist_detailed_address(reply_text: str) -> bool:
+    normalized = normalize_service_hours_check_text(reply_text)
+    if not normalized:
+        return False
+    if detect_precise_address_in_reply(reply_text):
+        return False
+
+    detailed_patterns = (
+        r"[\u4e00-\u9fa5a-z0-9]{2,20}(?:路|街|道|巷|弄)\d{1,4}号",
+        r"\d{1,4}号楼",
+        r"\d{1,3}层",
+        r"\d{1,5}室",
+        r"(?:东区|西区|南区|北区)\d{1,3}号楼",
+        r"(?:中路|东路|西路|南路|北路)\d{1,4}号",
+    )
+    return any(re.search(pattern, normalized, re.IGNORECASE) for pattern in detailed_patterns)
+
+
 def detect_store_recommendation_in_reply(reply_text: str) -> Dict[str, Any]:
     normalized = normalize_service_hours_check_text(reply_text)
     if not normalized:
@@ -325,6 +343,20 @@ def apply_llm_reply_guardrails(
                     "matched_address": str(precise_hit.get("address", "") or ""),
                 },
             )
+
+    if reply_has_non_whitelist_detailed_address(reply):
+        store_key = agent._resolve_guardrail_store_key(text, reply, state, history)
+        if store_key:
+            store = agent.knowledge_service.get_store_display(store_key)
+            store_name = str(store.get("store_name", "") or "门店")
+            return finalize(
+                agent._normalize_reply_text(f"姐姐，{store_name}位置可以看图中圈圈的位置哦"),
+                {
+                    "closure_type": "store_recommendation",
+                    "target_store": store_key,
+                },
+            )
+        return finalize(agent._render_guardrail_reply(agent._address_fact_fallback))
 
     if allow_address_guardrails and agent._is_address_fact_risk(text, reply, state, history):
         if agent._is_address_unsupported_query(text):

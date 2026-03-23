@@ -2276,6 +2276,79 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(decision.reply_closure_info.get("target_store"), "sh_jingan")
             self.assertNotIn("愚园路172号环球世界大厦A座", decision.reply_text)
 
+    def test_llm_direct_non_whitelist_detailed_address_is_blocked_for_all_stores(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            store_to_file = {
+                "sh_jingan": "静安地址.jpg",
+                "sh_renmin": "人广地址.jpg",
+                "sh_hongkou": "虹口地址.jpg",
+                "sh_wujiaochang": "五角场地址.jpg",
+                "sh_xuhui": "徐汇地址.jpg",
+                "beijing_chaoyang": "北京地址.jpg",
+            }
+            agent, _, _, llm = self._build_agent(
+                temp_dir,
+                address_image_files=list(store_to_file.values()),
+                store_targets={filename: store for store, filename in store_to_file.items()},
+            )
+            agent.reply_mode = "llm_direct"
+            scenarios = [
+                ("静安店具体地点", "姐姐，静安店在南京西路1818号国际广场2楼，您直接导航过来就行🌹", "sh_jingan", "南京西路1818号国际广场2楼"),
+                ("人广具体地点", "姐姐，人民广场店在汉口路999号亚洲中心3楼，您导航就能到🌹", "sh_renmin", "汉口路999号亚洲中心3楼"),
+                ("虹口具体地点", "姐姐，虹口店在花园路88号嘉年华大厦5层，过来很方便🌹", "sh_hongkou", "花园路88号嘉年华大厦5层"),
+                ("五角场具体地点", "姐姐，五角场店在政通路77号万达广场A座1201室，您直接来就行🌹", "sh_wujiaochang", "政通路77号万达广场A座1201室"),
+                ("徐汇具体地点", "姐姐，徐汇店在漕溪北路99号德必大厦8楼，到了联系我🌹", "sh_xuhui", "漕溪北路99号德必大厦8楼"),
+                ("朝阳区的具体地点", "姐姐，北京门店在东三环中路39号建外SOHO西区13号楼1层1358室，您导航就能找到🌹", "beijing_chaoyang", "东三环中路39号建外SOHO西区13号楼1层1358室"),
+            ]
+
+            for idx, (user_text, hallucinated_reply, expected_store, fake_address) in enumerate(scenarios):
+                llm.reply_text = hallucinated_reply
+                decision = agent.decide(
+                    session_id=f"chat_llm_direct_hallucinated_address_{idx}",
+                    user_name=f"幻觉地址用户{idx}",
+                    latest_user_text=user_text,
+                    conversation_history=[],
+                )
+
+                self.assertEqual(decision.reply_closure_info.get("closure_type"), "store_recommendation")
+                self.assertEqual(decision.reply_closure_info.get("target_store"), expected_store)
+                self.assertIn("圈圈的位置", decision.reply_text)
+                self.assertNotIn(fake_address, decision.reply_text)
+
+                media_decision = agent.judge_post_reply_media(
+                    session_id=f"chat_llm_direct_hallucinated_address_{idx}",
+                    user_name=f"幻觉地址用户{idx}",
+                    latest_user_text=user_text,
+                    reply_text=decision.reply_text,
+                    conversation_history=[],
+                    decision=decision,
+                )
+                self.assertTrue(media_decision.send_address_image)
+                self.assertTrue(any(item.get("type") == "address_image" for item in media_decision.media_items))
+                self.assertEqual(media_decision.media_items[0].get("target_store"), expected_store)
+
+    def test_current_store_query_overrides_previous_store_when_blocking_hallucinated_address(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, llm = self._build_agent(
+                temp_dir,
+                address_image_files=["北京地址.jpg", "徐汇地址.jpg"],
+                store_targets={"北京地址.jpg": "beijing_chaoyang", "徐汇地址.jpg": "sh_xuhui"},
+            )
+            agent.reply_mode = "llm_direct"
+            session_id = "chat_guardrail_store_override"
+            user_name = "门店切换用户"
+
+            llm.reply_text = "姐姐，北京门店在东三环中路39号建外SOHO西区13号楼1层1358室，您导航就能找到🌹"
+            first = agent.decide(session_id, user_name, "朝阳区的具体地点", [])
+            self.assertEqual(first.reply_closure_info.get("target_store"), "beijing_chaoyang")
+
+            llm.reply_text = "姐姐，徐汇店在漕溪北路99号德必大厦8楼，到了联系我🌹"
+            second = agent.decide(session_id, user_name, "徐汇具体地点", [])
+            self.assertEqual(second.reply_closure_info.get("target_store"), "sh_xuhui")
+            self.assertIn("上海徐汇门店", second.reply_text)
+
     def test_llm_direct_generic_address_question_keeps_city_followup(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, _, llm = self._build_agent(Path(td))

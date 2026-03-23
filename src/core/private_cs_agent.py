@@ -2465,10 +2465,6 @@ class CustomerServiceAgent:
         session_state: Dict[str, Any],
         conversation_history: List[Dict[str, str]],
     ) -> str:
-        store_key = str((session_state or {}).get("last_target_store", "") or "").strip()
-        if store_key and store_key != "unknown":
-            return store_key
-
         candidates = [
             str(text or ""),
             str(reply_text or ""),
@@ -2478,6 +2474,9 @@ class CustomerServiceAgent:
             resolved = self._infer_store_from_context_text(candidate)
             if resolved:
                 return resolved
+        store_key = str((session_state or {}).get("last_target_store", "") or "").strip()
+        if store_key and store_key != "unknown":
+            return store_key
         return ""
 
     def _infer_store_from_context_text(self, text: str) -> str:
