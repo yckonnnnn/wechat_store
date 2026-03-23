@@ -37,6 +37,14 @@ def decide_llm_reply(
     agent.llm_service.set_system_prompt(composed_prompt)
     effective_user_message = user_message_override or latest_user_text
     conversation_state = prompt_meta.get("conversation_state", {}) if isinstance(prompt_meta, dict) else {}
+    previous_topic = str((session_state or {}).get("last_answer_topic", "") or "")
+    previous_facts = dict((session_state or {}).get("last_answer_facts", {}) or {})
+    previous_answer_text = str((session_state or {}).get("last_answer_text_normalized", "") or "")
+    current_topic = str(prompt_meta.get("standard_reply_intent", "") or "").strip().lower()
+    if current_topic not in {"price", "service_hours", "lifespan"}:
+        current_topic = infer_answer_type(agent, latest_user_text)
+        if current_topic == "address_general" and str(conversation_state.get("store_confirmed", "") or "").strip() != "未知":
+            current_topic = "store_recommendation"
     if (
         not user_message_override
         and bool(prompt_meta.get("standard_reply_hit", False))
@@ -47,6 +55,23 @@ def decide_llm_reply(
             f"高置信标准话术核心结论：{str(prompt_meta.get('standard_reply_answer', '') or '').strip()}\n"
             "请严格保留关键事实、数字、时间或区间，再改写成自然的客服回复。"
         )
+    if (
+        not user_message_override
+        and previous_topic
+        and previous_topic == current_topic
+        and previous_answer_text
+    ):
+        current_fact_text = str(prompt_meta.get("standard_reply_answer", "") or "").strip()
+        if not current_fact_text:
+            current_fact_text = base_followup_fact_hint(current_topic=current_topic, previous_facts=previous_facts, conversation_state=conversation_state)
+        if current_fact_text:
+            effective_user_message = (
+                f"用户当前问题：{latest_user_text}\n"
+                f"上一轮已经回答的主题：{previous_topic}\n"
+                f"上一轮核心事实：{_format_contextual_facts(previous_facts)}\n"
+                f"这一轮必须保留的核心事实：{current_fact_text}\n"
+                "请只回答用户这轮新增的问题，不要整段重复上一轮；核心数字、时间、门店名不能改。"
+            )
     if (
         not user_message_override
         and str(prompt_meta.get("standard_reply_intent", "") or "") == "appointment"
@@ -66,15 +91,7 @@ def decide_llm_reply(
         user_message=effective_user_message,
         conversation_history=conversation_history,
     )
-    if isinstance(llm_result, tuple) and len(llm_result) == 3:
-        success, result, llm_metrics = llm_result
-    elif isinstance(llm_result, tuple) and len(llm_result) == 2:
-        success, result = llm_result
-        llm_metrics = {}
-    else:
-        success = False
-        result = "invalid_llm_result"
-        llm_metrics = {}
+    success, result, llm_metrics = unpack_llm_result(llm_result)
     llm_metrics = dict(llm_metrics or {})
     model_name = agent.llm_service.get_current_model_name()
     if not success:
@@ -250,10 +267,10 @@ def rewrite_if_repeated(
     agent.llm_service.set_system_prompt(composed_prompt)
 
     for _ in range(2):
-        ok, result, _metrics = agent.llm_service.generate_reply_sync(
+        ok, result, _metrics = unpack_llm_result(agent.llm_service.generate_reply_sync(
             user_message=rewrite_prompt,
             conversation_history=conversation_history,
-        )
+        ))
         if not ok:
             continue
         candidate = agent._normalize_reply_text(result)
@@ -263,6 +280,143 @@ def rewrite_if_repeated(
 
     fallback = agent._avoid_repeat(user_state, reply_text)
     return fallback, agent._normalize_for_dedupe(fallback) != normalized
+
+
+def contextualize_topic_followup_reply(
+    agent,
+    latest_user_text: str,
+    base_reply_text: str,
+    current_topic: str,
+    previous_topic: str,
+    previous_facts: Dict[str, Any],
+    current_facts: Dict[str, Any],
+    conversation_history: List[Dict[str, str]],
+    session_state: Dict[str, Any],
+) -> Tuple[str, bool]:
+    if current_topic != previous_topic or current_topic not in {"price", "service_hours", "lifespan", "store_recommendation"}:
+        return base_reply_text, False
+
+    previous_text = str(session_state.get("last_answer_text_normalized", "") or "")
+    if not previous_text:
+        return base_reply_text, False
+
+    prompt = (
+        f"用户当前问题：{latest_user_text}\n"
+        f"上一轮已回答主题：{previous_topic}\n"
+        f"上一轮核心事实：{_format_contextual_facts(previous_facts)}\n"
+        f"这一轮必须保留的核心事实：{_format_contextual_facts(current_facts)}\n"
+        f"这一轮基准回复：{base_reply_text}\n"
+        "请用一句自然客服话术回答用户这轮新增问题。\n"
+        "要求：不要整段重复上一轮；核心事实、数字、时间、门店名不能改；"
+        "如果用户是在确认、比较、补问，就补充差异点；如果是在表达异议，先回应异议。"
+    )
+    composed_prompt, _ = agent._build_general_llm_prompt(latest_user_text)
+    agent.llm_service.set_system_prompt(composed_prompt)
+    success, result, _metrics = unpack_llm_result(
+        agent.llm_service.generate_reply_sync(
+            user_message=prompt,
+            conversation_history=conversation_history,
+        )
+    )
+    if success:
+        candidate = agent._normalize_reply_text(result)
+        normalized_candidate = agent._normalize_for_dedupe(candidate)
+        if (
+            candidate
+            and normalized_candidate
+            and normalized_candidate != previous_text
+            and _candidate_preserves_contextual_facts(current_topic=current_topic, current_facts=current_facts, candidate=candidate)
+        ):
+            return candidate, True
+
+    fallback = build_contextual_followup_fallback(
+        agent,
+        current_topic=current_topic,
+        current_facts=current_facts,
+        previous_facts=previous_facts,
+    )
+    if fallback and agent._normalize_for_dedupe(fallback) != previous_text:
+        return fallback, True
+    return base_reply_text, False
+
+
+def build_contextual_followup_fallback(
+    agent,
+    current_topic: str,
+    current_facts: Dict[str, Any],
+    previous_facts: Dict[str, Any],
+) -> str:
+    del previous_facts
+    if current_topic == "price":
+        return agent._normalize_reply_text(
+            "姐姐，大方向还是在3000、4000、5000、6000这些区间里，不过具体还要看材质、长度和想要的效果。"
+        )
+    if current_topic == "service_hours":
+        business_hours = str(current_facts.get("business_hours", "") or "上午9:30到下午6:00")
+        return agent._normalize_reply_text(f"姐姐，时间没变哦，还是{business_hours}。")
+    if current_topic == "lifespan":
+        lifespan = str(current_facts.get("lifespan", "") or "3到5年")
+        return agent._normalize_reply_text(f"姐姐，大方向还是{lifespan}，主要看平时护理和佩戴频率。")
+    if current_topic == "store_recommendation":
+        store_name = str(current_facts.get("store_name", "") or "这家门店")
+        return agent._normalize_reply_text(f"姐姐，是的哦，推荐您去{store_name}会更方便，位置图我已经给您发了。")
+    return ""
+
+
+def _format_contextual_facts(facts: Dict[str, Any]) -> str:
+    if not isinstance(facts, dict) or not facts:
+        return "无"
+    pairs = []
+    for key, value in facts.items():
+        if value in (None, "", [], {}):
+            continue
+        pairs.append(f"{key}={value}")
+    return "；".join(pairs) if pairs else "无"
+
+
+def base_followup_fact_hint(
+    current_topic: str,
+    previous_facts: Dict[str, Any],
+    conversation_state: Dict[str, Any],
+) -> str:
+    if current_topic == "price":
+        return str(previous_facts.get("price_range", "") or "3000-6000")
+    if current_topic == "service_hours":
+        return str(previous_facts.get("business_hours", "") or "上午9:30到下午6:00")
+    if current_topic == "lifespan":
+        return str(previous_facts.get("lifespan", "") or "3到5年")
+    if current_topic == "store_recommendation":
+        store_name = str(previous_facts.get("store_name", "") or conversation_state.get("store_confirmed", "") or "").strip()
+        return store_name if store_name and store_name != "未知" else ""
+    return ""
+
+
+def _candidate_preserves_contextual_facts(current_topic: str, current_facts: Dict[str, Any], candidate: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(candidate or "")).lower()
+    if not normalized:
+        return False
+    if current_topic == "price":
+        return "3000" in normalized and "6000" in normalized
+    if current_topic == "service_hours":
+        return any(token in normalized for token in ("9:30", "930")) and any(
+            token in normalized for token in ("18:00", "1800", "下午6:00", "下午6点")
+        )
+    if current_topic == "lifespan":
+        return any(token in normalized for token in ("3到5年", "3-5年", "3～5年", "三到五年"))
+    if current_topic == "store_recommendation":
+        store_name = re.sub(r"\s+", "", str(current_facts.get("store_name", "") or "")).lower()
+        return bool(store_name) and store_name in normalized
+    return True
+
+
+def unpack_llm_result(llm_result: Any) -> Tuple[bool, str, Dict[str, Any]]:
+    if isinstance(llm_result, tuple) and len(llm_result) == 3:
+        success, result, llm_metrics = llm_result
+        return bool(success), str(result or ""), dict(llm_metrics or {})
+    if isinstance(llm_result, tuple) and len(llm_result) == 2:
+        success, result = llm_result
+        return bool(success), str(result or ""), {}
+    return False, "invalid_llm_result", {}
 
 
 def infer_answer_type(agent, text: str) -> str:

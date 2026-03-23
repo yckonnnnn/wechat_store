@@ -1835,6 +1835,64 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertIn("3000", d2.reply_text)
             self.assertIn("4000", d2.reply_text)
 
+    def test_price_followup_uses_contextual_llm_without_repeating_base_kb(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, llm = self._build_agent(temp_dir)
+            repository.add(
+                "价格多少？多少钱？价格多少钱？什么价位？",
+                "姐姐，这类一般在3000到6000之间，具体要看材质、头围和想要的效果。💗",
+                intent="price",
+                tags=["价格", "预算"],
+                answers=[
+                    "姐姐，这类一般在3000到6000之间，具体要看材质、头围和想要的效果。💗",
+                ],
+            )
+            llm.reply_text = "姐姐，大方向还是在3000到6000这个区间里，不过和第一款不一定完全一样，还要看材质和效果。🌷"
+
+            session_id = "chat_price_contextual"
+            user_name = "价格承接用户"
+            d1 = agent.decide(session_id, user_name, "这个价格多少钱", [])
+            agent.mark_reply_sent(session_id, user_name, d1.reply_text)
+            d2 = agent.decide(session_id, user_name, "那这个价格跟第一款一样吗", [])
+
+            self.assertEqual(d1.rule_id, "PRICE_PRIORITY")
+            self.assertEqual(d2.rule_id, "PRICE_PRIORITY")
+            self.assertNotEqual(agent._normalize_for_dedupe(d1.reply_text), agent._normalize_for_dedupe(d2.reply_text))
+            self.assertIn("3000", d2.reply_text)
+            self.assertIn("不一定完全一样", d2.reply_text)
+            self.assertTrue(d2.kb_repeat_rewritten)
+            self.assertEqual(llm.calls, 1)
+
+    def test_price_objection_keeps_its_own_kb_and_skips_contextual_followup(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, llm = self._build_agent(temp_dir)
+            repository.add(
+                "价格多少？多少钱？价格多少钱？什么价位？",
+                "姐姐，这类一般在3000到6000之间，具体要看材质、头围和想要的效果。💗",
+                intent="price",
+                tags=["价格", "预算"],
+            )
+            repository.add(
+                "太贵了，可以优惠吗？那么贵吗？",
+                "姐姐，我理解您，价格主要在材质和工艺上，保养好能用很久，所以很多姐姐会觉得更值。🤍",
+                intent="price",
+                tags=["价格", "异议"],
+            )
+
+            session_id = "chat_price_objection"
+            user_name = "价格异议用户"
+            d1 = agent.decide(session_id, user_name, "这个价格多少钱", [])
+            agent.mark_reply_sent(session_id, user_name, d1.reply_text)
+            d2 = agent.decide(session_id, user_name, "这个价格那么贵吗", [])
+
+            self.assertEqual(d1.rule_id, "PRICE_PRIORITY")
+            self.assertEqual(d2.rule_id, "PRICE_PRIORITY")
+            self.assertIn("材质和工艺", d2.reply_text)
+            self.assertFalse(d2.kb_repeat_rewritten)
+            self.assertEqual(llm.calls, 0)
+
     def test_price_priority_third_time_guides_to_private_then_returns_to_price(self):
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)
@@ -1887,6 +1945,153 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertIn("2次", d.reply_text)
             self.assertNotIn("一次就可以完成", d.reply_text)
             self.assertEqual(llm.calls, 0)
+
+    def test_service_hours_followup_uses_contextual_llm_and_keeps_correct_hours(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, llm = self._build_agent(temp_dir)
+            repository.add(
+                "你们上班时间是几点？营业时间？",
+                "姐姐我们工作日周一到周五，营业时间是上午9:30～下午6:00哦🤍",
+                intent="service_hours",
+                tags=["营业时间"],
+            )
+            llm.reply_text = "姐姐，时间没变哦，还是上午9:30到下午6:00。🌷"
+
+            session_id = "chat_service_hours_contextual"
+            user_name = "营业时间承接用户"
+            d1 = agent.decide(session_id, user_name, "营业时间是什么时候", [])
+            agent.mark_reply_sent(session_id, user_name, d1.reply_text)
+            d2 = agent.decide(session_id, user_name, "周一也是这个时间吗", [])
+
+            self.assertEqual(d1.reply_source, "knowledge")
+            self.assertIn(d2.reply_source, ("knowledge", "llm"))
+            self.assertNotEqual(agent._normalize_for_dedupe(d1.reply_text), agent._normalize_for_dedupe(d2.reply_text))
+            self.assertIn("9:30", d2.reply_text)
+            self.assertIn("下午6:00", d2.reply_text)
+            self.assertGreaterEqual(llm.calls, 1)
+
+    def test_lifespan_followup_uses_contextual_llm_and_keeps_core_fact(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, llm = self._build_agent(temp_dir)
+            repository.add(
+                "假发一般能用多久？",
+                "姐姐，一般正常佩戴可以用3到5年左右，保养得好时间会更久哦🤍",
+                intent="general",
+                tags=["使用寿命"],
+            )
+            llm.reply_text = "姐姐，大方向还是3到5年，主要看平时护理和佩戴频率。🌷"
+
+            session_id = "chat_lifespan_contextual"
+            user_name = "寿命承接用户"
+            d1 = agent.decide(session_id, user_name, "假发一般能用多久", [])
+            agent.mark_reply_sent(session_id, user_name, d1.reply_text)
+            d2 = agent.decide(session_id, user_name, "那这款也是这个寿命吗", [])
+
+            self.assertEqual(d1.rule_id, "LIFESPAN_PRIORITY")
+            self.assertIn(d2.rule_id, {"LIFESPAN_PRIORITY", "LLM_FOLLOW_UP"})
+            self.assertIn("3到5年", d2.reply_text)
+            self.assertGreaterEqual(llm.calls, 1)
+
+    def test_store_recommend_followup_uses_contextual_llm_without_breaking_address_image(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, llm = self._build_agent(temp_dir, address_image_files=["北京地址.jpg"], store_targets={"北京地址.jpg": "beijing_chaoyang"})
+            llm.reply_text = "姐姐，是的哦，推荐您去北京朝阳店会更方便，位置图我已经给您发了。🌷"
+
+            session_id = "chat_store_contextual"
+            user_name = "门店承接用户"
+            d1 = agent.decide(session_id, user_name, "我在北京", [])
+            agent.mark_reply_sent(session_id, user_name, d1.reply_text)
+            d2 = agent.decide(session_id, user_name, "还是北京朝阳店对吧", [])
+
+            self.assertEqual(d1.rule_id, "ADDR_STORE_RECOMMEND")
+            self.assertEqual(d2.rule_id, "ADDR_STORE_RECOMMEND")
+            self.assertNotEqual(agent._normalize_for_dedupe(d1.reply_text), agent._normalize_for_dedupe(d2.reply_text))
+            self.assertTrue(d2.kb_repeat_rewritten)
+            self.assertTrue(any(item.get("type") == "address_image" for item in d2.media_items))
+            self.assertEqual(llm.calls, 1)
+
+    def test_llm_direct_price_followup_reuses_kb_facts_without_repeating(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, llm = self._build_agent(temp_dir)
+            agent.reply_mode = "llm_direct"
+            repository.add(
+                "价格多少？多少钱？价格多少钱？什么价位？",
+                "姐姐，这类一般在3000到6000之间，具体要看材质、头围和想要的效果。💗",
+                intent="price",
+                tags=["价格", "预算"],
+            )
+            llm.reply_text = "姐姐，大方向还是在3000到6000这个区间里，不过和第一款不一定完全一样，还要看材质和效果。🌷"
+
+            session_id = "chat_llm_direct_price_contextual"
+            user_name = "直连价格承接用户"
+            d1 = agent.decide(session_id, user_name, "这个价格多少钱", [])
+            agent.mark_reply_sent(session_id, user_name, d1.reply_text)
+            d2 = agent.decide(session_id, user_name, "那这个价格跟第一款一样吗", [])
+
+            self.assertEqual(d1.rule_id, "PRICE_PRIORITY")
+            self.assertEqual(d2.rule_id, "PRICE_PRIORITY")
+            self.assertIn("3000", d2.reply_text)
+            self.assertNotEqual(agent._normalize_for_dedupe(d1.reply_text), agent._normalize_for_dedupe(d2.reply_text))
+            self.assertTrue(d2.kb_repeat_rewritten)
+
+    def test_llm_direct_service_hours_followup_keeps_correct_hours(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, llm = self._build_agent(temp_dir)
+            agent.reply_mode = "llm_direct"
+            repository.add(
+                "你们上班时间是几点？营业时间？",
+                "姐姐我们工作日周一到周五，营业时间是上午9:30～下午6:00哦🤍",
+                intent="service_hours",
+                tags=["营业时间"],
+            )
+            llm.reply_text = "姐姐，周一也是这个时间哦，还是上午9:30到下午6:00。🌷"
+
+            session_id = "chat_llm_direct_service_hours_contextual"
+            user_name = "直连营业时间承接用户"
+            d1 = agent.decide(session_id, user_name, "营业时间是什么时候", [])
+            agent.mark_reply_sent(session_id, user_name, d1.reply_text)
+            d2 = agent.decide(session_id, user_name, "周一也是这个时间吗", [])
+
+            self.assertEqual(d1.rule_id, "SERVICE_HOURS_PRIORITY")
+            self.assertEqual(d2.rule_id, "SERVICE_HOURS_PRIORITY")
+            self.assertIn("9:30", d2.reply_text)
+            self.assertIn("下午6:00", d2.reply_text)
+            self.assertNotEqual(agent._normalize_for_dedupe(d1.reply_text), agent._normalize_for_dedupe(d2.reply_text))
+
+    def test_llm_direct_store_recommend_followup_still_triggers_address_media(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, llm = self._build_agent(
+                temp_dir,
+                address_image_files=["北京地址.jpg"],
+                store_targets={"北京地址.jpg": "beijing_chaoyang"},
+            )
+            agent.reply_mode = "llm_direct"
+            llm.reply_text = "姐姐，是的哦，推荐您去北京朝阳店会更方便，位置图我已经给您发了。🌷"
+
+            session_id = "chat_llm_direct_store_contextual"
+            user_name = "直连门店承接用户"
+            d1 = agent.decide(session_id, user_name, "我在北京大兴", [])
+            agent.mark_reply_sent(session_id, user_name, d1.reply_text)
+            d2 = agent.decide(session_id, user_name, "还是北京朝阳店对吧", [])
+            media_decision = agent.judge_post_reply_media(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text="还是北京朝阳店对吧",
+                reply_text=d2.reply_text,
+                conversation_history=[],
+                decision=d2,
+            )
+
+            self.assertEqual(d1.rule_id, "ADDR_STORE_RECOMMEND")
+            self.assertEqual(d2.rule_id, "ADDR_STORE_RECOMMEND")
+            self.assertTrue(d2.kb_repeat_rewritten)
+            self.assertTrue(any(item.get("type") == "address_image" for item in media_decision.media_items))
 
     def test_franchise_query_is_not_misclassified_as_out_of_coverage(self):
         with tempfile.TemporaryDirectory() as td:
