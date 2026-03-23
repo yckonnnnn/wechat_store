@@ -4,6 +4,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
+from src.core.agent_types import AgentDecision
 from src.core.private_cs_agent import CustomerServiceAgent
 from src.data.knowledge_repository import KnowledgeRepository
 from src.data.memory_store import MemoryStore
@@ -2084,6 +2085,182 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertIn("圈圈的位置", d.reply_text)
             self.assertNotIn("具体地址", d.reply_text)
             self.assertNotIn("南京西路", d.reply_text)
+
+    def test_llm_precise_address_closure_rewrites_text_and_maps_all_stores(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            store_to_file = {
+                "sh_jingan": "静安地址.jpg",
+                "sh_renmin": "人广地址.jpg",
+                "sh_hongkou": "虹口地址.jpg",
+                "sh_wujiaochang": "五角场地址.jpg",
+                "sh_xuhui": "徐汇地址.jpg",
+                "beijing_chaoyang": "北京地址.jpg",
+            }
+            agent, _, _, llm = self._build_agent(
+                temp_dir,
+                address_image_files=list(store_to_file.values()),
+                store_targets={filename: store for store, filename in store_to_file.items()},
+            )
+            address_to_store = {
+                "愚园路172号环球世界大厦A座": "sh_jingan",
+                "汉口路650号亚洲大厦": "sh_renmin",
+                "花园路16号嘉和国际大厦东楼": "sh_hongkou",
+                "政通路177号，万达广场E栋C座": "sh_wujiaochang",
+                "漕溪北路45号中航德必大厦": "sh_xuhui",
+                "建外SOHO东区": "beijing_chaoyang",
+            }
+
+            for idx, (address, expected_store) in enumerate(address_to_store.items()):
+                llm.reply_text = f"姐姐，门店就在{address}，您直接过来就行🌹"
+                user_name = f"地址收口用户{idx}"
+                session_id = f"chat_precise_address_{idx}"
+                session_state = agent.memory_store.get_session_state(session_id, user_hash=agent._hash_user(user_name))
+                d = agent._decide_llm_reply(
+                    latest_user_text="具体地址发我",
+                    intent="general",
+                    route_reason="unknown",
+                    conversation_history=[],
+                    session_state=session_state,
+                    rule_id="LLM_GENERAL",
+                )
+
+                self.assertTrue(d.reply_closure_info.get("precise_address_hit"))
+                self.assertEqual(d.reply_closure_info.get("target_store"), expected_store)
+                self.assertEqual(d.reply_closure_info.get("matched_address"), address)
+                self.assertNotIn(address, d.reply_text)
+
+                media_decision = agent.judge_post_reply_media(
+                    session_id=session_id,
+                    user_name=user_name,
+                    latest_user_text="具体地址发我",
+                    reply_text=d.reply_text,
+                    conversation_history=[],
+                    decision=d,
+                )
+                self.assertTrue(media_decision.send_address_image)
+                self.assertEqual(media_decision.media_items[0].get("type"), "address_image")
+                self.assertEqual(media_decision.media_items[0].get("target_store"), expected_store)
+
+    def test_llm_precise_address_closure_rotates_without_immediate_repeat(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, llm = self._build_agent(
+                temp_dir,
+                address_image_files=["静安地址.jpg"],
+                store_targets={"静安地址.jpg": "sh_jingan"},
+            )
+            user_name = "地址轮换用户"
+            session_id = "chat_precise_rotation"
+            user_hash = agent._hash_user(user_name)
+
+            llm.reply_text = "姐姐，具体地址是愚园路172号环球世界大厦A座🌹"
+            d1 = agent._decide_llm_reply(
+                latest_user_text="发我详细地址",
+                intent="general",
+                route_reason="unknown",
+                conversation_history=[],
+                session_state=agent.memory_store.get_session_state(session_id, user_hash=user_hash),
+                rule_id="LLM_GENERAL",
+            )
+            agent.mark_reply_sent(session_id, user_name, d1.reply_text)
+
+            llm.reply_text = "姐姐，具体地址是愚园路172号环球世界大厦A座🌹"
+            d2 = agent._decide_llm_reply(
+                latest_user_text="再发一次详细地址",
+                intent="general",
+                route_reason="unknown",
+                conversation_history=[],
+                session_state=agent.memory_store.get_session_state(session_id, user_hash=user_hash),
+                rule_id="LLM_GENERAL",
+            )
+
+            self.assertNotEqual(agent._normalize_for_dedupe(d1.reply_text), agent._normalize_for_dedupe(d2.reply_text))
+
+    def test_non_whitelist_address_does_not_trigger_precise_address_closure(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+            llm.reply_text = "姐姐，门店在汉口路651号亚洲大厦，您导航过来就行🌹"
+
+            d = agent._decide_llm_reply(
+                latest_user_text="把具体地址发我",
+                intent="general",
+                route_reason="unknown",
+                conversation_history=[],
+                session_state={"last_target_store": "sh_renmin"},
+                rule_id="LLM_GENERAL",
+            )
+
+            self.assertFalse(d.reply_closure_info.get("precise_address_hit"))
+            self.assertNotIn("方便的话我继续帮您安排", d.reply_text)
+
+    def test_fixed_contact_closure_appends_contact_image_for_llm_reply(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+            reply_text = agent._render_template("llm_fallback")
+            decision = AgentDecision(
+                reply_text=reply_text,
+                intent="general",
+                route_reason="unknown",
+                reply_goal="解答",
+                media_plan="none",
+                reply_source="llm",
+                rule_id="LLM_GENERAL",
+                reply_closure_info=agent._build_reply_closure_info(reply_text),
+            )
+
+            media_decision = agent.judge_post_reply_media(
+                session_id="chat_contact_closure",
+                user_name="联系方式用户",
+                latest_user_text="你怎么联系",
+                reply_text=reply_text,
+                conversation_history=[],
+                decision=decision,
+            )
+
+            self.assertTrue(media_decision.send_contact_image)
+            self.assertTrue(any(item.get("type") == "contact_image" for item in media_decision.media_items))
+
+    def test_precise_address_and_contact_closure_can_queue_both_images(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = self._build_agent(
+                temp_dir,
+                address_image_files=["静安地址.jpg"],
+                store_targets={"静安地址.jpg": "sh_jingan"},
+            )
+            decision = AgentDecision(
+                reply_text="姐姐您看下我发的位置图，按图找会更直观些，方便的话我也可以继续帮您安排预约呀🌹",
+                intent="general",
+                route_reason="unknown",
+                reply_goal="解答",
+                media_plan="none",
+                reply_source="llm",
+                rule_id="LLM_GENERAL",
+                reply_closure_info={
+                    "closure_type": "precise_address",
+                    "precise_address_hit": True,
+                    "contact_closure_hit": True,
+                    "target_store": "sh_jingan",
+                    "matched_address": "愚园路172号环球世界大厦A座",
+                },
+            )
+
+            media_decision = agent.judge_post_reply_media(
+                session_id="chat_both_closure",
+                user_name="双图用户",
+                latest_user_text="发我地址也发我联系方式",
+                reply_text=decision.reply_text,
+                conversation_history=[],
+                decision=decision,
+            )
+
+            self.assertTrue(media_decision.send_address_image)
+            self.assertTrue(media_decision.send_contact_image)
+            self.assertEqual(
+                sorted(item.get("type") for item in media_decision.media_items),
+                ["address_image", "contact_image"],
+            )
 
     def test_llm_phone_leak_reply_is_blocked(self):
         with tempfile.TemporaryDirectory() as td:

@@ -17,7 +17,7 @@ class MemoryStore:
     def __init__(self, file_path: Path):
         self.file_path = file_path
         self._data: Dict[str, Any] = {
-            "version": 4,
+            "version": 5,
             "updated_at": "",
             "sessions": {},
             "users": {},
@@ -38,7 +38,7 @@ class MemoryStore:
             return True
         except Exception:
             self._data = {
-                "version": 4,
+                "version": 5,
                 "updated_at": "",
                 "sessions": {},
                 "users": {},
@@ -70,8 +70,10 @@ class MemoryStore:
             "sent_address_stores": [],
             "address_image_sent_count": 0,
             "address_image_last_sent_at_by_store": {},
+            "address_image_sent_paths_by_store": {},
             "contact_image_sent_count": 0,
             "contact_image_last_sent_at": "",
+            "contact_image_sent_paths": [],
             "contact_warmup": False,
             "geo_followup_round": 0,
             "geo_choice_offered": False,
@@ -87,6 +89,8 @@ class MemoryStore:
             "session_post_contact_reply_count": 0,
             "pending_required_media": [],
             "pending_required_media_updated_at": "",
+            "planned_required_media": [],
+            "planned_required_media_updated_at": "",
             "last_required_media_failure_code": "",
             "last_required_media_failure_detail": "",
             "required_media_retry_budget": {},
@@ -175,7 +179,7 @@ class MemoryStore:
             return None
 
     def _ensure_schema(self) -> None:
-        self._data["version"] = max(int(self._data.get("version", 1) or 1), 4)
+        self._data["version"] = max(int(self._data.get("version", 1) or 1), 5)
         sessions = self._data.setdefault("sessions", {})
         users = self._data.setdefault("users", {})
         for session_id, state in list(sessions.items()):
@@ -203,8 +207,10 @@ class MemoryStore:
         state.setdefault("sent_address_stores", [])
         state.setdefault("address_image_sent_count", 0)
         state.setdefault("address_image_last_sent_at_by_store", {})
+        state.setdefault("address_image_sent_paths_by_store", {})
         state.setdefault("contact_image_sent_count", 0)
         state.setdefault("contact_image_last_sent_at", "")
+        state.setdefault("contact_image_sent_paths", [])
         state.setdefault("contact_warmup", False)
         state.setdefault("geo_followup_round", 0)
         state.setdefault("geo_choice_offered", False)
@@ -220,6 +226,8 @@ class MemoryStore:
         state.setdefault("session_post_contact_reply_count", 0)
         state.setdefault("pending_required_media", [])
         state.setdefault("pending_required_media_updated_at", "")
+        state.setdefault("planned_required_media", [])
+        state.setdefault("planned_required_media_updated_at", "")
         state.setdefault("last_required_media_failure_code", "")
         state.setdefault("last_required_media_failure_detail", "")
         state.setdefault("required_media_retry_budget", {})
@@ -230,8 +238,14 @@ class MemoryStore:
             state["sent_address_stores"] = []
         if not isinstance(state.get("address_image_last_sent_at_by_store"), dict):
             state["address_image_last_sent_at_by_store"] = {}
+        if not isinstance(state.get("address_image_sent_paths_by_store"), dict):
+            state["address_image_sent_paths_by_store"] = {}
+        if not isinstance(state.get("contact_image_sent_paths"), list):
+            state["contact_image_sent_paths"] = []
         if not isinstance(state.get("pending_required_media"), list):
             state["pending_required_media"] = []
+        if not isinstance(state.get("planned_required_media"), list):
+            state["planned_required_media"] = []
         if not isinstance(state.get("required_media_retry_budget"), dict):
             state["required_media_retry_budget"] = {}
 

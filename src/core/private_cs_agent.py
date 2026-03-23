@@ -19,7 +19,11 @@ from ..data.memory_store import MemoryStore
 from . import agent_media
 from . import agent_llm_reply
 from . import agent_rule_engine
-from .agent_guardrails import apply_llm_reply_guardrails, normalize_reply_text
+from .agent_guardrails import (
+    apply_llm_reply_guardrails,
+    build_reply_closure_info,
+    normalize_reply_text,
+)
 from .agent_prompt_builder import build_general_llm_prompt, summarize_llm_conversation_state
 from .agent_types import AgentDecision, MediaJudgeDecision, _SafeDict
 from ..services.knowledge_service import KnowledgeService
@@ -492,6 +496,18 @@ DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
     "contact_followup_2": "姐姐刚刚那张联系方式图您点开就能看到，添加后回我一句，我立刻继续帮您跟进😊",
     "llm_fallback": "姐姐因咨询较多，您加我联系方式，我直接跟你电话沟通更快～🌹",
     "general_empty": "姐姐我在呢，您告诉我最关心的是价格、佩戴体验还是门店位置呀🌹",
+    "precise_address_closure_pool": [
+        "姐姐您看下我发的位置图，按图找会更直观些，方便的话我也可以继续帮您安排预约呀🌹",
+        "姐姐具体位置我给您放在图片里啦，您照着图看更清楚，方便的话我继续帮您安排😊",
+        "姐姐您直接看位置图会更好找一些，按图过去更直观，您要预约的话我也能接着帮您安排🌷",
+        "姐姐位置我已经放到图里啦，您看图找会方便很多，需要的话我继续帮您安排呀❤️",
+        "姐姐您看下位置图哦，照着图过去会更省事，方便的话我也可以帮您继续预约💗",
+        "姐姐门店位置您看图片会更清楚些，按图找就好，需要我继续帮您安排的话您告诉我呀🌸",
+        "姐姐我给您发位置图啦，您跟着图看会更明白，方便的话我继续帮您安排💐",
+        "姐姐您看图片里的位置提示就行，找起来更直观些，要是想约我也可以继续帮您跟进🥰",
+        "姐姐位置图您点开看一下哦，比文字更好找，方便的话我这边继续帮您安排😄",
+        "姐姐您按我发的位置图看就好，会更容易找到，您要预约的话我也可以继续帮您处理🌺",
+    ],
     "repeat_pool": [
         "姐姐我在，您可以继续说下最关心的问题呀🌹",
         "姐姐收到，我帮您一步步梳理最合适的方案呀🌹",
@@ -536,7 +552,7 @@ class CustomerServiceAgent:
         self.knowledge_threshold = 0.6
         self.memory_ttl_days = 30
         self.first_reply_video_enabled = False
-        self.reply_mode = REPLY_MODE_LLM_DIRECT
+        self.reply_mode = REPLY_MODE_LEGACY
 
         self._address_index: Dict[str, List[str]] = {
             "beijing_chaoyang": [],
@@ -558,6 +574,8 @@ class CustomerServiceAgent:
         self._current_prompt_conversation_history: List[Dict[str, str]] = []
 
         self._dedupe_reply_pool = list(DEFAULT_REPLY_TEMPLATES.get("repeat_pool", []))
+        self._precise_address_closure_pool = list(DEFAULT_REPLY_TEMPLATES.get("precise_address_closure_pool", []))
+        self._fixed_contact_closure_norms: set[str] = set()
         self._reply_emoji_pool = REPLY_EMOJI_POOL
         self._contact_compliance_block_keywords = CONTACT_COMPLIANCE_BLOCK_KEYWORDS
         self._shipping_block_keywords = SHIPPING_BLOCK_KEYWORDS
@@ -665,6 +683,15 @@ class CustomerServiceAgent:
             self._dedupe_reply_pool = pool or list(DEFAULT_REPLY_TEMPLATES.get("repeat_pool", []))
         else:
             self._dedupe_reply_pool = list(DEFAULT_REPLY_TEMPLATES.get("repeat_pool", []))
+
+        precise_address_pool = self._reply_templates.get("precise_address_closure_pool")
+        if isinstance(precise_address_pool, list):
+            pool = [str(x).strip() for x in precise_address_pool if str(x).strip()]
+            self._precise_address_closure_pool = pool or list(DEFAULT_REPLY_TEMPLATES.get("precise_address_closure_pool", []))
+        else:
+            self._precise_address_closure_pool = list(DEFAULT_REPLY_TEMPLATES.get("precise_address_closure_pool", []))
+
+        self._fixed_contact_closure_norms = self._collect_fixed_contact_closure_norms()
 
         self._media_whitelist_sessions = set()
         if self.media_whitelist_path.exists():
@@ -2120,15 +2147,37 @@ class CustomerServiceAgent:
     def _sanitize_pending_required_media(
         self,
         items: Any,
+        session_state: Optional[Dict[str, Any]] = None,
         latest_planned: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
-        return agent_media.sanitize_pending_required_media(self, items, latest_planned=latest_planned)
+        return agent_media.sanitize_pending_required_media(
+            self,
+            items,
+            session_state=session_state,
+            latest_planned=latest_planned,
+        )
 
     def _remove_pending_required_media(self, session_state: Dict[str, Any], media_item: Dict[str, Any]) -> None:
         agent_media.remove_pending_required_media(self, session_state, media_item)
 
+    def _remove_planned_required_media(self, session_state: Dict[str, Any], media_item: Dict[str, Any]) -> None:
+        agent_media.remove_planned_required_media(self, session_state, media_item)
+
     def _pending_media_key(self, media_item: Dict[str, Any]) -> str:
         return agent_media.pending_media_key(self, media_item)
+
+    def register_planned_required_media(
+        self,
+        session_id: str,
+        user_name: str,
+        media_items: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        return agent_media.register_planned_required_media(
+            self,
+            session_id=session_id,
+            user_name=user_name,
+            media_items=media_items,
+        )
 
     def summarize_user_media_from_logs(self, user_id_hash: str) -> Dict[str, Any]:
         return agent_media.summarize_user_media_from_logs(self, user_id_hash)
@@ -2177,8 +2226,8 @@ class CustomerServiceAgent:
     def _infer_store_from_name(self, name: str) -> str:
         return agent_media.infer_store_from_name(self, name)
 
-    def _pick_address_image(self, target_store: str) -> Optional[str]:
-        return agent_media.pick_address_image(self, target_store)
+    def _pick_address_image(self, target_store: str, session_state: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        return agent_media.pick_address_image(self, target_store, session_state=session_state)
 
     def _pick_video_media(self) -> Optional[str]:
         return agent_media.pick_video_media(self)
@@ -2222,7 +2271,7 @@ class CustomerServiceAgent:
         session_state: Optional[Dict[str, Any]] = None,
         conversation_history: Optional[List[Dict[str, str]]] = None,
         allow_address_guardrails: bool = True,
-    ) -> str:
+    ) -> Tuple[str, Dict[str, Any]]:
         return apply_llm_reply_guardrails(
             self,
             latest_user_text=latest_user_text,
@@ -2231,6 +2280,13 @@ class CustomerServiceAgent:
             conversation_history=conversation_history,
             allow_address_guardrails=allow_address_guardrails,
         )
+
+    def _build_reply_closure_info(
+        self,
+        reply_text: str,
+        base_info: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        return build_reply_closure_info(self, reply_text=reply_text, base_info=base_info)
 
     def _needs_empathy_remote_support(self, text: str) -> bool:
         normalized = self.knowledge_service.normalize_user_text(text)
@@ -2514,6 +2570,33 @@ class CustomerServiceAgent:
             emoji = random.choice(REPLY_EMOJI_POOL)
             text = text.replace("🌹", emoji)
         return text
+
+    def _collect_fixed_contact_closure_norms(self) -> set[str]:
+        template_keys = (
+            "contact_intro",
+            "purchase_contact_intro",
+            "purchase_contact_remind_only",
+            "purchase_contact_remote_remind_only",
+            "strong_intent_after_both_first",
+            "contact_followup_1",
+            "contact_followup_2",
+            "llm_fallback",
+        )
+        fixed_texts = [
+            str(self._reply_templates.get(key, DEFAULT_REPLY_TEMPLATES.get(key, "")) or "").strip()
+            for key in template_keys
+        ]
+        fixed_texts.extend(
+            [
+                CONTACT_FACT_FALLBACK,
+                PHONE_LEAK_BLOCK_FALLBACK,
+            ]
+        )
+        return {
+            self._normalize_for_dedupe(text)
+            for text in fixed_texts
+            if str(text).strip()
+        }
 
 
 def route_region(route_reason: str, text: str) -> str:

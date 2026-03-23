@@ -61,10 +61,19 @@ def decide_llm_reply(
         and str(prompt_meta.get("standard_reply_intent", "") or "") in {"service_hours", "lifespan"}
         and str(prompt_meta.get("standard_reply_answer", "") or "").strip()
     )
-    success, result, llm_metrics = agent.llm_service.generate_reply_sync(
+    llm_result = agent.llm_service.generate_reply_sync(
         user_message=effective_user_message,
         conversation_history=conversation_history,
     )
+    if isinstance(llm_result, tuple) and len(llm_result) == 3:
+        success, result, llm_metrics = llm_result
+    elif isinstance(llm_result, tuple) and len(llm_result) == 2:
+        success, result = llm_result
+        llm_metrics = {}
+    else:
+        success = False
+        result = "invalid_llm_result"
+        llm_metrics = {}
     llm_metrics = dict(llm_metrics or {})
     model_name = agent.llm_service.get_current_model_name()
     if not success:
@@ -107,7 +116,7 @@ def decide_llm_reply(
         llm_reply = agent._normalize_reply_text(str(prompt_meta.get("standard_reply_answer", "") or ""))
     else:
         llm_reply = agent._normalize_reply_text(result)
-    llm_reply = agent._apply_llm_reply_guardrails(
+    llm_reply, reply_closure_info = agent._apply_llm_reply_guardrails(
         latest_user_text=latest_user_text,
         reply_text=llm_reply,
         session_state=session_state or {},
@@ -147,6 +156,7 @@ def decide_llm_reply(
         llm_attempt_count=int(llm_metrics.get("attempt_count", 0) or 0),
         llm_message_count=int(llm_metrics.get("message_count", 0) or 0),
         system_prompt_chars=int(llm_metrics.get("system_prompt_chars", 0) or 0),
+        reply_closure_info=dict(reply_closure_info or {}),
     )
 
 

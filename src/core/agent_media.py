@@ -48,33 +48,71 @@ def build_post_text_media_queue(
 ) -> List[Dict[str, Any]]:
     user_hash = agent._hash_user(user_name or session_id)
     session_state = agent.memory_store.get_session_state(session_id, user_hash=user_hash)
-    pending_items = sanitize_pending_required_media(
+    carryover_items = sanitize_pending_required_media(
         agent,
-        session_state.get("pending_required_media", []),
+        [
+            *(session_state.get("planned_required_media", []) or []),
+            *(session_state.get("pending_required_media", []) or []),
+        ],
+        session_state=session_state,
         latest_planned=planned_media_items,
     )
     queue: List[Dict[str, Any]] = []
-    queue.extend(pending_items)
+    queue.extend(carryover_items)
 
     for item in planned_media_items or []:
         if not isinstance(item, dict):
             continue
-        item_type = str(item.get("type", "") or "")
-        if item_type == "address_image":
-            queue = [
-                x for x in queue
-                if not (
-                    str(x.get("type", "")) == "address_image"
-                    and x.get("target_store") == item.get("target_store")
-                )
-            ]
-        queue.append(dict(item))
+        queue = _upsert_media_item(agent, queue, dict(item))
 
     for item in extra_media_items or []:
         if isinstance(item, dict):
             queue.append(dict(item))
 
     return queue
+
+
+def register_planned_required_media(
+    agent,
+    session_id: str,
+    user_name: str,
+    media_items: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    if not media_items:
+        return []
+
+    user_hash = agent._hash_user(user_name or session_id)
+    session_state = agent.memory_store.get_session_state(session_id, user_hash=user_hash)
+    planned_items = sanitize_pending_required_media(
+        agent,
+        session_state.get("planned_required_media", []),
+        session_state=session_state,
+    )
+    added_items: List[Dict[str, Any]] = []
+    for raw_item in media_items or []:
+        if not isinstance(raw_item, dict):
+            continue
+        if bool(raw_item.get("disable_compensation", False)):
+            continue
+        media_type = str(raw_item.get("type", "") or "")
+        if media_type not in REQUIRED_MEDIA_TYPES:
+            continue
+        state_item = _build_required_media_state_item(raw_item)
+        if not state_item:
+            continue
+        state_item["pending_media_id"] = pending_media_key(agent, state_item)
+        state_item["pending_required"] = True
+        planned_items = _upsert_media_item(agent, planned_items, state_item)
+        added_items = _upsert_media_item(agent, added_items, dict(state_item))
+
+    if not added_items:
+        return []
+
+    session_state["planned_required_media"] = planned_items
+    session_state["planned_required_media_updated_at"] = datetime.now().isoformat()
+    agent.memory_store.update_session_state(session_id, session_state, user_hash=user_hash)
+    agent.memory_store.save()
+    return added_items
 
 
 def mark_reply_sent(
@@ -140,44 +178,60 @@ def judge_post_reply_media(
     history = conversation_history or []
     route = agent.knowledge_service.resolve_store_recommendation(normalized_text)
     intent = decision.intent if decision is not None else agent._detect_intent(normalized_text)
+    closure_info = agent._build_reply_closure_info(
+        reply_text=reply_text,
+        base_info=dict(getattr(decision, "reply_closure_info", {}) or {}) if decision is not None else None,
+    )
+    media_items: List[Dict[str, Any]] = []
+    reasons: List[str] = []
+    skip_reason = ""
 
+    if closure_info.get("precise_address_hit") and str(closure_info.get("target_store", "") or ""):
+        item, reason_hint = queue_address_image(
+            agent,
+            session_id=session_id,
+            session_state=session_state,
+            target_store=str(closure_info.get("target_store", "") or ""),
+            route_reason="precise_address_closure",
+            detected_region=route.get("detected_region", "") or "",
+        )
+        if item:
+            media_items = _upsert_media_item(agent, media_items, item)
+            reasons.append("precise_address_closure")
+        elif reason_hint:
+            skip_reason = reason_hint
+
+    needs_contact_closure_image = bool(closure_info.get("contact_closure_hit"))
     if decision is not None and str(decision.reply_source or "") == "fallback":
-        media_items, skip_reason = plan_media_items(
-            agent,
-            session_id=session_id,
-            text=normalized_text,
-            intent="contact",
-            route=route,
-            route_reason="llm_fallback_contact",
-            media_plan="contact_image",
-            session_state=session_state,
-            user_state=agent.memory_store.get_user_state(user_hash),
-            force_contact_image=True,
-        )
-        return MediaJudgeDecision(
-            send_contact_image=bool(media_items),
-            reason="llm_fallback_contact",
-            reminder_only=False,
-            skip_reason=str(skip_reason or ""),
-            media_items=media_items,
-        )
-
+        needs_contact_closure_image = True
+        reasons.append("llm_fallback_contact")
     if agent._looks_like_direct_contact_request(normalized_text):
-        media_items, skip_reason = plan_media_items(
+        needs_contact_closure_image = True
+        reasons.append("direct_contact_request")
+
+    if needs_contact_closure_image:
+        item, reason_hint = queue_contact_image(
             agent,
             session_id=session_id,
             text=normalized_text,
             intent="contact",
+            reason="fixed_contact_closure",
             route=route,
-            route_reason="direct_contact_request",
-            media_plan="contact_image",
             session_state=session_state,
-            user_state=agent.memory_store.get_user_state(user_hash),
             force_contact_image=True,
         )
+        if item:
+            media_items = _upsert_media_item(agent, media_items, item)
+            if "fixed_contact_closure" not in reasons:
+                reasons.append("fixed_contact_closure")
+        elif reason_hint and not skip_reason:
+            skip_reason = reason_hint
+
+    if media_items:
         return MediaJudgeDecision(
-            send_contact_image=bool(media_items),
-            reason="direct_contact_request",
+            send_contact_image=any(str(x.get("type", "") or "") == "contact_image" for x in media_items),
+            send_address_image=any(str(x.get("type", "") or "") == "address_image" for x in media_items),
+            reason=",".join(dict.fromkeys(reasons)),
             reminder_only=False,
             skip_reason=str(skip_reason or ""),
             media_items=media_items,
@@ -231,6 +285,7 @@ def mark_media_sent(agent, session_id: str, user_name: str, media_item: Dict[str
         session_state["address_image_sent_count"] = sent_count + 1
         stores = set(session_state.get("sent_address_stores", []) or [])
         target_store = media_item.get("target_store", "")
+        sent_paths_by_store = dict(session_state.get("address_image_sent_paths_by_store", {}) or {})
         if target_store:
             stores.add(target_store)
             sent_map = session_state.get("address_image_last_sent_at_by_store", {}) or {}
@@ -238,6 +293,16 @@ def mark_media_sent(agent, session_id: str, user_name: str, media_item: Dict[str
                 sent_map = {}
             sent_map[target_store] = now
             session_state["address_image_last_sent_at_by_store"] = sent_map
+            sent_paths = [
+                str(path).strip()
+                for path in (sent_paths_by_store.get(target_store, []) or [])
+                if str(path).strip()
+            ]
+            media_path = str(media_item.get("path", "") or "").strip()
+            if media_path and media_path not in sent_paths:
+                sent_paths.append(media_path)
+            sent_paths_by_store[target_store] = sent_paths
+            session_state["address_image_sent_paths_by_store"] = sent_paths_by_store
             session_state["last_target_store"] = target_store
         session_state["sent_address_stores"] = list(stores)
 
@@ -259,6 +324,7 @@ def mark_media_sent(agent, session_id: str, user_name: str, media_item: Dict[str
 
     if media_type in REQUIRED_MEDIA_TYPES:
         agent._remove_pending_required_media(session_state, media_item)
+        remove_planned_required_media(agent, session_state, media_item)
         budget = session_state.get("required_media_retry_budget", {}) or {}
         budget.pop(agent._pending_media_key(media_item), None)
         session_state["required_media_retry_budget"] = budget
@@ -284,22 +350,20 @@ def enqueue_media_compensation(
 
     user_hash = agent._hash_user(user_name or session_id)
     session_state = agent.memory_store.get_session_state(session_id, user_hash=user_hash)
-    pending_items = agent._sanitize_pending_required_media(session_state.get("pending_required_media", []))
-    clean_item = dict(media_item)
+    pending_items = agent._sanitize_pending_required_media(
+        session_state.get("pending_required_media", []),
+        session_state=session_state,
+    )
+    clean_item = _build_required_media_state_item(media_item)
+    if not clean_item:
+        return None
+    clean_item["last_attempted_path"] = str(media_item.get("path", "") or "")
     pending_id = agent._pending_media_key(clean_item)
     clean_item["pending_media_id"] = pending_id
     clean_item["pending_required"] = True
     clean_item["queued_at"] = datetime.now().isoformat()
-
-    if media_type == "contact_image":
-        pending_items = [x for x in pending_items if str(x.get("type", "")) != "contact_image"]
-    elif media_type == "address_image":
-        target_store = str(clean_item.get("target_store", "") or "")
-        pending_items = [
-            x for x in pending_items
-            if not (str(x.get("type", "")) == "address_image" and str(x.get("target_store", "") or "") == target_store)
-        ]
-    pending_items.append(clean_item)
+    pending_items = _upsert_media_item(agent, pending_items, clean_item)
+    remove_planned_required_media(agent, session_state, clean_item)
 
     budget = session_state.get("required_media_retry_budget", {}) or {}
     budget[pending_id] = int(budget.get(pending_id, 0) or 0) + 1
@@ -309,6 +373,8 @@ def enqueue_media_compensation(
         {
             "pending_required_media": pending_items,
             "pending_required_media_updated_at": datetime.now().isoformat(),
+            "planned_required_media": session_state.get("planned_required_media", []),
+            "planned_required_media_updated_at": session_state.get("planned_required_media_updated_at", ""),
             "last_required_media_failure_code": str(failure_code or ""),
             "last_required_media_failure_detail": str(failure_detail or ""),
             "required_media_retry_budget": budget,
@@ -323,6 +389,7 @@ def clear_media_compensation(agent, session_id: str, user_name: str, media_item:
     user_hash = agent._hash_user(user_name or session_id)
     session_state = agent.memory_store.get_session_state(session_id, user_hash=user_hash)
     agent._remove_pending_required_media(session_state, media_item)
+    remove_planned_required_media(agent, session_state, media_item)
     budget = session_state.get("required_media_retry_budget", {}) or {}
     budget.pop(agent._pending_media_key(media_item), None)
     session_state["required_media_retry_budget"] = budget
@@ -394,11 +461,11 @@ def queue_address_image(
     route_reason: str,
     detected_region: str,
 ) -> Tuple[Optional[Dict[str, Any]], str]:
-    del session_id, session_state
+    del session_id
     if target_store == "unknown":
         return None, "address_target_unknown"
 
-    image_path = pick_address_image(agent, target_store)
+    image_path = pick_address_image(agent, target_store, session_state=session_state)
     if not image_path:
         return None, "address_image_missing"
 
@@ -450,7 +517,11 @@ def queue_contact_image(
     return None, "contact_image_not_applicable"
 
 
-def pick_contact_image_for_session(agent, session_state: Dict[str, Any]) -> Optional[str]:
+def pick_contact_image_for_session(
+    agent,
+    session_state: Dict[str, Any],
+    exclude_paths: Optional[List[str]] = None,
+) -> Optional[str]:
     pool = [str(path) for path in agent._contact_images if str(path).strip()]
     if not pool:
         return None
@@ -459,9 +530,12 @@ def pick_contact_image_for_session(agent, session_state: Dict[str, Any]) -> Opti
         for path in (session_state.get("contact_image_sent_paths", []) or [])
         if str(path).strip()
     }
-    available = [path for path in pool if path not in sent_paths]
+    excluded = {str(path).strip() for path in (exclude_paths or []) if str(path).strip()}
+    available = [path for path in pool if path not in sent_paths and path not in excluded]
+    if not available and excluded:
+        available = [path for path in pool if path not in sent_paths]
     if not available:
-        return None
+        available = list(pool)
     return random.choice(available)
 
 
@@ -518,6 +592,7 @@ def sync_media_state_from_conversation_log(
     session_state["address_image_sent_count"] = int(user_summary.get("address_image_sent_count", 0) or 0)
     session_state["contact_image_sent_count"] = int(user_summary.get("contact_image_sent_count", 0) or 0)
     session_state["address_image_last_sent_at_by_store"] = dict(user_summary.get("address_image_last_sent_at_by_store", {}) or {})
+    session_state["address_image_sent_paths_by_store"] = dict(user_summary.get("address_image_sent_paths_by_store", {}) or {})
     session_state["sent_address_stores"] = list(user_summary.get("sent_address_stores", []) or [])
     session_state["contact_image_last_sent_at"] = str(user_summary.get("contact_image_last_sent_at", "") or "")
     session_state["contact_image_sent_paths"] = list(user_summary.get("contact_image_sent_paths", []) or [])
@@ -538,6 +613,7 @@ def sync_media_state_from_conversation_log(
 def sanitize_pending_required_media(
     agent,
     items: Any,
+    session_state: Optional[Dict[str, Any]] = None,
     latest_planned: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     sanitized: List[Dict[str, Any]] = []
@@ -546,6 +622,10 @@ def sanitize_pending_required_media(
         for item in (latest_planned or [])
         if isinstance(item, dict) and str(item.get("type", "")) == "address_image"
     }
+    latest_has_contact = any(
+        isinstance(item, dict) and str(item.get("type", "") or "") == "contact_image"
+        for item in (latest_planned or [])
+    )
     for raw in items or []:
         if not isinstance(raw, dict):
             continue
@@ -557,28 +637,133 @@ def sanitize_pending_required_media(
             target_store = str(item.get("target_store", "") or "")
             if latest_address_targets and target_store and target_store not in latest_address_targets:
                 continue
-        item["pending_media_id"] = pending_media_key(agent, item)
-        item["pending_required"] = True
-        sanitized.append(item)
+        if media_type == "contact_image" and latest_has_contact:
+            continue
+        materialized = _materialize_required_media_item(
+            agent,
+            session_state=session_state or {},
+            media_item=item,
+        )
+        if not materialized:
+            continue
+        materialized["pending_media_id"] = pending_media_key(agent, materialized)
+        materialized["pending_required"] = True
+        sanitized = _upsert_media_item(agent, sanitized, materialized)
     return sanitized
 
 
-def remove_pending_required_media(agent, session_state: Dict[str, Any], media_item: Dict[str, Any]) -> None:
+def _materialize_required_media_item(
+    agent,
+    session_state: Dict[str, Any],
+    media_item: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
     media_type = str((media_item or {}).get("type", "") or "")
+    item = _build_required_media_state_item(media_item)
+    if not item:
+        return None
+
+    if media_type == "address_image":
+        target_store = str(item.get("target_store", "") or "")
+        if not target_store:
+            return None
+        exclude_paths = [
+            str(item.get("last_attempted_path", "") or "").strip()
+        ]
+        image_path = pick_address_image(
+            agent,
+            target_store,
+            session_state=session_state,
+            exclude_paths=exclude_paths,
+        )
+        if not image_path:
+            return None
+        store = agent.knowledge_service.get_store_display(target_store)
+        item["path"] = image_path
+        item["store_name"] = str(item.get("store_name", "") or store.get("store_name", "") or "")
+        item["store_address"] = str(item.get("store_address", "") or store.get("store_address", "") or "")
+        return item
+
+    if media_type == "contact_image":
+        exclude_paths = [
+            str(item.get("last_attempted_path", "") or "").strip()
+        ]
+        image_path = pick_contact_image_for_session(agent, session_state, exclude_paths=exclude_paths)
+        if not image_path:
+            return None
+        item["path"] = image_path
+        return item
+
+    if media_type == "delayed_video":
+        if not str(item.get("path", "") or ""):
+            video_path = pick_video_media(agent)
+            if not video_path:
+                return None
+            item["path"] = video_path
+        return item
+    return None
+
+
+def _build_required_media_state_item(media_item: Dict[str, Any]) -> Dict[str, Any]:
+    media_type = str((media_item or {}).get("type", "") or "")
+    if media_type not in REQUIRED_MEDIA_TYPES:
+        return {}
+    item = {
+        "type": media_type,
+        "target_store": str((media_item or {}).get("target_store", "") or ""),
+        "store_name": str((media_item or {}).get("store_name", "") or ""),
+        "store_address": str((media_item or {}).get("store_address", "") or ""),
+        "detected_region": str((media_item or {}).get("detected_region", "") or ""),
+        "route_reason": str((media_item or {}).get("route_reason", "") or ""),
+        "trigger_source": str((media_item or {}).get("trigger_source", "") or ""),
+        "path": "",
+        "last_attempted_path": str((media_item or {}).get("last_attempted_path", "") or ""),
+    }
+    if media_type == "delayed_video":
+        item["path"] = str((media_item or {}).get("path", "") or "")
+    return item
+
+
+def _upsert_media_item(
+    agent,
+    items: List[Dict[str, Any]],
+    media_item: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    media_key = pending_media_key(agent, media_item)
+    updated = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        if pending_media_key(agent, item) == media_key:
+            continue
+        updated.append(item)
+    updated.append(dict(media_item))
+    return updated
+
+
+def remove_pending_required_media(agent, session_state: Dict[str, Any], media_item: Dict[str, Any]) -> None:
     media_key = pending_media_key(agent, media_item)
     pending_items = []
     for item in session_state.get("pending_required_media", []) or []:
         if not isinstance(item, dict):
-            continue
-        item_type = str(item.get("type", "") or "")
-        if item_type != media_type:
-            pending_items.append(item)
             continue
         if pending_media_key(agent, item) == media_key:
             continue
         pending_items.append(item)
     session_state["pending_required_media"] = pending_items
     session_state["pending_required_media_updated_at"] = datetime.now().isoformat()
+
+
+def remove_planned_required_media(agent, session_state: Dict[str, Any], media_item: Dict[str, Any]) -> None:
+    media_key = pending_media_key(agent, media_item)
+    planned_items = []
+    for item in session_state.get("planned_required_media", []) or []:
+        if not isinstance(item, dict):
+            continue
+        if pending_media_key(agent, item) == media_key:
+            continue
+        planned_items.append(item)
+    session_state["planned_required_media"] = planned_items
+    session_state["planned_required_media_updated_at"] = datetime.now().isoformat()
 
 
 def pending_media_key(agent, media_item: Dict[str, Any]) -> str:
@@ -596,6 +781,7 @@ def summarize_user_media_from_logs(agent, user_id_hash: str) -> Dict[str, Any]:
         "address_image_sent_count": 0,
         "contact_image_sent_count": 0,
         "address_image_last_sent_at_by_store": {},
+        "address_image_sent_paths_by_store": {},
         "sent_address_stores": [],
         "contact_image_last_sent_at": "",
         "contact_image_sent_paths": [],
@@ -605,6 +791,7 @@ def summarize_user_media_from_logs(agent, user_id_hash: str) -> Dict[str, Any]:
         return summary
 
     address_ts_map: Dict[str, datetime] = {}
+    address_sent_paths_by_store: Dict[str, List[str]] = {}
     sent_address_stores: set[str] = set()
     last_target_store = ""
     last_target_store_ts: Optional[datetime] = None
@@ -619,8 +806,12 @@ def summarize_user_media_from_logs(agent, user_id_hash: str) -> Dict[str, Any]:
             if media_type == "address_image":
                 summary["address_image_sent_count"] += 1
                 target_store = str(rec.get("target_store", "") or "")
+                media_path = str(rec.get("path", "") or "").strip()
                 if target_store:
                     sent_address_stores.add(target_store)
+                    store_paths = address_sent_paths_by_store.setdefault(target_store, [])
+                    if media_path and media_path not in store_paths:
+                        store_paths.append(media_path)
                     if ts and (target_store not in address_ts_map or ts > address_ts_map[target_store]):
                         address_ts_map[target_store] = ts
                     if ts and (not last_target_store_ts or ts > last_target_store_ts):
@@ -641,6 +832,7 @@ def summarize_user_media_from_logs(agent, user_id_hash: str) -> Dict[str, Any]:
     summary["address_image_last_sent_at_by_store"] = {
         store: dt.isoformat() for store, dt in address_ts_map.items()
     }
+    summary["address_image_sent_paths_by_store"] = address_sent_paths_by_store
     if contact_last_ts:
         summary["contact_image_last_sent_at"] = contact_last_ts.isoformat()
     summary["contact_image_sent_paths"] = contact_sent_paths
@@ -815,7 +1007,8 @@ def summarize_session_video_from_log(agent, session_id: str) -> Dict[str, Any]:
 
 def build_video_media_item(agent, trigger_source: str) -> Optional[Dict[str, Any]]:
     custom_builder = getattr(agent, "_build_video_media_item", None)
-    if callable(custom_builder):
+    custom_func = getattr(custom_builder, "__func__", None)
+    if callable(custom_builder) and custom_func is None:
         item = custom_builder(trigger_source)
         if isinstance(item, dict):
             return dict(item)
@@ -979,7 +1172,12 @@ def infer_store_from_name(agent, name: str) -> str:
     return ""
 
 
-def pick_address_image(agent, target_store: str) -> Optional[str]:
+def pick_address_image(
+    agent,
+    target_store: str,
+    session_state: Optional[Dict[str, Any]] = None,
+    exclude_paths: Optional[List[str]] = None,
+) -> Optional[str]:
     pool = agent._address_index.get(target_store, [])
     if not pool and target_store.startswith("sh_"):
         pool = agent._address_index.get("sh_renmin", [])
@@ -987,7 +1185,19 @@ def pick_address_image(agent, target_store: str) -> Optional[str]:
         pool = agent._address_index.get("beijing_chaoyang", [])
     if not pool:
         return None
-    return random.choice(pool)
+    sent_paths_by_store = dict((session_state or {}).get("address_image_sent_paths_by_store", {}) or {})
+    sent_paths = {
+        str(path).strip()
+        for path in (sent_paths_by_store.get(target_store, []) or [])
+        if str(path).strip()
+    }
+    excluded = {str(path).strip() for path in (exclude_paths or []) if str(path).strip()}
+    available = [path for path in pool if path not in sent_paths and path not in excluded]
+    if not available and excluded:
+        available = [path for path in pool if path not in sent_paths]
+    if not available:
+        available = list(pool)
+    return random.choice(available)
 
 
 def pick_video_media(agent) -> Optional[str]:

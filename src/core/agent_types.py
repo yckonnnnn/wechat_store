@@ -58,6 +58,7 @@ class AgentDecision:
     llm_attempt_count: int = 0
     llm_message_count: int = 0
     system_prompt_chars: int = 0
+    reply_closure_info: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

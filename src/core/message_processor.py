@@ -799,6 +799,7 @@ class MessageProcessor(QObject):
                 )
 
                 if media_queue:
+                    self._record_planned_required_media(session_id, user_name, media_queue)
                     self._mark_active_session(
                         session_id=session_id,
                         user_name=user_name,
@@ -1397,6 +1398,40 @@ class MessageProcessor(QObject):
         else:
             prefix = "[MEDIA]"
         self._emit_log(f"{prefix} {message}", color="#ef4444", category="media", level=level)
+
+    def _record_planned_required_media(
+        self,
+        session_id: str,
+        user_name: str,
+        media_queue: List[Dict[str, Any]],
+    ) -> None:
+        register = getattr(self.agent, "register_planned_required_media", None)
+        if not callable(register):
+            return
+        try:
+            planned_items = list(register(session_id=session_id, user_name=user_name, media_items=media_queue) or [])
+        except Exception as exc:
+            self._emit_log(f"⚠️ 必达媒体计划落盘失败，不影响发送: {exc}")
+            return
+        for item in planned_items:
+            if not isinstance(item, dict):
+                continue
+            media_type = str(item.get("type", "") or "")
+            pending_media_id = str(item.get("pending_media_id", "") or self._pending_media_id(item))
+            self._append_media_delivery_event(
+                session_id=session_id,
+                user_name=user_name,
+                event_type=self._media_event_name(media_type, "planned"),
+                item=item,
+                payload={
+                    "media_type": media_type,
+                    "delivery_stage": "planned",
+                    "pending_media_id": pending_media_id,
+                    "retry_attempt": 0,
+                    "compensation_enqueued": False,
+                    "failure_code": "",
+                },
+            )
 
     def _record_required_media_terminal_failure(
         self,

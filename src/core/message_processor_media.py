@@ -583,20 +583,6 @@ class MediaSendCoordinator:
         item: MediaItem,
         pending_media_id: str,
     ) -> None:
-        self._hooks.append_media_delivery_event(
-            session_id,
-            user_name,
-            self._hooks.media_event_name(media_type, "planned"),
-            item,
-            {
-                "media_type": media_type,
-                "delivery_stage": "planned",
-                "pending_media_id": pending_media_id,
-                "retry_attempt": int(item.get("_retry_count", 0) or 0),
-                "compensation_enqueued": False,
-                "failure_code": "",
-            },
-        )
         self._append_training_event(
             session_id=session_id,
             user_id_hash=self._hooks.build_user_hash(user_name=user_name, session_id=session_id),
