@@ -696,6 +696,39 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertGreater(d.kb_match_score, 0.5)
             self.assertEqual(llm.calls, 0)
 
+    def test_service_hours_guardrail_corrects_wrong_hours(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+
+            reply_text, _ = agent._apply_llm_reply_guardrails(
+                latest_user_text="营业时间",
+                reply_text="姐姐，营业时间是早上10点到晚上7点哦🌹",
+                session_state={},
+                conversation_history=[],
+            )
+
+            self.assertIn("9:30", reply_text)
+            self.assertTrue("6:00" in reply_text or "18:00" in reply_text)
+            self.assertNotIn("10点", reply_text)
+            self.assertNotIn("7点", reply_text)
+
+    def test_service_hours_guardrail_keeps_correct_hours(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+            original = "姐姐我们工作日周一到周五，营业时间是上午9:30到下午6:00哦🌹"
+
+            reply_text, _ = agent._apply_llm_reply_guardrails(
+                latest_user_text="你们营业时间是几点",
+                reply_text=original,
+                session_state={},
+                conversation_history=[],
+            )
+
+            self.assertEqual(
+                agent._normalize_for_dedupe(reply_text),
+                agent._normalize_for_dedupe(original),
+            )
+
     def test_address_index_prefers_store_targets_metadata_even_without_district_filename(self):
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)

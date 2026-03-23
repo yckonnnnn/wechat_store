@@ -14,6 +14,20 @@ PRECISE_ADDRESS_TO_STORE: Dict[str, str] = {
     "建外SOHO东区": "beijing_chaoyang",
 }
 
+SERVICE_HOURS_QUERY_KEYWORDS = (
+    "服务时间",
+    "营业时间",
+    "上班时间",
+    "上班几点",
+    "几点营业",
+    "几点上班",
+    "营业到几点",
+    "几点下班",
+    "开门时间",
+    "关门时间",
+)
+SERVICE_HOURS_SAFE_REPLY = "姐姐我们工作日周一到周五，营业时间是上午9:30到下午6:00哦"
+
 DEFAULT_PRECISE_ADDRESS_CLOSURE_POOL: List[str] = [
     "姐姐您看下我发的位置图，按图找会更直观些，方便的话我也可以继续帮您安排预约呀🌹",
     "姐姐具体位置我给您放在图片里啦，您照着图看更清楚，方便的话我继续帮您安排😊",
@@ -86,6 +100,30 @@ def detect_precise_address_in_reply(reply_text: str) -> Dict[str, Any]:
         if normalized_address in normalized_reply:
             return dict(payload)
     return {}
+
+
+def normalize_service_hours_check_text(text: str) -> str:
+    return re.sub(r"\s+", "", str(text or "")).lower()
+
+
+def is_service_hours_query(latest_user_text: str) -> bool:
+    normalized = normalize_service_hours_check_text(latest_user_text)
+    if not normalized:
+        return False
+    return any(keyword in normalized for keyword in SERVICE_HOURS_QUERY_KEYWORDS)
+
+
+def reply_has_correct_service_hours(reply_text: str) -> bool:
+    normalized = normalize_service_hours_check_text(reply_text)
+    if not normalized:
+        return False
+
+    has_open_time = any(token in normalized for token in ("9:30", "930", "上午9点30", "早上9点30"))
+    has_close_time = any(
+        token in normalized
+        for token in ("18:00", "1800", "下午6:00", "下午6点", "晚上18:00", "晚18:00")
+    )
+    return has_open_time and has_close_time
 
 
 def build_reply_closure_info(
@@ -162,6 +200,9 @@ def apply_llm_reply_guardrails(
 
     def finalize(final_reply: str, base_info: Optional[Dict[str, Any]] = None) -> Tuple[str, Dict[str, Any]]:
         return final_reply, build_reply_closure_info(agent, final_reply, base_info or closure_info)
+
+    if is_service_hours_query(text) and not reply_has_correct_service_hours(reply):
+        return finalize(agent._render_guardrail_reply(SERVICE_HOURS_SAFE_REPLY))
 
     if agent._contains_explicit_phone_number(reply):
         if agent._has_price_priority(text):
