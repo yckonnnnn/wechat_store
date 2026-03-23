@@ -2536,6 +2536,54 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertFalse(media_decision.send_address_image)
             self.assertFalse(any(item.get("type") == "address_image" for item in media_decision.media_items))
 
+    def test_single_store_address_image_promise_reply_queues_address_image(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = self._build_agent(
+                temp_dir,
+                address_image_files=["静安地址.jpg", "人广地址.jpg"],
+                store_targets={"静安地址.jpg": "sh_jingan", "人广地址.jpg": "sh_renmin"},
+            )
+            scenarios = [
+                (
+                    "姐姐，静安店在静安区，具体地址我给您发一张位置图，您跟着图中圈圈的位置会更直观。💗",
+                    "sh_jingan",
+                    "静安地址",
+                ),
+                (
+                    "姐姐，人广店在黄浦区汉口路，具体地址我给您发一张位置图，您跟着图中圈圈的位置会更直观。🌷",
+                    "sh_renmin",
+                    "人广地址",
+                ),
+            ]
+
+            for idx, (reply_text, expected_store, user_text) in enumerate(scenarios):
+                decision = AgentDecision(
+                    reply_text=reply_text,
+                    intent="address",
+                    route_reason="unknown",
+                    reply_goal="解答",
+                    media_plan="none",
+                    reply_source="llm",
+                    rule_id="LLM_GENERAL",
+                    reply_closure_info=agent._build_reply_closure_info(reply_text),
+                )
+
+                media_decision = agent.judge_post_reply_media(
+                    session_id=f"chat_address_image_promise_{idx}",
+                    user_name=f"位置图承诺用户{idx}",
+                    latest_user_text=user_text,
+                    reply_text=reply_text,
+                    conversation_history=[],
+                    decision=decision,
+                )
+
+                self.assertEqual(decision.reply_closure_info.get("closure_type"), "address_image_promise")
+                self.assertEqual(decision.reply_closure_info.get("target_store"), expected_store)
+                self.assertTrue(media_decision.send_address_image)
+                self.assertTrue(any(item.get("type") == "address_image" for item in media_decision.media_items))
+                self.assertEqual(media_decision.media_items[0].get("target_store"), expected_store)
+
     def test_llm_phone_leak_reply_is_blocked(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, _, llm = self._build_agent(Path(td))

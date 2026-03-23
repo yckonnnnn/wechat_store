@@ -58,6 +58,21 @@ STORE_RECOMMENDATION_EXCLUDE_CUES = (
     "您在人广吗",
     "您在人民广场吗",
 )
+ADDRESS_IMAGE_PROMISE_CUES = (
+    "位置图",
+    "位置图片",
+    "发位置图",
+    "发一张位置图",
+    "给您发位置图",
+    "给您发一张位置图",
+    "看图",
+    "按图",
+    "跟着图",
+    "图中圈圈",
+    "圈圈的位置",
+    "看图片",
+    "位置可以看图",
+)
 
 SERVICE_HOURS_QUERY_KEYWORDS = (
     "服务时间",
@@ -189,12 +204,12 @@ def reply_has_non_whitelist_detailed_address(reply_text: str) -> bool:
     return any(re.search(pattern, normalized, re.IGNORECASE) for pattern in detailed_patterns)
 
 
-def detect_store_recommendation_in_reply(reply_text: str) -> Dict[str, Any]:
+def _detect_unique_store_in_reply(reply_text: str) -> str:
     normalized = normalize_service_hours_check_text(reply_text)
     if not normalized:
-        return {}
+        return ""
     if any(normalize_service_hours_check_text(cue) in normalized for cue in STORE_RECOMMENDATION_EXCLUDE_CUES):
-        return {}
+        return ""
 
     matched_stores: List[str] = []
     for target_store, aliases in STORE_RECOMMENDATION_ALIASES.items():
@@ -202,14 +217,43 @@ def detect_store_recommendation_in_reply(reply_text: str) -> Dict[str, Any]:
             matched_stores.append(target_store)
     matched_stores = list(dict.fromkeys(matched_stores))
     if len(matched_stores) != 1:
+        return ""
+    return matched_stores[0]
+
+
+def detect_store_recommendation_in_reply(reply_text: str) -> Dict[str, Any]:
+    normalized = normalize_service_hours_check_text(reply_text)
+    if not normalized:
+        return {}
+
+    target_store = _detect_unique_store_in_reply(reply_text)
+    if not target_store:
         return {}
 
     if not any(normalize_service_hours_check_text(cue) in normalized for cue in STORE_RECOMMENDATION_POSITIVE_CUES):
         return {}
 
     return {
-        "target_store": matched_stores[0],
+        "target_store": target_store,
         "closure_type": "store_recommendation",
+    }
+
+
+def detect_address_image_promise_in_reply(reply_text: str) -> Dict[str, Any]:
+    normalized = normalize_service_hours_check_text(reply_text)
+    if not normalized:
+        return {}
+
+    target_store = _detect_unique_store_in_reply(reply_text)
+    if not target_store:
+        return {}
+
+    if not any(normalize_service_hours_check_text(cue) in normalized for cue in ADDRESS_IMAGE_PROMISE_CUES):
+        return {}
+
+    return {
+        "target_store": target_store,
+        "closure_type": "address_image_promise",
     }
 
 
@@ -235,6 +279,16 @@ def build_reply_closure_info(
         info["target_store"] = str(recommendation_hit.get("target_store", "") or info.get("target_store", ""))
         if not info.get("closure_type"):
             info["closure_type"] = str(recommendation_hit.get("closure_type", "") or "store_recommendation")
+
+    address_image_promise_hit = detect_address_image_promise_in_reply(reply_text)
+    if (
+        address_image_promise_hit
+        and not info.get("precise_address_hit")
+        and str(info.get("closure_type", "") or "") not in {"store_recommendation", "precise_address"}
+    ):
+        info["target_store"] = str(address_image_promise_hit.get("target_store", "") or info.get("target_store", ""))
+        if not info.get("closure_type"):
+            info["closure_type"] = str(address_image_promise_hit.get("closure_type", "") or "address_image_promise")
 
     fixed_contact_norms = set(getattr(agent, "_fixed_contact_closure_norms", set()) or set())
     if fixed_contact_norms and agent._normalize_for_dedupe(reply_text) in fixed_contact_norms:

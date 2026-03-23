@@ -203,7 +203,7 @@ def judge_post_reply_media(
 
     if (
         not media_items
-        and str(closure_info.get("closure_type", "") or "") == "store_recommendation"
+        and str(closure_info.get("closure_type", "") or "") in {"store_recommendation", "address_image_promise"}
         and str(closure_info.get("target_store", "") or "")
     ):
         item, reason_hint = queue_address_image(
@@ -211,12 +211,20 @@ def judge_post_reply_media(
             session_id=session_id,
             session_state=session_state,
             target_store=str(closure_info.get("target_store", "") or ""),
-            route_reason="store_recommendation_closure",
+            route_reason=(
+                "address_image_promise_closure"
+                if str(closure_info.get("closure_type", "") or "") == "address_image_promise"
+                else "store_recommendation_closure"
+            ),
             detected_region=route.get("detected_region", "") or "",
         )
         if item:
             media_items = _upsert_media_item(agent, media_items, item)
-            reasons.append("store_recommendation_closure")
+            reasons.append(
+                "address_image_promise_closure"
+                if str(closure_info.get("closure_type", "") or "") == "address_image_promise"
+                else "store_recommendation_closure"
+            )
         elif reason_hint and not skip_reason:
             skip_reason = reason_hint
 
