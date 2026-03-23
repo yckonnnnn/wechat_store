@@ -763,16 +763,17 @@ class CustomerServiceAgent:
         intent = self._detect_intent(text)
         decision: Optional[AgentDecision] = None
         if self.reply_mode == REPLY_MODE_LLM_DIRECT:
-            decision = self._decide_llm_reply(
+            decision = self._decide_llm_direct_seed_reply(
                 latest_user_text=raw_text,
                 intent=intent,
-                route_reason=str(route.get("reason", "unknown") or "unknown"),
+                route=route,
                 conversation_history=conversation_history or [],
                 session_state=session_state,
-                allow_address_guardrails=False,
-                allow_precise_address_closure=True,
+                user_state=user_state,
+                user_id_hash=user_hash,
+                is_first_turn_global=is_first_turn_global,
             )
-        price_priority_decision = None if self.reply_mode == REPLY_MODE_LLM_DIRECT else self._decide_price_priority_reply(
+        price_priority_decision = None if decision is not None else self._decide_price_priority_reply(
             latest_user_text=text,
             route=route,
             conversation_history=conversation_history or [],
@@ -780,13 +781,13 @@ class CustomerServiceAgent:
             user_state=user_state,
             user_id_hash=user_hash,
         )
-        address_text_after_image_decision = None if self.reply_mode == REPLY_MODE_LLM_DIRECT else self._build_address_text_after_image_decision(
+        address_text_after_image_decision = None if decision is not None else self._build_address_text_after_image_decision(
             latest_user_text=text,
             route=route,
             intent=intent,
             session_state=session_state,
         )
-        address_contact_after_text_decision = None if self.reply_mode == REPLY_MODE_LLM_DIRECT else self._build_address_contact_after_text_decision(
+        address_contact_after_text_decision = None if decision is not None else self._build_address_contact_after_text_decision(
             latest_user_text=text,
             route=route,
             intent=intent,
@@ -835,7 +836,9 @@ class CustomerServiceAgent:
             decision = address_contact_after_text_decision
         elif appointment_kb_decision and appointment_kb_decision.reply_source == "knowledge":
             decision = appointment_kb_decision
-        elif self._should_apply_rule_decision(text=text, intent=intent, route=route, session_state=session_state):
+        elif self._should_apply_rule_decision(text=text, intent=intent, route=route, session_state=session_state) and not (
+            self.reply_mode == REPLY_MODE_LLM_DIRECT and self._should_keep_llm_direct_address_guardrails(text)
+        ):
             print(f"[DEBUG] 走规则决策: intent={intent}, route_reason={route.get('reason', 'unknown')}, target_store={route.get('target_store', 'unknown')}")
             decision = self._decide_rule_reply(
                 text=text,
@@ -848,15 +851,26 @@ class CustomerServiceAgent:
             )
         else:
             print(f"[DEBUG] 不走规则决策，走知识库或LLM: intent={intent}, route_reason={route.get('reason', 'unknown')}")
-            decision = appointment_kb_decision or self._decide_general_reply(
-                latest_user_text=text,
-                intent=intent,
-                route=route,
-                conversation_history=conversation_history or [],
-                session_state=session_state,
-                user_state=user_state,
-                user_id_hash=user_hash,
-            )
+            if self.reply_mode == REPLY_MODE_LLM_DIRECT:
+                decision = self._decide_llm_reply(
+                    latest_user_text=raw_text,
+                    intent=intent,
+                    route_reason=str(route.get("reason", "unknown") or "unknown"),
+                    conversation_history=conversation_history or [],
+                    session_state=session_state,
+                    allow_address_guardrails=False,
+                    allow_precise_address_closure=True,
+                )
+            else:
+                decision = appointment_kb_decision or self._decide_general_reply(
+                    latest_user_text=text,
+                    intent=intent,
+                    route=route,
+                    conversation_history=conversation_history or [],
+                    session_state=session_state,
+                    user_state=user_state,
+                    user_id_hash=user_hash,
+                )
 
         copy_lock_rule_ids = {
             "PURCHASE_CONTACT_FROM_KNOWN_GEO",
@@ -873,7 +887,7 @@ class CustomerServiceAgent:
         )
         if should_rewrite:
             knowledge_reply_count = int(session_state.get("knowledge_reply_count", 0) or 0)
-            rewritten_text, _ = self._rewrite_if_repeated(
+            rewritten_text, rewritten = self._rewrite_if_repeated(
                 reply_text=decision.reply_text,
                 latest_user_text=raw_text,
                 conversation_history=conversation_history or [],
@@ -881,7 +895,7 @@ class CustomerServiceAgent:
                 user_id_hash=user_hash,
             )
             decision.reply_text = rewritten_text
-            decision.kb_repeat_rewritten = False
+            decision.kb_repeat_rewritten = bool(rewritten)
         else:
             knowledge_reply_count = int(session_state.get("knowledge_reply_count", 0) or 0)
 
@@ -926,6 +940,42 @@ class CustomerServiceAgent:
         if not decision.media_items:
             decision.media_plan = "none"
 
+        current_answer_topic, current_answer_facts, current_answer_mode = self._build_answer_context_summary(
+            latest_user_text=raw_text,
+            decision=decision,
+            route=route,
+            session_state=session_state,
+        )
+        contextualized = False
+        if self._should_contextualize_followup_reply(
+            latest_user_text=raw_text,
+            current_topic=current_answer_topic,
+            current_facts=current_answer_facts,
+            decision=decision,
+            session_state=session_state,
+        ):
+            rewritten_text, contextualized = self._contextualize_topic_followup_reply(
+                latest_user_text=raw_text,
+                base_reply_text=decision.reply_text,
+                current_topic=current_answer_topic,
+                current_facts=current_answer_facts,
+                conversation_history=conversation_history or [],
+                session_state=session_state,
+            )
+            if contextualized:
+                guarded_text, reply_closure_info = self._apply_llm_reply_guardrails(
+                    latest_user_text=raw_text,
+                    reply_text=rewritten_text,
+                    session_state=session_state,
+                    conversation_history=conversation_history or [],
+                    allow_address_guardrails=(current_answer_topic == "store_recommendation"),
+                    allow_precise_address_closure=(current_answer_topic == "store_recommendation"),
+                )
+                decision.reply_text = guarded_text
+                decision.reply_closure_info = dict(reply_closure_info or getattr(decision, "reply_closure_info", {}) or {})
+                decision.kb_repeat_rewritten = True
+                current_answer_mode = "contextual_llm"
+
         now = datetime.now().isoformat()
         target_store = route.get("target_store", "unknown")
         detected_region = route.get("detected_region", "") or ""
@@ -965,6 +1015,10 @@ class CustomerServiceAgent:
                     session_state.get("address_info_shared", False)
                     or self._reply_shares_address_info(decision.reply_text)
                 ),
+                "last_answer_topic": current_answer_topic,
+                "last_answer_facts": current_answer_facts,
+                "last_answer_mode": current_answer_mode,
+                "last_answer_text_normalized": self._normalize_for_dedupe(decision.reply_text),
             },
             user_hash=user_hash,
         )
@@ -1316,6 +1370,8 @@ class CustomerServiceAgent:
             "大概多少钱",
         )
         has_explicit_price_signal = any(keyword in normalized for keyword in explicit_price_keywords)
+        if not has_explicit_price_signal and re.search(r"价.{0,2}(多|几|贵|位)", normalized):
+            has_explicit_price_signal = True
         if (
             not has_explicit_price_signal
             and (
@@ -1342,38 +1398,27 @@ class CustomerServiceAgent:
         should_send_address_image = self._should_attach_address_image_for_price_query(text, route)
 
         price_priority_count = int(session_state.get("price_priority_reply_count", 0) or 0)
-        if price_priority_count == 2:
-            return AgentDecision(
-                reply_text="姐姐，具体明细的价位，您可以留个☎️，我加您具体跟您介绍，这样会方便一点～",
-                intent="price",
-                route_reason="price_priority_private_followup",
-                reply_goal="承接联系方式",
-                media_plan="address_image" if should_send_address_image else "none",
-                reply_source="knowledge",
-                rule_id="PRICE_PRIORITY_PRIVATE_GUIDE",
-                rule_applied=True,
-                kb_match_score=0.0,
-                kb_match_question="",
-                kb_match_mode="price_priority_private_guide",
-                kb_item_id="",
-                kb_variant_total=0,
-                kb_variant_selected_index=-1,
-                kb_variant_fallback_llm=False,
-                kb_confident=True,
-            )
 
         kb_detail = self.knowledge_service.find_answer_detail(text, threshold=self.knowledge_threshold)
         kb_intent = str(kb_detail.get("intent", "") or "").strip().lower()
+        kb_answer = str(kb_detail.get("answer", "") or "").strip()
+        kb_answers = [
+            str(x).strip()
+            for x in (kb_detail.get("answers", []) or [])
+            if str(x).strip()
+        ]
+        if kb_answer and kb_answer not in kb_answers:
+            kb_answers.append(kb_answer)
+        normalized = re.sub(r"\s+", "", text).lower()
+        is_price_objection = any(token in normalized for token in ("贵", "便宜", "优惠", "折扣", "划算"))
         if kb_detail.get("matched") and kb_intent == "price":
-            kb_answer = str(kb_detail.get("answer", "") or "").strip()
-            kb_answers = [
-                str(x).strip()
-                for x in (kb_detail.get("answers", []) or [])
-                if str(x).strip()
-            ]
-            if kb_answer and kb_answer not in kb_answers:
-                kb_answers.append(kb_answer)
-
+            kb_mode = str(kb_detail.get("mode", "") or "").strip().lower()
+            kb_tags = {str(tag).strip() for tag in (kb_detail.get("tags", []) or []) if str(tag).strip()}
+            is_price_objection = bool(
+                is_price_objection
+                or kb_mode == "expensive_priority"
+                or "议价" in kb_tags
+            )
             selected_answer, selected_index, exhausted = self._select_kb_variant_answer(
                 answers=kb_answers,
                 user_state=user_state,
@@ -1381,6 +1426,25 @@ class CustomerServiceAgent:
             )
             base_answer = selected_answer or kb_answer or (kb_answers[0] if kb_answers else "")
             if base_answer:
+                if price_priority_count == 2 and not is_price_objection:
+                    return AgentDecision(
+                        reply_text="姐姐，具体明细的价位，您可以留个☎️，我加您具体跟您介绍，这样会方便一点～",
+                        intent="price",
+                        route_reason="price_priority_private_followup",
+                        reply_goal="承接联系方式",
+                        media_plan="address_image" if should_send_address_image else "none",
+                        reply_source="knowledge",
+                        rule_id="PRICE_PRIORITY_PRIVATE_GUIDE",
+                        rule_applied=True,
+                        kb_match_score=0.0,
+                        kb_match_question="",
+                        kb_match_mode="price_priority_private_guide",
+                        kb_item_id="",
+                        kb_variant_total=0,
+                        kb_variant_selected_index=-1,
+                        kb_variant_fallback_llm=False,
+                        kb_confident=True,
+                    )
                 self._remember_selected_kb_answer(
                     user_state=user_state,
                     user_id_hash=user_id_hash,
@@ -1404,6 +1468,26 @@ class CustomerServiceAgent:
                     kb_variant_fallback_llm=False,
                     kb_confident=True,
                 )
+
+        if price_priority_count == 2 and not is_price_objection:
+            return AgentDecision(
+                reply_text="姐姐，具体明细的价位，您可以留个☎️，我加您具体跟您介绍，这样会方便一点～",
+                intent="price",
+                route_reason="price_priority_private_followup",
+                reply_goal="承接联系方式",
+                media_plan="address_image" if should_send_address_image else "none",
+                reply_source="knowledge",
+                rule_id="PRICE_PRIORITY_PRIVATE_GUIDE",
+                rule_applied=True,
+                kb_match_score=0.0,
+                kb_match_question="",
+                kb_match_mode="price_priority_private_guide",
+                kb_item_id="",
+                kb_variant_total=0,
+                kb_variant_selected_index=-1,
+                kb_variant_fallback_llm=False,
+                kb_confident=True,
+            )
 
         fallback_answer = "姐姐价格一般在3000到6000之间，具体要看材质、款式、头围和想要的效果。"
         return AgentDecision(
@@ -1576,6 +1660,87 @@ class CustomerServiceAgent:
         if not normalized:
             return False
         return any(token in normalized for token in LIFESPAN_PRIORITY_KEYWORDS)
+
+    def _decide_service_hours_priority_reply(
+        self,
+        latest_user_text: str,
+        route: Dict[str, Any],
+        user_state: Dict[str, Any],
+        user_id_hash: str = "",
+    ) -> Optional[AgentDecision]:
+        del route
+        text = str(latest_user_text or "").strip()
+        if not text:
+            return None
+        probe_decision = AgentDecision(reply_text="", intent="general", route_reason="", reply_goal="", media_plan="none")
+        if not self._is_service_hours_query_like(text, probe_decision):
+            return None
+
+        kb_detail = self.knowledge_service.find_answer_detail(text, threshold=self.knowledge_threshold)
+        kb_intent = str(kb_detail.get("intent", "") or "").strip().lower()
+        tags = {str(tag).strip() for tag in (kb_detail.get("tags", []) or []) if str(tag).strip()}
+        if not (kb_detail.get("matched") and (kb_intent == "service_hours" or "营业时间" in tags)):
+            fallback_answer = "姐姐，我们工作日周一到周五，营业时间是上午9:30到下午6:00哦。"
+            return AgentDecision(
+                reply_text=fallback_answer,
+                intent="general",
+                route_reason="service_hours_priority_fallback",
+                reply_goal="解答",
+                media_plan="none",
+                reply_source="knowledge",
+                rule_id="SERVICE_HOURS_PRIORITY",
+                rule_applied=True,
+                kb_match_score=0.0,
+                kb_match_question="",
+                kb_match_mode="service_hours_priority_fallback",
+                kb_item_id="",
+                kb_variant_total=0,
+                kb_variant_selected_index=-1,
+                kb_variant_fallback_llm=False,
+                kb_confident=True,
+            )
+
+        kb_answer = str(kb_detail.get("answer", "") or "").strip()
+        kb_answers = [
+            str(x).strip()
+            for x in (kb_detail.get("answers", []) or [])
+            if str(x).strip()
+        ]
+        if kb_answer and kb_answer not in kb_answers:
+            kb_answers.append(kb_answer)
+        answer = kb_answers[0] if kb_answers else kb_answer
+        if not answer:
+            return None
+
+        selected_answer, selected_index, exhausted = self._select_kb_variant_answer(
+            answers=kb_answers,
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+        )
+        answer = selected_answer or answer
+        self._remember_selected_kb_answer(
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+            answer_text=answer,
+        )
+        return AgentDecision(
+            reply_text=answer,
+            intent="general",
+            route_reason="service_hours_priority",
+            reply_goal="解答",
+            media_plan="none",
+            reply_source="knowledge",
+            rule_id="SERVICE_HOURS_PRIORITY",
+            rule_applied=True,
+            kb_match_score=float(kb_detail.get("score", 0.0) or 0.0),
+            kb_match_question=str(kb_detail.get("question", "") or ""),
+            kb_match_mode=f"service_hours_priority_{str(kb_detail.get('mode', '') or 'match')}",
+            kb_item_id=str(kb_detail.get("item_id", "") or ""),
+            kb_variant_total=len(kb_answers),
+            kb_variant_selected_index=selected_index if selected_answer else (-1 if exhausted else 0),
+            kb_variant_fallback_llm=False,
+            kb_confident=True,
+        )
 
     def _decide_lifespan_priority_reply(
         self,
@@ -1885,6 +2050,77 @@ class CustomerServiceAgent:
             user_state=user_state,
             user_id_hash=user_id_hash,
         )
+
+    def _decide_llm_direct_seed_reply(
+        self,
+        latest_user_text: str,
+        intent: str,
+        route: Dict[str, Any],
+        conversation_history: List[Dict[str, str]],
+        session_state: Dict[str, Any],
+        user_state: Dict[str, Any],
+        user_id_hash: str = "",
+        is_first_turn_global: bool = False,
+    ) -> Optional[AgentDecision]:
+        text = str(latest_user_text or "").strip()
+        if not text:
+            return None
+
+        price_priority_decision = self._decide_price_priority_reply(
+            latest_user_text=text,
+            route=route,
+            conversation_history=conversation_history,
+            session_state=session_state,
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+        )
+        if price_priority_decision is not None:
+            return price_priority_decision
+
+        lifespan_priority_decision = self._decide_lifespan_priority_reply(
+            latest_user_text=text,
+            route=route,
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+        )
+        if lifespan_priority_decision is not None:
+            return lifespan_priority_decision
+
+        service_hours_priority_decision = self._decide_service_hours_priority_reply(
+            latest_user_text=text,
+            route=route,
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+        )
+        if service_hours_priority_decision is not None:
+            return service_hours_priority_decision
+
+        if self._should_apply_rule_decision(text=text, intent=intent, route=route, session_state=session_state):
+            if self._should_keep_llm_direct_address_guardrails(text):
+                return None
+            rule_decision = self._decide_rule_reply(
+                text=text,
+                intent=intent,
+                route=route,
+                session_state=session_state,
+                conversation_history=conversation_history,
+                user_state=user_state,
+                is_first_turn_global=is_first_turn_global,
+            )
+            if str(rule_decision.rule_id or "") in {"ADDR_STORE_RECOMMEND", "ADDR_OUT_OF_COVERAGE"}:
+                return rule_decision
+
+        return None
+
+    def _should_keep_llm_direct_address_guardrails(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(text or "")).lower()
+        if not normalized:
+            return False
+        if self.knowledge_service.is_address_query(text):
+            return True
+        if self.knowledge_service.is_shanghai_route_alias_address_candidate(text):
+            return True
+        return any(token in normalized for token in ("具体地点", "具体位置", "具体地址"))
 
     def _decide_media_placeholder_reply(
         self,
@@ -2496,6 +2732,175 @@ class CustomerServiceAgent:
         if any(token in normalized for token in ("徐汇", "徐家汇", "漕溪北路", "中航德必大厦")):
             return "sh_xuhui"
         return ""
+
+    def _build_answer_context_summary(
+        self,
+        latest_user_text: str,
+        decision: AgentDecision,
+        route: Dict[str, Any],
+        session_state: Dict[str, Any],
+    ) -> Tuple[str, Dict[str, Any], str]:
+        topic = ""
+        facts: Dict[str, Any] = {}
+        mode = ""
+        text = str(latest_user_text or "").strip()
+        normalized = re.sub(r"\s+", "", text).lower()
+
+        if decision.rule_id in {"PRICE_PRIORITY", "PRICE_PRIORITY_FALLBACK"}:
+            topic = "price"
+            facts = {
+                "price_range": self._extract_price_range_fact(decision.reply_text) or "3000-6000",
+                "kb_item_id": str(decision.kb_item_id or ""),
+            }
+            mode = "direct_kb"
+        elif self._is_lifespan_query_like(text, decision) and (
+            decision.rule_id == "LIFESPAN_PRIORITY"
+            or bool(self._extract_lifespan_fact(decision.reply_text))
+        ):
+            topic = "lifespan"
+            facts = {
+                "lifespan": self._extract_lifespan_fact(decision.reply_text) or "3到5年",
+                "kb_item_id": str(decision.kb_item_id or ""),
+            }
+            mode = "direct_kb" if decision.reply_source == "knowledge" else "contextual_llm"
+        elif self._is_service_hours_query_like(text, decision) and (
+            decision.reply_source in {"knowledge", "llm"}
+            or decision.rule_id == "LLM_KB_VARIANT_FALLBACK"
+            or bool(self._extract_business_hours_fact(decision.reply_text))
+        ):
+            topic = "service_hours"
+            facts = {
+                "business_hours": self._extract_business_hours_fact(decision.reply_text) or "上午9:30到下午6:00",
+                "kb_item_id": str(decision.kb_item_id or ""),
+            }
+            mode = "direct_kb" if decision.reply_source == "knowledge" else "contextual_llm"
+        elif decision.rule_id == "ADDR_STORE_RECOMMEND":
+            target_store = str(route.get("target_store", "") or session_state.get("last_target_store", "") or "")
+            if target_store and target_store != "unknown":
+                store = self.knowledge_service.get_store_display(target_store)
+                topic = "store_recommendation"
+                facts = {
+                    "target_store": target_store,
+                    "store_name": self._store_recommend_display_name(target_store, store.get("store_name", "门店")),
+                }
+                mode = "rule_recommendation"
+
+        return topic, facts, mode
+
+    def _should_contextualize_followup_reply(
+        self,
+        latest_user_text: str,
+        current_topic: str,
+        current_facts: Dict[str, Any],
+        decision: AgentDecision,
+        session_state: Dict[str, Any],
+    ) -> bool:
+        if current_topic not in {"price", "service_hours", "lifespan", "store_recommendation"}:
+            return False
+        previous_topic = str(session_state.get("last_answer_topic", "") or "")
+        if previous_topic != current_topic:
+            return False
+        previous_text = str(session_state.get("last_answer_text_normalized", "") or "")
+        if not previous_text:
+            return False
+        current_text_normalized = self._normalize_for_dedupe(decision.reply_text)
+
+        normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
+        if current_topic == "price":
+            if current_text_normalized and current_text_normalized != previous_text and not self._has_topic_followup_cue(latest_user_text, current_topic):
+                return False
+            if any(token in normalized for token in ("贵", "便宜", "优惠", "折扣", "划算")):
+                return False
+            previous_facts = session_state.get("last_answer_facts", {}) or {}
+            previous_kb_item_id = str(previous_facts.get("kb_item_id", "") or "")
+            current_kb_item_id = str(current_facts.get("kb_item_id", "") or "")
+            if previous_kb_item_id and current_kb_item_id and previous_kb_item_id != current_kb_item_id:
+                return False
+        elif current_topic in {"service_hours", "lifespan"} and current_text_normalized and current_text_normalized != previous_text and not self._has_topic_followup_cue(latest_user_text, current_topic):
+            return False
+        if current_topic == "store_recommendation":
+            previous_facts = session_state.get("last_answer_facts", {}) or {}
+            if str(previous_facts.get("target_store", "") or "") != str(current_facts.get("target_store", "") or ""):
+                return False
+
+        if decision.reply_source not in {"knowledge", "rule", "llm"} and decision.rule_id != "LLM_KB_VARIANT_FALLBACK":
+            return False
+        return True
+
+    def _has_topic_followup_cue(self, latest_user_text: str, current_topic: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
+        if not normalized:
+            return False
+        topic_cues = {
+            "price": ("一样", "也是", "差不多", "第一款", "第二款", "这个价格", "这个价", "那么贵", "太贵"),
+            "service_hours": ("周一", "周二", "周三", "周四", "周五", "这个时间", "也是这个时间", "到几点"),
+            "lifespan": ("也是", "这个寿命", "都这样", "这款也是", "也是这个"),
+            "store_recommendation": ("对吧", "是吧", "最近的", "就是这家", "还是这家"),
+        }
+        return any(token in normalized for token in topic_cues.get(current_topic, ()))
+
+    def _contextualize_topic_followup_reply(
+        self,
+        latest_user_text: str,
+        base_reply_text: str,
+        current_topic: str,
+        current_facts: Dict[str, Any],
+        conversation_history: List[Dict[str, str]],
+        session_state: Dict[str, Any],
+    ) -> Tuple[str, bool]:
+        previous_topic = str(session_state.get("last_answer_topic", "") or "")
+        previous_facts = dict(session_state.get("last_answer_facts", {}) or {})
+        return agent_llm_reply.contextualize_topic_followup_reply(
+            self,
+            latest_user_text=latest_user_text,
+            base_reply_text=base_reply_text,
+            current_topic=current_topic,
+            previous_topic=previous_topic,
+            previous_facts=previous_facts,
+            current_facts=current_facts,
+            conversation_history=conversation_history,
+            session_state=session_state,
+        )
+
+    def _extract_price_range_fact(self, text: str) -> str:
+        normalized = re.sub(r"\s+", "", str(text or ""))
+        if "3000" in normalized and "6000" in normalized:
+            return "3000-6000"
+        return ""
+
+    def _extract_business_hours_fact(self, text: str) -> str:
+        normalized = re.sub(r"\s+", "", str(text or ""))
+        if any(token in normalized for token in ("9:30", "930")) and any(token in normalized for token in ("18:00", "1800", "下午6:00", "下午6点")):
+            return "上午9:30到下午6:00"
+        return ""
+
+    def _extract_lifespan_fact(self, text: str) -> str:
+        normalized = re.sub(r"\s+", "", str(text or ""))
+        if any(token in normalized for token in ("3到5年", "3-5年", "3～5年", "三到五年")):
+            return "3到5年"
+        return ""
+
+    def _is_service_hours_query_like(self, latest_user_text: str, decision: AgentDecision) -> bool:
+        if decision.standard_reply_intent == "service_hours":
+            return True
+        normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
+        has_time_signal = any(token in normalized for token in ("营业时间", "几点", "到几点", "下班", "时间"))
+        has_weekday_signal = any(token in normalized for token in ("周一", "周二", "周三", "周四", "周五", "周几"))
+        if has_time_signal or (has_weekday_signal and any(token in normalized for token in ("这个时间", "也是这个时间"))):
+            return True
+        detail = self.knowledge_service.find_answer_detail(str(latest_user_text or ""), threshold=self.knowledge_threshold)
+        detail_intent = str(detail.get("intent", "") or "").strip().lower()
+        detail_tags = {str(tag).strip() for tag in (detail.get("tags", []) or []) if str(tag).strip()}
+        return detail_intent == "service_hours" or "营业时间" in detail_tags
+
+    def _is_lifespan_query_like(self, latest_user_text: str, decision: AgentDecision) -> bool:
+        if decision.standard_reply_intent == "lifespan":
+            return True
+        normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
+        if any(token in normalized for token in ("多久", "几年", "寿命", "能用", "能戴", "都这样")):
+            return True
+        detail = self.knowledge_service.find_answer_detail(str(latest_user_text or ""), threshold=self.knowledge_threshold)
+        return str(detail.get("intent", "") or "").strip().lower() == "lifespan"
 
     def _is_address_unsupported_query(self, text: str) -> bool:
         value = (text or "").strip().lower()
