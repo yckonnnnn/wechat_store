@@ -2483,17 +2483,17 @@ class CustomerServiceAgent:
         normalized = re.sub(r"\s+", "", str(text or ""))
         if not normalized:
             return ""
-        if any(token in normalized for token in ("建外soho", "朝阳", "北京店", "北京门店")):
+        if any(token in normalized for token in ("建外soho", "朝阳", "北京店", "北京门店", "东三环中路")):
             return "beijing_chaoyang"
-        if any(token in normalized for token in ("静安寺", "静安店", "静安门店", "静安")):
+        if any(token in normalized for token in ("静安寺", "静安店", "静安门店", "静安", "愚园路", "环球世界大厦")):
             return "sh_jingan"
-        if any(token in normalized for token in ("人民广场", "人广", "黄浦", "黄埔")):
+        if any(token in normalized for token in ("人民广场", "人广", "黄浦", "黄埔", "汉口路", "亚洲大厦")):
             return "sh_renmin"
-        if any(token in normalized for token in ("虹口", "花园路")):
+        if any(token in normalized for token in ("虹口", "花园路", "嘉和国际大厦")):
             return "sh_hongkou"
-        if any(token in normalized for token in ("五角场", "杨浦", "政通路")):
+        if any(token in normalized for token in ("五角场", "杨浦", "政通路", "万达广场e栋c座")):
             return "sh_wujiaochang"
-        if any(token in normalized for token in ("徐汇", "徐家汇", "漕溪北路")):
+        if any(token in normalized for token in ("徐汇", "徐家汇", "漕溪北路", "中航德必大厦")):
             return "sh_xuhui"
         return ""
 
