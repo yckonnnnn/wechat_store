@@ -770,6 +770,7 @@ class CustomerServiceAgent:
                 conversation_history=conversation_history or [],
                 session_state=session_state,
                 allow_address_guardrails=False,
+                allow_precise_address_closure=True,
             )
         price_priority_decision = None if self.reply_mode == REPLY_MODE_LLM_DIRECT else self._decide_price_priority_reply(
             latest_user_text=text,
@@ -1999,6 +2000,7 @@ class CustomerServiceAgent:
         kb_variant_fallback_llm: bool = False,
         kb_confident: bool = False,
         allow_address_guardrails: bool = True,
+        allow_precise_address_closure: bool = True,
     ) -> AgentDecision:
         return agent_llm_reply.decide_llm_reply(
             self,
@@ -2020,6 +2022,7 @@ class CustomerServiceAgent:
             kb_variant_fallback_llm=kb_variant_fallback_llm,
             kb_confident=kb_confident,
             allow_address_guardrails=allow_address_guardrails,
+            allow_precise_address_closure=allow_precise_address_closure,
         )
 
     def _select_kb_variant_answer(
@@ -2271,6 +2274,7 @@ class CustomerServiceAgent:
         session_state: Optional[Dict[str, Any]] = None,
         conversation_history: Optional[List[Dict[str, str]]] = None,
         allow_address_guardrails: bool = True,
+        allow_precise_address_closure: bool = True,
     ) -> Tuple[str, Dict[str, Any]]:
         return apply_llm_reply_guardrails(
             self,
@@ -2279,6 +2283,7 @@ class CustomerServiceAgent:
             session_state=session_state,
             conversation_history=conversation_history,
             allow_address_guardrails=allow_address_guardrails,
+            allow_precise_address_closure=allow_precise_address_closure,
         )
 
     def _build_reply_closure_info(
@@ -2590,6 +2595,7 @@ class CustomerServiceAgent:
             [
                 CONTACT_FACT_FALLBACK,
                 PHONE_LEAK_BLOCK_FALLBACK,
+                "姐姐，您留个☎️方式，我来加您好友",
             ]
         )
         return {

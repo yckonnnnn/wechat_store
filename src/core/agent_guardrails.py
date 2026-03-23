@@ -152,6 +152,7 @@ def apply_llm_reply_guardrails(
     session_state: Optional[Dict[str, Any]] = None,
     conversation_history: Optional[List[Dict[str, str]]] = None,
     allow_address_guardrails: bool = True,
+    allow_precise_address_closure: bool = True,
 ) -> Tuple[str, Dict[str, Any]]:
     text = (latest_user_text or "").strip()
     reply = (reply_text or "").strip()
@@ -195,7 +196,7 @@ def apply_llm_reply_guardrails(
         if agent._contains_low_price_quote(reply) or agent._contains_invalid_price_channel(reply):
             return finalize(agent._render_guardrail_reply(agent._price_guardrail_safe_reply))
 
-    if allow_address_guardrails:
+    if allow_precise_address_closure:
         precise_hit = detect_precise_address_in_reply(reply)
         if precise_hit:
             closure_text = select_precise_address_closure_text(agent, session_state=state)

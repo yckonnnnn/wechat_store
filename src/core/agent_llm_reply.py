@@ -27,6 +27,7 @@ def decide_llm_reply(
     kb_variant_fallback_llm: bool = False,
     kb_confident: bool = False,
     allow_address_guardrails: bool = True,
+    allow_precise_address_closure: bool = True,
 ) -> AgentDecision:
     agent._current_prompt_conversation_history = conversation_history or []
     llm_started_at = time.perf_counter()
@@ -122,6 +123,7 @@ def decide_llm_reply(
         session_state=session_state or {},
         conversation_history=conversation_history,
         allow_address_guardrails=allow_address_guardrails,
+        allow_precise_address_closure=allow_precise_address_closure,
     )
 
     return AgentDecision(

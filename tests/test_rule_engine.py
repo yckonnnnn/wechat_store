@@ -2221,6 +2221,71 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertTrue(media_decision.send_contact_image)
             self.assertTrue(any(item.get("type") == "contact_image" for item in media_decision.media_items))
 
+    def test_llm_direct_precise_address_closure_rewrites_sent_text(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, llm = self._build_agent(
+                temp_dir,
+                address_image_files=["静安地址.jpg"],
+                store_targets={"静安地址.jpg": "sh_jingan"},
+            )
+            agent.reply_mode = "llm_direct"
+            llm.reply_text = "姐姐，长寿路离我们静安店最近，地址是静安区愚园路172号环球世界大厦A座，您留个方式，我来加您并跟您具体沟通。😊"
+
+            decision = agent.decide(
+                session_id="chat_llm_direct_precise_address",
+                user_name="直接模式地址用户",
+                latest_user_text="长寿路",
+                conversation_history=[],
+            )
+
+            self.assertTrue(decision.reply_closure_info.get("precise_address_hit"))
+            self.assertEqual(decision.reply_closure_info.get("target_store"), "sh_jingan")
+            self.assertNotIn("愚园路172号环球世界大厦A座", decision.reply_text)
+
+    def test_llm_direct_generic_address_question_keeps_city_followup(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+            agent.reply_mode = "llm_direct"
+            llm.reply_text = "姐姐，您在哪个城市呀？我先跟您说下门店分布，北京有1家在朝阳区，上海有5家店（静安、人广、虹口、五角场、徐汇），方便告诉我您的位置吗？我好给您推荐最近的门店。😘"
+
+            decision = agent.decide(
+                session_id="chat_llm_direct_address_city_followup",
+                user_name="直接模式问路用户",
+                latest_user_text="地址在哪里",
+                conversation_history=[],
+            )
+
+            self.assertIn("您在哪个城市呀", decision.reply_text)
+            self.assertFalse(decision.reply_closure_info.get("precise_address_hit"))
+
+    def test_contact_compliance_safe_reply_also_triggers_contact_image(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, _ = self._build_agent(Path(td))
+            reply_text = "姐姐，您留个☎️方式，我来加您好友。💗"
+            decision = AgentDecision(
+                reply_text=reply_text,
+                intent="general",
+                route_reason="beijing_all_district",
+                reply_goal="解答",
+                media_plan="none",
+                reply_source="llm",
+                rule_id="LLM_GENERAL",
+                reply_closure_info=agent._build_reply_closure_info(reply_text),
+            )
+
+            media_decision = agent.judge_post_reply_media(
+                session_id="chat_contact_compliance_closure",
+                user_name="联系方式兜底用户",
+                latest_user_text="我在北京",
+                reply_text=reply_text,
+                conversation_history=[],
+                decision=decision,
+            )
+
+            self.assertTrue(media_decision.send_contact_image)
+            self.assertTrue(any(item.get("type") == "contact_image" for item in media_decision.media_items))
+
     def test_precise_address_and_contact_closure_can_queue_both_images(self):
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)
