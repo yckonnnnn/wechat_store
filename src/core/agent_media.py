@@ -201,6 +201,25 @@ def judge_post_reply_media(
         elif reason_hint:
             skip_reason = reason_hint
 
+    if (
+        not media_items
+        and str(closure_info.get("closure_type", "") or "") == "store_recommendation"
+        and str(closure_info.get("target_store", "") or "")
+    ):
+        item, reason_hint = queue_address_image(
+            agent,
+            session_id=session_id,
+            session_state=session_state,
+            target_store=str(closure_info.get("target_store", "") or ""),
+            route_reason="store_recommendation_closure",
+            detected_region=route.get("detected_region", "") or "",
+        )
+        if item:
+            media_items = _upsert_media_item(agent, media_items, item)
+            reasons.append("store_recommendation_closure")
+        elif reason_hint and not skip_reason:
+            skip_reason = reason_hint
+
     needs_contact_closure_image = bool(closure_info.get("contact_closure_hit"))
     if decision is not None and str(decision.reply_source or "") == "fallback":
         needs_contact_closure_image = True

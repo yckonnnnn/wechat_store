@@ -2360,6 +2360,109 @@ class RuleEngineTestCase(unittest.TestCase):
                 ["address_image", "contact_image"],
             )
 
+    def test_single_store_recommendation_reply_can_queue_address_image(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = self._build_agent(
+                temp_dir,
+                address_image_files=["人广地址.jpg"],
+                store_targets={"人广地址.jpg": "sh_renmin"},
+            )
+            reply_text = "姐姐，那您离人民广场店最近，过去很方便的，需要我帮您预约一下吗？🥰"
+            decision = AgentDecision(
+                reply_text=reply_text,
+                intent="general",
+                route_reason="sh_route_scored:sh_renmin",
+                reply_goal="解答",
+                media_plan="none",
+                reply_source="llm",
+                rule_id="LLM_GENERAL",
+                reply_closure_info=agent._build_reply_closure_info(reply_text),
+            )
+
+            media_decision = agent.judge_post_reply_media(
+                session_id="chat_single_store_recommendation",
+                user_name="单店推荐用户",
+                latest_user_text="我靠近外滩这边",
+                reply_text=reply_text,
+                conversation_history=[],
+                decision=decision,
+            )
+
+            self.assertTrue(media_decision.send_address_image)
+            self.assertTrue(any(item.get("type") == "address_image" for item in media_decision.media_items))
+            self.assertEqual(media_decision.media_items[0].get("target_store"), "sh_renmin")
+
+    def test_multi_store_distribution_reply_does_not_queue_address_image(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = self._build_agent(
+                temp_dir,
+                address_image_files=["静安地址.jpg", "人广地址.jpg", "虹口地址.jpg", "五角场地址.jpg", "徐汇地址.jpg"],
+                store_targets={
+                    "静安地址.jpg": "sh_jingan",
+                    "人广地址.jpg": "sh_renmin",
+                    "虹口地址.jpg": "sh_hongkou",
+                    "五角场地址.jpg": "sh_wujiaochang",
+                    "徐汇地址.jpg": "sh_xuhui",
+                },
+            )
+            reply_text = "姐姐，上海有5家店，静安、人民广场、虹口、五角场、徐汇，您离哪个区域近一些呢？我帮您推荐最方便的门店。💗"
+            decision = AgentDecision(
+                reply_text=reply_text,
+                intent="address",
+                route_reason="unknown",
+                reply_goal="解答",
+                media_plan="none",
+                reply_source="llm",
+                rule_id="LLM_GENERAL",
+                reply_closure_info=agent._build_reply_closure_info(reply_text),
+            )
+
+            media_decision = agent.judge_post_reply_media(
+                session_id="chat_store_distribution",
+                user_name="门店分布用户",
+                latest_user_text="上海地址给我一下",
+                reply_text=reply_text,
+                conversation_history=[],
+                decision=decision,
+            )
+
+            self.assertFalse(media_decision.send_address_image)
+            self.assertFalse(any(item.get("type") == "address_image" for item in media_decision.media_items))
+
+    def test_store_area_confirmation_reply_does_not_queue_address_image(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = self._build_agent(
+                temp_dir,
+                address_image_files=["徐汇地址.jpg"],
+                store_targets={"徐汇地址.jpg": "sh_xuhui"},
+            )
+            reply_text = "姐姐，您是在徐汇这边吗？我先确认一下再帮您推荐呢。💗"
+            decision = AgentDecision(
+                reply_text=reply_text,
+                intent="address",
+                route_reason="unknown",
+                reply_goal="解答",
+                media_plan="none",
+                reply_source="llm",
+                rule_id="LLM_GENERAL",
+                reply_closure_info=agent._build_reply_closure_info(reply_text),
+            )
+
+            media_decision = agent.judge_post_reply_media(
+                session_id="chat_store_area_confirmation",
+                user_name="区域确认用户",
+                latest_user_text="我在上海",
+                reply_text=reply_text,
+                conversation_history=[],
+                decision=decision,
+            )
+
+            self.assertFalse(media_decision.send_address_image)
+            self.assertFalse(any(item.get("type") == "address_image" for item in media_decision.media_items))
+
     def test_llm_phone_leak_reply_is_blocked(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, _, llm = self._build_agent(Path(td))

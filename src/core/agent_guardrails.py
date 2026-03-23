@@ -14,6 +14,51 @@ PRECISE_ADDRESS_TO_STORE: Dict[str, str] = {
     "建外SOHO东区": "beijing_chaoyang",
 }
 
+STORE_RECOMMENDATION_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "beijing_chaoyang": ("北京朝阳店", "北京朝阳门店", "朝阳店", "朝阳门店", "朝阳区", "建外soho", "建外soho东区"),
+    "sh_jingan": ("上海静安店", "上海静安门店", "静安店", "静安门店", "静安寺", "静安", "愚园路"),
+    "sh_renmin": ("上海人民广场店", "上海人民广场门店", "人民广场店", "人民广场门店", "人民广场", "人广店", "人广"),
+    "sh_hongkou": ("上海虹口店", "上海虹口门店", "虹口店", "虹口门店", "虹口", "花园路"),
+    "sh_wujiaochang": ("上海五角场店", "上海五角场门店", "五角场店", "五角场门店", "五角场", "政通路"),
+    "sh_xuhui": ("上海徐汇店", "上海徐汇门店", "徐汇店", "徐汇门店", "徐汇", "徐家汇", "漕溪北路"),
+}
+STORE_RECOMMENDATION_POSITIVE_CUES = (
+    "最近",
+    "更近",
+    "推荐",
+    "方便",
+    "过去",
+    "过来",
+    "到店",
+    "来店",
+    "可以去",
+    "去就行",
+    "去会更方便",
+    "离",
+)
+STORE_RECOMMENDATION_EXCLUDE_CUES = (
+    "上海有5家店",
+    "上海共有5家店",
+    "北京有1家",
+    "北京只有1家",
+    "哪个区域",
+    "哪 个区域",
+    "离哪个区域",
+    "您离哪个区域",
+    "靠近哪个区域",
+    "您在哪个城市",
+    "方便告诉我",
+    "门店分布",
+    "先确认一下",
+    "确认一下",
+    "您是在",
+    "你是在",
+    "您在徐汇吗",
+    "您在静安吗",
+    "您在人广吗",
+    "您在人民广场吗",
+)
+
 SERVICE_HOURS_QUERY_KEYWORDS = (
     "服务时间",
     "营业时间",
@@ -126,6 +171,30 @@ def reply_has_correct_service_hours(reply_text: str) -> bool:
     return has_open_time and has_close_time
 
 
+def detect_store_recommendation_in_reply(reply_text: str) -> Dict[str, Any]:
+    normalized = normalize_service_hours_check_text(reply_text)
+    if not normalized:
+        return {}
+    if any(normalize_service_hours_check_text(cue) in normalized for cue in STORE_RECOMMENDATION_EXCLUDE_CUES):
+        return {}
+
+    matched_stores: List[str] = []
+    for target_store, aliases in STORE_RECOMMENDATION_ALIASES.items():
+        if any(normalize_service_hours_check_text(alias) in normalized for alias in aliases):
+            matched_stores.append(target_store)
+    matched_stores = list(dict.fromkeys(matched_stores))
+    if len(matched_stores) != 1:
+        return {}
+
+    if not any(normalize_service_hours_check_text(cue) in normalized for cue in STORE_RECOMMENDATION_POSITIVE_CUES):
+        return {}
+
+    return {
+        "target_store": matched_stores[0],
+        "closure_type": "store_recommendation",
+    }
+
+
 def build_reply_closure_info(
     agent: Any,
     reply_text: str,
@@ -142,6 +211,12 @@ def build_reply_closure_info(
         info["matched_address"] = str(precise_hit.get("address", "") or info.get("matched_address", ""))
         if not info.get("closure_type"):
             info["closure_type"] = "precise_address"
+
+    recommendation_hit = detect_store_recommendation_in_reply(reply_text)
+    if recommendation_hit and not info.get("precise_address_hit"):
+        info["target_store"] = str(recommendation_hit.get("target_store", "") or info.get("target_store", ""))
+        if not info.get("closure_type"):
+            info["closure_type"] = str(recommendation_hit.get("closure_type", "") or "store_recommendation")
 
     fixed_contact_norms = set(getattr(agent, "_fixed_contact_closure_norms", set()) or set())
     if fixed_contact_norms and agent._normalize_for_dedupe(reply_text) in fixed_contact_norms:
