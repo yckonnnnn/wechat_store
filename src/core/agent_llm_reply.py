@@ -4,6 +4,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from .business_hours import STANDARD_BUSINESS_HOURS_FACT
 from .agent_types import AgentDecision
 
 
@@ -377,7 +378,7 @@ def build_contextual_followup_fallback(
             "姐姐，大方向还是在3000、4000、5000、6000这些区间里，不过具体还要看材质、长度和想要的效果。"
         )
     if current_topic == "service_hours":
-        business_hours = str(current_facts.get("business_hours", "") or "周一到周五上午9:30到下午6:00，周六周日不上班")
+        business_hours = str(current_facts.get("business_hours", "") or STANDARD_BUSINESS_HOURS_FACT)
         return agent._normalize_reply_text(f"姐姐，时间没变哦，还是{business_hours}。")
     if current_topic == "lifespan":
         lifespan = str(current_facts.get("lifespan", "") or "3到5年")
@@ -409,7 +410,7 @@ def base_followup_fact_hint(
     if current_topic == "price":
         return str(previous_facts.get("price_range", "") or "3000-6000")
     if current_topic == "service_hours":
-        return str(previous_facts.get("business_hours", "") or "周一到周五上午9:30到下午6:00，周六周日不上班")
+        return str(previous_facts.get("business_hours", "") or STANDARD_BUSINESS_HOURS_FACT)
     if current_topic == "lifespan":
         return str(previous_facts.get("lifespan", "") or "3到5年")
     if current_topic == "store_recommendation":
@@ -428,8 +429,8 @@ def _candidate_preserves_contextual_facts(current_topic: str, current_facts: Dic
     if current_topic == "price":
         return "3000" in normalized and "6000" in normalized
     if current_topic == "service_hours":
-        return any(token in normalized for token in ("9:30", "930")) and any(
-            token in normalized for token in ("18:00", "1800", "下午6:00", "下午6点")
+        return any(token in normalized for token in ("9:30", "9：30", "930")) and any(
+            token in normalized for token in ("18:00", "18：00", "1800", "下午6:00", "下午6：00", "下午6点")
         )
     if current_topic == "lifespan":
         return any(token in normalized for token in ("3到5年", "3-5年", "3～5年", "三到五年"))
@@ -463,7 +464,7 @@ def infer_answer_type(agent, text: str) -> str:
         return "address_general"
     if "预约" in normalized:
         return "appointment"
-    if any(token in normalized for token in ("9:30", "18:00", "营业时间", "周一到周五")):
+    if any(token in normalized for token in ("9:30", "9：30", "18:00", "18：00", "营业时间", "春节", "技术培训")):
         return "service_hours"
     if any(token in normalized for token in ("3到5年", "3-5年", "三到五年")):
         return "lifespan"

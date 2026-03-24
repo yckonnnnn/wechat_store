@@ -653,15 +653,15 @@ class RuleEngineTestCase(unittest.TestCase):
     def test_service_hours_short_query_does_not_get_treated_as_follow_up(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, repository, llm = self._build_agent(Path(td))
-            llm.reply_text = "姐姐，我们全年都营业，每天上午。😘"
+            llm.reply_text = "姐姐，我们平时都正常营业哦。😘"
             repository.add(
                 question="你们上班时间是几点？营业时间？",
-                answer="姐姐我们是全年无休，营业时间是上午9:30～下午6:00哦🤍",
+                answer="姐姐，我们营业时间是上午9：30-下午6：00，除春节、技术培训等特殊情况外，其他时间正常上班❤️",
                 intent="service_hours",
                 tags=["服务", "营业时间", "咨询"],
                 answers=[
-                    "姐姐我们是全年无休，营业时间是上午9:30～下午6:00哦🤍",
-                    "姐姐营业时间是上午9:30～下午6:00🤍",
+                    "姐姐，我们营业时间是上午9：30-下午6：00，除春节、技术培训等特殊情况外，其他时间正常上班❤️",
+                    "姐姐，我们这边营业时间是上午9：30-下午6：00，除春节、技术培训等特殊情况外，平时都是正常上班哦❤️",
                 ],
             )
             repository.save()
@@ -670,21 +670,21 @@ class RuleEngineTestCase(unittest.TestCase):
 
             self.assertEqual(d.reply_source, "knowledge")
             self.assertEqual(d.rule_id, "KB_MATCH")
-            self.assertIn("9:30", d.reply_text)
+            self.assertIn("9：30", d.reply_text)
             self.assertEqual(llm.calls, 0)
 
     def test_service_hours_medium_confidence_match_still_returns_knowledge(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, repository, llm = self._build_agent(Path(td))
-            llm.reply_text = "姐姐我们是全年无休，营业时间是上午。🌺"
+            llm.reply_text = "姐姐，我们营业时间是上午。🌺"
             repository.add(
                 question="你们上班时间是几点？营业时间？",
-                answer="姐姐我们是全年无休，营业时间是上午9:30～下午6:00哦🤍",
+                answer="姐姐，我们营业时间是上午9：30-下午6：00，除春节、技术培训等特殊情况外，其他时间正常上班❤️",
                 intent="service_hours",
                 tags=["服务", "营业时间", "咨询"],
                 answers=[
-                    "姐姐我们是全年无休，营业时间是上午9:30～下午6:00哦🤍",
-                    "姐姐全年都在营业，上午9:30～下午6:00,放心来咨询哦🤍",
+                    "姐姐，我们营业时间是上午9：30-下午6：00，除春节、技术培训等特殊情况外，其他时间正常上班❤️",
+                    "姐姐，我们正常营业时间是上午9：30-下午6：00，春节或者技术培训时会另行安排，其他时间都正常上班❤️",
                 ],
             )
             repository.save()
@@ -693,7 +693,7 @@ class RuleEngineTestCase(unittest.TestCase):
 
             self.assertEqual(d.reply_source, "knowledge")
             self.assertEqual(d.rule_id, "KB_MATCH")
-            self.assertIn("9:30", d.reply_text)
+            self.assertIn("9：30", d.reply_text)
             self.assertGreater(d.kb_match_score, 0.5)
             self.assertEqual(llm.calls, 0)
 
@@ -708,15 +708,15 @@ class RuleEngineTestCase(unittest.TestCase):
                 conversation_history=[],
             )
 
-            self.assertIn("9:30", reply_text)
-            self.assertTrue("6:00" in reply_text or "18:00" in reply_text)
+            self.assertIn("9：30", reply_text)
+            self.assertTrue("6：00" in reply_text or "18：00" in reply_text or "下午6：00" in reply_text)
             self.assertNotIn("10点", reply_text)
             self.assertNotIn("7点", reply_text)
 
     def test_service_hours_guardrail_keeps_correct_hours(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, _, _ = self._build_agent(Path(td))
-            original = "姐姐我们工作日周一到周五，营业时间是上午9:30到下午6:00哦🌹"
+            original = "姐姐，我们营业时间是上午9：30-下午6：00，除春节、技术培训等特殊情况外，其他时间正常上班❤️"
 
             reply_text, _ = agent._apply_llm_reply_guardrails(
                 latest_user_text="你们营业时间是几点",
@@ -729,6 +729,37 @@ class RuleEngineTestCase(unittest.TestCase):
                 agent._normalize_for_dedupe(reply_text),
                 agent._normalize_for_dedupe(original),
             )
+
+    def test_service_hours_followup_for_closing_time_keeps_standard_hours(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, llm = self._build_agent(temp_dir)
+            repository.add(
+                "你们上班时间是几点？营业时间？",
+                "姐姐，我们营业时间是上午9：30-下午6：00，除春节、技术培训等特殊情况外，其他时间正常上班❤️",
+                intent="service_hours",
+                tags=["营业时间"],
+            )
+            llm.reply_text = "姐姐这个问题我给您详细说明下哈。🌹"
+
+            session_id = "chat_service_hours_close_time_followup"
+            user_name = "营业时间用户"
+            d1 = agent.decide(session_id, user_name, "营业时间是几点", [])
+            agent.mark_reply_sent(session_id, user_name, d1.reply_text)
+            d2 = agent.decide(
+                session_id,
+                user_name,
+                "几点下班",
+                [
+                    {"role": "user", "content": "营业时间是几点"},
+                    {"role": "assistant", "content": d1.reply_text},
+                ],
+            )
+
+            self.assertIn(d2.rule_id, {"LLM_FOLLOW_UP", "LLM_KB_VARIANT_FALLBACK", "SERVICE_HOURS_PRIORITY", "KB_MATCH"})
+            self.assertIn("9：30", d2.reply_text)
+            self.assertIn("下午6：00", d2.reply_text)
+            self.assertIn("技术培训", d2.reply_text)
 
     def test_address_index_prefers_store_targets_metadata_even_without_district_filename(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1953,11 +1984,11 @@ class RuleEngineTestCase(unittest.TestCase):
             agent, _, repository, llm = self._build_agent(temp_dir)
             repository.add(
                 "你们上班时间是几点？营业时间？",
-                "姐姐我们工作日周一到周五，营业时间是上午9:30～下午6:00哦🤍",
+                "姐姐，我们营业时间是上午9：30-下午6：00，除春节、技术培训等特殊情况外，其他时间正常上班❤️",
                 intent="service_hours",
                 tags=["营业时间"],
             )
-            llm.reply_text = "姐姐，时间没变哦，还是上午9:30到下午6:00。🌷"
+            llm.reply_text = "姐姐，时间没变哦，还是上午9：30-下午6：00，除春节、技术培训等特殊情况外，其他时间正常上班❤️"
 
             session_id = "chat_service_hours_contextual"
             user_name = "营业时间承接用户"
@@ -1968,8 +1999,9 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(d1.reply_source, "knowledge")
             self.assertIn(d2.reply_source, ("knowledge", "llm"))
             self.assertNotEqual(agent._normalize_for_dedupe(d1.reply_text), agent._normalize_for_dedupe(d2.reply_text))
-            self.assertIn("9:30", d2.reply_text)
-            self.assertIn("下午6:00", d2.reply_text)
+            self.assertIn("9：30", d2.reply_text)
+            self.assertIn("下午6：00", d2.reply_text)
+            self.assertIn("技术培训", d2.reply_text)
             self.assertGreaterEqual(llm.calls, 1)
 
     def test_lifespan_followup_uses_contextual_llm_and_keeps_core_fact(self):
@@ -2046,11 +2078,11 @@ class RuleEngineTestCase(unittest.TestCase):
             agent.reply_mode = "llm_direct"
             repository.add(
                 "你们上班时间是几点？营业时间？",
-                "姐姐我们工作日周一到周五，营业时间是上午9:30～下午6:00哦🤍",
+                "姐姐，我们营业时间是上午9：30-下午6：00，除春节、技术培训等特殊情况外，其他时间正常上班❤️",
                 intent="service_hours",
                 tags=["营业时间"],
             )
-            llm.reply_text = "姐姐，周一也是这个时间哦，还是上午9:30到下午6:00。🌷"
+            llm.reply_text = "姐姐，周一也是这个时间哦，还是上午9：30-下午6：00，除春节、技术培训等特殊情况外，其他时间正常上班❤️"
 
             session_id = "chat_llm_direct_service_hours_contextual"
             user_name = "直连营业时间承接用户"
@@ -2060,8 +2092,8 @@ class RuleEngineTestCase(unittest.TestCase):
 
             self.assertEqual(d1.rule_id, "SERVICE_HOURS_PRIORITY")
             self.assertEqual(d2.rule_id, "SERVICE_HOURS_PRIORITY")
-            self.assertIn("9:30", d2.reply_text)
-            self.assertIn("下午6:00", d2.reply_text)
+            self.assertIn("9：30", d2.reply_text)
+            self.assertIn("下午6：00", d2.reply_text)
             self.assertNotEqual(agent._normalize_for_dedupe(d1.reply_text), agent._normalize_for_dedupe(d2.reply_text))
 
     def test_llm_direct_store_recommend_followup_still_triggers_address_media(self):

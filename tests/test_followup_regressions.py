@@ -23,7 +23,9 @@ class FollowupRegressionTestCase(unittest.TestCase):
             second = agent.decide("appointment_followup", "预约用户", "那周二呢", [])
 
             self.assertNotIn("9:30", second.reply_text)
+            self.assertNotIn("9：30", second.reply_text)
             self.assertNotIn("下午6:00", second.reply_text)
+            self.assertNotIn("下午6：00", second.reply_text)
             self.assertNotEqual(agent.memory_store.get_session_state("appointment_followup").get("last_answer_topic"), "service_hours")
             self.assertLessEqual(llm.calls, 1)
 
@@ -100,7 +102,7 @@ class FollowupRegressionTestCase(unittest.TestCase):
             agent, _, repository, _ = helper._build_agent(temp_dir)
             repository.add(
                 "你们上班时间是几点？营业时间？",
-                "姐姐我们工作日周一到周五上班，营业时间是上午9:30～下午6:00，周六周日不上班哦🤍",
+                "姐姐，我们营业时间是上午9：30-下午6：00，除春节、技术培训等特殊情况外，其他时间正常上班❤️",
                 intent="service_hours",
                 tags=["营业时间"],
             )
@@ -120,7 +122,7 @@ class FollowupRegressionTestCase(unittest.TestCase):
             )
 
             self.assertEqual(second.rule_id, "SERVICE_HOURS_WEEKEND_CLOSED")
-            self.assertIn("周六周日不上班", second.reply_text)
+            self.assertIn("除春节、技术培训等特殊情况外", second.reply_text)
 
     def test_address_replies_use_picture_wording_instead_of_circle_wording(self):
         helper = rule_engine_tests.RuleEngineTestCase()
@@ -427,7 +429,7 @@ class FollowupRegressionTestCase(unittest.TestCase):
             )
 
             self.assertEqual(second.rule_id, "REMOTE_FLOW_FOLLOWUP")
-            self.assertIn("专属客服", second.reply_text)
+            self.assertIn("我这就加您", second.reply_text)
             self.assertFalse(second_media.media_items)
 
 

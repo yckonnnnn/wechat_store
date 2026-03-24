@@ -4,6 +4,7 @@ import random
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from .business_hours import STANDARD_BUSINESS_HOURS_REPLY
 
 PRECISE_ADDRESS_TO_STORE: Dict[str, str] = {
     "愚园路172号环球世界大厦A座": "sh_jingan",
@@ -84,7 +85,7 @@ SERVICE_HOURS_QUERY_KEYWORDS = (
     "开门时间",
     "关门时间",
 )
-SERVICE_HOURS_SAFE_REPLY = "姐姐我们工作日周一到周五上班，营业时间是上午9:30到下午6:00，周六周日不上班哦"
+SERVICE_HOURS_SAFE_REPLY = STANDARD_BUSINESS_HOURS_REPLY
 
 DEFAULT_PRECISE_ADDRESS_CLOSURE_POOL: List[str] = [
     "姐姐您看下我发的位置图，按图找会更直观些，方便的话我也可以继续帮您安排预约呀🌹",
@@ -192,12 +193,16 @@ def reply_has_correct_service_hours(reply_text: str) -> bool:
     if not normalized:
         return False
 
-    has_open_time = any(token in normalized for token in ("9:30", "930", "上午9点30", "早上9点30"))
+    has_open_time = any(token in normalized for token in ("9:30", "9：30", "930", "上午9点30", "早上9点30"))
     has_close_time = any(
         token in normalized
-        for token in ("18:00", "1800", "下午6:00", "下午6点", "晚上18:00", "晚18:00")
+        for token in ("18:00", "18：00", "1800", "下午6:00", "下午6：00", "下午6点", "晚上18:00", "晚18:00")
     )
-    return has_open_time and has_close_time
+    has_legacy_hours_phrase = any(
+        token in normalized
+        for token in ("全年无休", "周一到周五", "周六周日不上班", "周末不上班", "工作日周一到周五")
+    )
+    return has_open_time and has_close_time and not has_legacy_hours_phrase
 
 
 def reply_has_non_whitelist_detailed_address(reply_text: str) -> bool:

@@ -24,6 +24,7 @@ from .agent_guardrails import (
     build_reply_closure_info,
     normalize_reply_text,
 )
+from .business_hours import STANDARD_BUSINESS_HOURS_FACT, STANDARD_BUSINESS_HOURS_REPLY
 from .agent_prompt_builder import build_general_llm_prompt, summarize_llm_conversation_state
 from .agent_types import AgentDecision, MediaJudgeDecision, _SafeDict
 from ..services.knowledge_service import KnowledgeService
@@ -141,7 +142,7 @@ EMPATHY_REMOTE_SUPPORT_FALLBACK = "姐姐那您先注意休息，身体要紧，
 USER_PHONE_SUBMITTED_REPLY = "收到啦姐姐，我稍后加您好友，具体跟你详细介绍❤️"
 CONTACT_ALREADY_ADDED_REPLY = "好的姐姐，我这边看到了，咱们就按刚才的方式接着聊，我来给您详细介绍❤️"
 CONTACT_ALREADY_CAPTURED_REPLY = "收到啦姐姐，您之前留的方式我这边已经记下了，不用重复发，我会尽快联系您详细介绍❤️"
-WEEKEND_CLOSED_REPLY = "姐姐，我们工作日周一到周五上班，营业时间是上午9:30到下午6:00，周六周日不上班哦。"
+WEEKEND_CLOSED_REPLY = STANDARD_BUSINESS_HOURS_REPLY
 REMOTE_FLOW_ENTRY_REPLY = "姐姐，外地也可以远程定制，您直接看上面的图片加专属客服，我让老师一对一帮您看，合适的话再给您安排。❤️"
 REMOTE_FLOW_FOLLOWUP_REPLY = "姐姐，您加上专属客服后，把大概情况发过去，老师会先帮您看适不适合远程定制，再跟您说后面的安排。❤️"
 REMOTE_FLOW_URGENT_REPLY = "姐姐您别着急，外地这边是可以远程定制的，您直接加上专属客服，我们这边马上接着给您安排。❤️"
@@ -1077,6 +1078,9 @@ class CustomerServiceAgent:
             route=route,
             session_state=session_state,
         )
+        if current_answer_topic == "service_hours" and not self._extract_business_hours_fact(decision.reply_text):
+            decision.reply_text = STANDARD_BUSINESS_HOURS_REPLY
+            current_answer_facts["business_hours"] = STANDARD_BUSINESS_HOURS_FACT
         conversation_state_updates = self._build_conversation_state_updates(
             latest_user_text=raw_text,
             decision=decision,
@@ -3487,7 +3491,7 @@ class CustomerServiceAgent:
         ):
             topic = "service_hours"
             facts = {
-                "business_hours": self._extract_business_hours_fact(decision.reply_text) or "周一到周五上午9:30到下午6:00，周六周日不上班",
+                "business_hours": self._extract_business_hours_fact(decision.reply_text) or STANDARD_BUSINESS_HOURS_FACT,
                 "kb_item_id": str(decision.kb_item_id or ""),
             }
             mode = "direct_kb" if decision.reply_source == "knowledge" else "contextual_llm"
@@ -3613,8 +3617,10 @@ class CustomerServiceAgent:
 
     def _extract_business_hours_fact(self, text: str) -> str:
         normalized = re.sub(r"\s+", "", str(text or ""))
-        if any(token in normalized for token in ("9:30", "930")) and any(token in normalized for token in ("18:00", "1800", "下午6:00", "下午6点")):
-            return "上午9:30到下午6:00"
+        if any(token in normalized for token in ("9:30", "9：30", "930")) and any(
+            token in normalized for token in ("18:00", "18：00", "1800", "下午6:00", "下午6：00", "下午6点")
+        ):
+            return STANDARD_BUSINESS_HOURS_FACT
         return ""
 
     def _extract_lifespan_fact(self, text: str) -> str:
