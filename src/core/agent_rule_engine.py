@@ -81,13 +81,13 @@ def should_apply_rule_decision(
         sent_stores = set(session_state.get("sent_address_stores", []) or [])
         text_reply_count_by_store = dict(session_state.get("address_text_reply_count_by_store", {}) or {})
         contact_reply_count_by_store = dict(session_state.get("address_contact_reply_count_by_store", {}) or {})
+        exhausted_store = target_store if target_store and target_store != "unknown" else session_target_store
         if (
-            target_store == "unknown"
-            and session_target_store
-            and session_target_store != "unknown"
-            and session_target_store in sent_stores
-            and int(text_reply_count_by_store.get(session_target_store, 0) or 0) >= 1
-            and int(contact_reply_count_by_store.get(session_target_store, 0) or 0) >= 1
+            exhausted_store
+            and exhausted_store != "unknown"
+            and exhausted_store in sent_stores
+            and int(text_reply_count_by_store.get(exhausted_store, 0) or 0) >= 1
+            and int(contact_reply_count_by_store.get(exhausted_store, 0) or 0) >= 1
         ):
             return False
 
@@ -145,7 +145,14 @@ def build_address_text_after_image_decision(
     intent: str,
     session_state: Dict[str, Any],
 ) -> Optional[AgentDecision]:
-    if intent != "address" and not agent.knowledge_service.is_shanghai_route_alias_address_candidate(latest_user_text):
+    normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
+    explicit_revisit = any(token in normalized for token in ("位置图", "再发", "看图", "位置"))
+    if (
+        intent != "address"
+        and not explicit_revisit
+        and not agent.knowledge_service.is_address_query(latest_user_text)
+        and not agent.knowledge_service.is_shanghai_route_alias_address_candidate(latest_user_text)
+    ):
         return None
     if not should_continue_address_followup(agent, latest_user_text=latest_user_text, session_state=session_state):
         return None
@@ -188,7 +195,14 @@ def build_address_contact_after_text_decision(
     intent: str,
     session_state: Dict[str, Any],
 ) -> Optional[AgentDecision]:
-    if intent != "address" and not agent.knowledge_service.is_shanghai_route_alias_address_candidate(latest_user_text):
+    normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
+    explicit_revisit = any(token in normalized for token in ("位置图", "再发", "看图", "位置"))
+    if (
+        intent != "address"
+        and not explicit_revisit
+        and not agent.knowledge_service.is_address_query(latest_user_text)
+        and not agent.knowledge_service.is_shanghai_route_alias_address_candidate(latest_user_text)
+    ):
         return None
     if not should_continue_address_followup(agent, latest_user_text=latest_user_text, session_state=session_state):
         return None
@@ -356,7 +370,6 @@ def decide_rule_reply(
         intent == "purchase"
         and neg_shanghai_hint
         and geo_context.get("known")
-        and not (reason == "out_of_coverage" and route.get("detected_region"))
     ):
         session_state["last_geo_pending"] = False
         session_state["geo_followup_round"] = 0
@@ -406,7 +419,10 @@ def decide_rule_reply(
         session_state["geo_choice_offered"] = False
         session_state["last_geo_route_reason"] = ""
 
-        if agent._is_contact_image_sent_for_current_geo(session_state):
+        if (
+            not agent_media.is_media_whitelist_session(agent, str(session_state.get("session_id", "") or ""))
+            and int(session_state.get("contact_image_sent_count", 0) or 0) >= 3
+        ):
             return AgentDecision(
                 reply_text="姐姐，请往上滑看图中画框框的地方找我～♥️",
                 intent="purchase" if intent == "purchase" else "address",
@@ -607,35 +623,91 @@ def should_recover_to_shanghai_arrival_help(agent, text: str, session_state: Dic
     return any(keyword in normalized for keyword in _const(agent, "SHANGHAI_ROUTE_HELP_KEYWORDS", ()))
 
 
-def is_follow_up_question(agent, text: str, conversation_history: List[Dict[str, str]]) -> bool:
+def is_follow_up_question(
+    agent,
+    text: str,
+    conversation_history: List[Dict[str, str]],
+    session_state: Optional[Dict[str, Any]] = None,
+) -> bool:
     text_stripped = text.strip()
+    normalized = re.sub(r"\s+", "", text_stripped)
+    if not normalized:
+        return False
 
     if any(keyword in text_stripped for keyword in _const(agent, "SERVICE_HOURS_PRIORITY_KEYWORDS", ())):
         return False
+    if agent._looks_like_appointment_query(text_stripped):
+        return False
+    if agent._looks_like_lifespan_query(text_stripped) and not any(token in normalized for token in ("那", "也是", "这个", "这款", "一样")):
+        return False
 
-    if len(text_stripped) < 10:
+    try:
+        kb_detail = agent.knowledge_service.find_answer_detail(
+            text_stripped,
+            threshold=getattr(agent, "knowledge_threshold", 0.6),
+        )
+    except Exception:
+        kb_detail = {}
+    if bool(kb_detail.get("matched")) or bool(kb_detail.get("blocked_by_polite_guard")):
+        return False
+
+    state = dict(session_state or {})
+    known_store = str(state.get("last_target_store", "") or "").strip()
+    text_reply_count_by_store = dict(state.get("address_text_reply_count_by_store", {}) or {})
+    contact_reply_count_by_store = dict(state.get("address_contact_reply_count_by_store", {}) or {})
+    if (
+        known_store
+        and agent.knowledge_service.is_address_query(text_stripped)
+        and int(text_reply_count_by_store.get(known_store, 0) or 0) >= 1
+        and int(contact_reply_count_by_store.get(known_store, 0) or 0) >= 1
+    ):
         return True
 
-    follow_up_keywords = ["怎么", "如何", "为什么", "那", "呢", "吗", "太", "很", "什么"]
-    if any(k in text for k in follow_up_keywords) and len(text_stripped) < 20:
+    follow_up_keywords = [
+        "那",
+        "呢",
+        "吗",
+        "是不是",
+        "对吧",
+        "是吧",
+        "也是",
+        "一样",
+        "差不多",
+        "还",
+        "再",
+        "还是",
+        "周二",
+        "周三",
+        "周四",
+        "周五",
+    ]
+    follow_up_cues = any(k in text_stripped for k in follow_up_keywords)
+
+    active_topic = str((session_state or {}).get("active_topic", "") or "")
+    if (not conversation_history or len(conversation_history) < 2):
+        if active_topic in {"price", "service_hours", "lifespan", "store_recommendation", "appointment"} and follow_up_cues and len(text_stripped) <= 18:
+            return True
+        return False
+
+    last_user_msg = conversation_history[-2].get("content", "")
+    last_assistant_msg = conversation_history[-1].get("content", "")
+
+    def extract_keywords(s):
+        s = re.sub(r"[，。！？、,.!?~\s]+", "", s)
+        common_words = set("的了吗呢啊哦嗯姐姐我们您")
+        return set(c for c in s if c not in common_words)
+
+    user_words = extract_keywords(text_stripped)
+    last_words = extract_keywords(last_user_msg + last_assistant_msg)
+
+    overlap = 0.0
+    if user_words and last_words:
+        overlap = len(user_words & last_words) / len(user_words)
+
+    if follow_up_cues and len(text_stripped) <= 18:
         return True
-
-    if conversation_history and len(conversation_history) >= 2:
-        last_user_msg = conversation_history[-2].get("content", "")
-        last_assistant_msg = conversation_history[-1].get("content", "")
-
-        def extract_keywords(s):
-            s = re.sub(r"[，。！？、,.!?~\s]+", "", s)
-            common_words = set("的了吗呢啊哦嗯姐姐我们您")
-            return set(c for c in s if c not in common_words)
-
-        user_words = extract_keywords(text_stripped)
-        last_words = extract_keywords(last_user_msg + last_assistant_msg)
-
-        if user_words and last_words:
-            overlap = len(user_words & last_words) / len(user_words)
-            if overlap > 0.3:
-                return True
+    if overlap > 0.45 and len(text_stripped) <= 18:
+        return True
 
     return False
 
@@ -711,7 +783,7 @@ def decide_general_reply(
             rule_applied=True,
         )
 
-    if agent._is_follow_up_question(latest_user_text, conversation_history):
+    if agent._is_follow_up_question(latest_user_text, conversation_history, session_state=session_state):
         return agent._decide_llm_reply(
             latest_user_text=latest_user_text,
             intent=intent,

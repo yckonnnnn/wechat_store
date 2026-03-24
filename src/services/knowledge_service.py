@@ -56,6 +56,7 @@ class KnowledgeService(QObject):
         {"keyword": "中百一店", "target_store": "sh_wujiaochang", "note": "人民广场高频地标"},
         {"keyword": "人民廣場", "target_store": "sh_renmin", "note": "人民广场繁体写法，归到人民广场门店"},
         {"keyword": "人民广場", "target_store": "sh_renmin", "note": "人民广场繁体错别字，归到人民广场门店"},
+        {"keyword": "人民广场", "target_store": "sh_renmin", "note": "人民广场标准写法，优先归到人民广场门店"},
         {"keyword": "上海南京路", "target_store": "sh_renmin", "note": "人民广场高频商圈问法"},
         {"keyword": "南京路", "target_store": "sh_renmin", "note": "人民广场高频商圈问法"},
         {"keyword": "西芷中路", "target_store": "sh_renmin", "note": "用户常见错别字，归到人民广场门店"},

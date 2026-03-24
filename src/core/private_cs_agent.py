@@ -805,10 +805,11 @@ class CustomerServiceAgent:
             appointment_kb_decision = self._decide_appointment_priority_reply(
                 latest_user_text=text,
                 route=route,
+                session_state=session_state,
                 user_state=user_state,
                 user_id_hash=user_hash,
             )
-        if price_priority_decision is None and appointment_kb_decision is None:
+        if price_priority_decision is None:
             process_priority_decision = self._decide_process_priority_reply(
                 latest_user_text=text,
                 route=route,
@@ -817,7 +818,6 @@ class CustomerServiceAgent:
             )
         if (
             price_priority_decision is None
-            and appointment_kb_decision is None
             and process_priority_decision is None
         ):
             business_block_priority_decision = self._decide_business_block_priority_reply(
@@ -826,6 +826,14 @@ class CustomerServiceAgent:
                 user_state=user_state,
                 user_id_hash=user_hash,
             )
+
+        skip_rule_for_generic_llm_direct_address = (
+            self.reply_mode == REPLY_MODE_LLM_DIRECT
+            and self.knowledge_service.is_address_query(text)
+            and str(route.get("reason", "") or "unknown") == "unknown"
+            and str(session_state.get("last_target_store", "") or "").strip() in {"", "unknown"}
+            and int(session_state.get("address_image_sent_count", 0) or 0) <= 0
+        )
 
         if decision is not None:
             pass
@@ -839,10 +847,15 @@ class CustomerServiceAgent:
             decision = address_text_after_image_decision
         elif address_contact_after_text_decision is not None:
             decision = address_contact_after_text_decision
-        elif appointment_kb_decision and appointment_kb_decision.reply_source == "knowledge":
+        elif appointment_kb_decision is not None:
             decision = appointment_kb_decision
-        elif self._should_apply_rule_decision(text=text, intent=intent, route=route, session_state=session_state) and not (
-            self.reply_mode == REPLY_MODE_LLM_DIRECT and self._should_keep_llm_direct_address_guardrails(text, session_state=session_state)
+        elif (
+            self._should_apply_rule_decision(text=text, intent=intent, route=route, session_state=session_state)
+            and not skip_rule_for_generic_llm_direct_address
+            and not (
+                self.reply_mode == REPLY_MODE_LLM_DIRECT
+                and self._should_keep_llm_direct_address_guardrails(text, session_state=session_state)
+            )
         ):
             print(f"[DEBUG] 走规则决策: intent={intent}, route_reason={route.get('reason', 'unknown')}, target_store={route.get('target_store', 'unknown')}")
             decision = self._decide_rule_reply(
@@ -856,11 +869,40 @@ class CustomerServiceAgent:
             )
         else:
             print(f"[DEBUG] 不走规则决策，走知识库或LLM: intent={intent}, route_reason={route.get('reason', 'unknown')}")
-            if self.reply_mode == REPLY_MODE_LLM_DIRECT:
+            if (
+                appointment_kb_decision is None
+                and self.reply_mode != REPLY_MODE_LLM_DIRECT
+                and self._looks_like_appointment_query(text)
+                and self._should_apply_rule_decision(
+                    text=text,
+                    intent="purchase",
+                    route=route,
+                    session_state=session_state,
+                )
+            ):
+                decision = self._decide_rule_reply(
+                    text=text,
+                    intent="purchase",
+                    route=route,
+                    session_state=session_state,
+                    conversation_history=conversation_history or [],
+                    user_state=user_state,
+                    is_first_turn_global=is_first_turn_global,
+                )
+            elif self.reply_mode == REPLY_MODE_LLM_DIRECT:
                 llm_direct_address_guardrails = self._should_apply_llm_direct_address_guardrails(
                     text=text,
                     session_state=session_state,
                 )
+                allow_precise_address_closure = True
+                if (
+                    not llm_direct_address_guardrails
+                    and self.knowledge_service.is_address_query(text)
+                    and str(route.get("reason", "") or "unknown") == "unknown"
+                    and str(session_state.get("last_target_store", "") or "").strip() in {"", "unknown"}
+                    and int(session_state.get("address_image_sent_count", 0) or 0) <= 0
+                ):
+                    allow_precise_address_closure = False
                 decision = self._decide_llm_reply(
                     latest_user_text=raw_text,
                     intent=intent,
@@ -868,7 +910,7 @@ class CustomerServiceAgent:
                     conversation_history=conversation_history or [],
                     session_state=session_state,
                     allow_address_guardrails=llm_direct_address_guardrails,
-                    allow_precise_address_closure=True,
+                    allow_precise_address_closure=allow_precise_address_closure,
                 )
             else:
                 decision = appointment_kb_decision or self._decide_general_reply(
@@ -889,6 +931,11 @@ class CustomerServiceAgent:
             "ADDR_STORE_RECOMMEND",
             "CONTACT_SEND_IMAGE",
         }
+        if not bool(getattr(decision, "kb_blocked_by_polite_guard", False)):
+            kb_detail = self.knowledge_service.find_answer_detail(text, threshold=self.knowledge_threshold)
+            if bool(kb_detail.get("blocked_by_polite_guard", False)):
+                decision.kb_blocked_by_polite_guard = True
+                decision.kb_polite_guard_reason = str(kb_detail.get("polite_guard_reason", "") or "")
         should_rewrite = (
             decision.reply_source in ("llm", "fallback")
             and self.reply_mode != REPLY_MODE_LLM_DIRECT
@@ -941,6 +988,8 @@ class CustomerServiceAgent:
                 user_name=user_name,
                 decision=decision,
             )
+            if not bool(getattr(self, "first_reply_video_enabled", False)):
+                decision.first_turn_video_items = []
         else:
             decision.first_turn_image_items = []
             decision.first_turn_video_items = []
@@ -1364,14 +1413,21 @@ class CustomerServiceAgent:
     def _should_recover_to_shanghai_arrival_help(self, text: str, session_state: Dict[str, Any]) -> bool:
         return agent_rule_engine.should_recover_to_shanghai_arrival_help(self, text, session_state)
 
-    def _is_follow_up_question(self, text: str, conversation_history: List[Dict[str, str]]) -> bool:
-        return agent_rule_engine.is_follow_up_question(self, text, conversation_history)
+    def _is_follow_up_question(
+        self,
+        text: str,
+        conversation_history: List[Dict[str, str]],
+        session_state: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        return agent_rule_engine.is_follow_up_question(self, text, conversation_history, session_state=session_state)
 
     def _has_price_priority(self, text: str) -> bool:
         normalized = re.sub(r"\s+", "", str(text or "")).lower()
         if not normalized:
             return False
         if any(keyword in normalized for keyword in ADDRESS_PRIORITY_OVER_PRICE_KEYWORDS):
+            return False
+        if any(keyword in normalized for keyword in ("邮寄", "快递", "寄吗", "寄快递", "能买吗", "怎么买", "购买")):
             return False
         explicit_price_keywords = (
             "多少钱",
@@ -1826,8 +1882,10 @@ class CustomerServiceAgent:
         latest_user_text: str,
         route: Dict[str, Any],
         user_state: Dict[str, Any],
+        session_state: Optional[Dict[str, Any]] = None,
         user_id_hash: str = "",
     ) -> Optional[AgentDecision]:
+        state = dict(session_state or {})
         store_specific_reply = self._build_store_appointment_contact_reply(latest_user_text, route)
         kb_detail = self.knowledge_service.find_answer_detail(
             latest_user_text,
@@ -1835,8 +1893,19 @@ class CustomerServiceAgent:
         )
         kb_intent = str(kb_detail.get("intent", "") or "").strip().lower()
         tags = {str(tag).strip() for tag in (kb_detail.get("tags", []) or []) if str(tag).strip()}
+        has_both_images_sent = (
+            int(state.get("address_image_sent_count", 0) or 0) > 0
+            and int(state.get("contact_image_sent_count", 0) or 0) > 0
+        )
+        if has_both_images_sent and kb_detail.get("matched") and kb_intent == "appointment":
+            return None
         if not (kb_detail.get("matched") and (kb_intent == "appointment" or "预约" in tags)):
-            if store_specific_reply:
+            if has_both_images_sent:
+                return None
+            has_sent_address = int(state.get("address_image_sent_count", 0) or 0) > 0
+            route_target_store = str(route.get("target_store", "") or "").strip()
+            explicit_location = str(route.get("reason", "") or "").strip() not in {"", "unknown"}
+            if store_specific_reply and (explicit_location or has_sent_address) and route_target_store and route_target_store != "unknown":
                 return AgentDecision(
                     reply_text=store_specific_reply,
                     intent="appointment",
@@ -1915,7 +1984,9 @@ class CustomerServiceAgent:
         ):
             return ""
         store = self.knowledge_service.get_store_display(target_store)
-        store_name = self._store_recommend_display_name(target_store, store.get("store_name", "门店"))
+        store_name = str(store.get("store_name", "") or self._store_recommend_display_name(target_store, "门店"))
+        if target_store == "beijing_chaoyang" and store_name.endswith("门店"):
+            store_name = f"{store_name[:-2]}店"
         return f"姐姐，我们是需要预约的，推荐您到{store_name}，具体位置您可以看下面的圈圈+我好友，我发给您路线地址❤️"
 
     def _looks_like_process_query(self, text: str) -> bool:
@@ -2116,6 +2187,24 @@ class CustomerServiceAgent:
         if service_hours_priority_decision is not None:
             return service_hours_priority_decision
 
+        address_text_after_image_decision = self._build_address_text_after_image_decision(
+            latest_user_text=text,
+            route=route,
+            intent=intent,
+            session_state=session_state,
+        )
+        if address_text_after_image_decision is not None:
+            return address_text_after_image_decision
+
+        address_contact_after_text_decision = self._build_address_contact_after_text_decision(
+            latest_user_text=text,
+            route=route,
+            intent=intent,
+            session_state=session_state,
+        )
+        if address_contact_after_text_decision is not None:
+            return address_contact_after_text_decision
+
         if self._should_apply_rule_decision(text=text, intent=intent, route=route, session_state=session_state):
             if self._should_keep_llm_direct_address_guardrails(text, session_state=session_state):
                 return None
@@ -2140,6 +2229,12 @@ class CustomerServiceAgent:
         session_state = dict(session_state or {})
         has_known_store = str(session_state.get("last_target_store", "") or "").strip() not in {"", "unknown"}
         has_sent_address = int(session_state.get("address_image_sent_count", 0) or 0) > 0
+        if (
+            not has_known_store
+            and not has_sent_address
+            and any(token in normalized for token in ("地址在哪", "地址在哪里", "地址在哪儿", "门店在哪", "位置在哪"))
+        ):
+            return False
         if has_known_store and has_sent_address:
             if self.knowledge_service.is_address_query(text):
                 return False
@@ -2147,11 +2242,13 @@ class CustomerServiceAgent:
                 return False
             if any(token in normalized for token in ("位置图", "再发", "看图", "位置")):
                 return False
-        if self.knowledge_service.is_address_query(text):
-            return True
         if self.knowledge_service.is_shanghai_route_alias_address_candidate(text):
             return True
-        return any(token in normalized for token in ("具体地点", "具体位置", "具体地址"))
+        if any(token in normalized for token in ("具体地点", "具体位置", "具体地址")):
+            return True
+        if has_known_store and self.knowledge_service.is_address_query(text):
+            return True
+        return False
 
     def _should_apply_llm_direct_address_guardrails(
         self,

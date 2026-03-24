@@ -21,12 +21,17 @@ CONTACT_TRIGGER_KEYWORDS = (
     "二维码",
     "路线",
     "导航",
+    "邮寄",
+    "快递",
+    "寄快递",
 )
 CONTACT_TRIGGER_TAGS = (
     "联系",
     "联系方式",
     "预约",
     "加微信",
+    "邮寄",
+    "快递",
 )
 CONTACT_TRIGGER_INTENTS = ("appointment",)
 APPOINTMENT_PRIORITY_KEYWORDS = (
@@ -564,7 +569,11 @@ def queue_contact_image(
     session_state: Dict[str, Any],
     force_contact_image: bool = False,
 ) -> Tuple[Optional[Dict[str, Any]], str]:
-    del session_id
+    if (
+        not is_media_whitelist_session(agent, session_id)
+        and int(session_state.get("contact_image_sent_count", 0) or 0) >= 3
+    ):
+        return None, "contact_image_already_sent"
     if not agent._contact_images:
         return None, "contact_image_missing"
 
@@ -640,7 +649,17 @@ def looks_like_appointment_query(agent, text: str) -> bool:
 
 def is_contact_image_sent_for_current_geo(agent, session_state: Dict[str, Any]) -> bool:
     del agent
-    return int(session_state.get("contact_image_sent_count", 0) or 0) > 0
+    sent_count = int(session_state.get("contact_image_sent_count", 0) or 0)
+    if sent_count <= 0:
+        return False
+    if str(session_state.get("contact_image_last_sent_at", "") or "").strip():
+        return True
+    sent_paths = [
+        str(path).strip()
+        for path in (session_state.get("contact_image_sent_paths", []) or [])
+        if str(path).strip()
+    ]
+    return bool(sent_paths)
 
 
 def has_both_images_sent(agent, session_state: Dict[str, Any]) -> bool:
@@ -658,21 +677,81 @@ def sync_media_state_from_conversation_log(
     session_state: Dict[str, Any],
 ) -> None:
     user_summary = summarize_user_media_from_logs(agent, user_id_hash=user_hash)
-    session_state["address_image_sent_count"] = int(user_summary.get("address_image_sent_count", 0) or 0)
-    session_state["contact_image_sent_count"] = int(user_summary.get("contact_image_sent_count", 0) or 0)
-    session_state["address_image_last_sent_at_by_store"] = dict(user_summary.get("address_image_last_sent_at_by_store", {}) or {})
-    session_state["address_image_sent_paths_by_store"] = dict(user_summary.get("address_image_sent_paths_by_store", {}) or {})
-    session_state["sent_address_stores"] = list(user_summary.get("sent_address_stores", []) or [])
-    session_state["contact_image_last_sent_at"] = str(user_summary.get("contact_image_last_sent_at", "") or "")
-    session_state["contact_image_sent_paths"] = list(user_summary.get("contact_image_sent_paths", []) or [])
+    session_summary = summarize_session_media_from_logs(agent, session_id=session_id)
+    session_state["address_image_sent_count"] = max(
+        int(session_state.get("address_image_sent_count", 0) or 0),
+        int(user_summary.get("address_image_sent_count", 0) or 0),
+        int(session_summary.get("address_image_sent_count", 0) or 0),
+    )
+    session_state["contact_image_sent_count"] = max(
+        int(session_state.get("contact_image_sent_count", 0) or 0),
+        int(user_summary.get("contact_image_sent_count", 0) or 0),
+        int(session_summary.get("contact_image_sent_count", 0) or 0),
+    )
 
-    latest_store = str(user_summary.get("last_target_store", "") or "").strip()
+    merged_address_last_sent = dict(session_state.get("address_image_last_sent_at_by_store", {}) or {})
+    merged_address_last_sent.update(dict(user_summary.get("address_image_last_sent_at_by_store", {}) or {}))
+    merged_address_last_sent.update(dict(session_summary.get("address_image_last_sent_at_by_store", {}) or {}))
+    session_state["address_image_last_sent_at_by_store"] = merged_address_last_sent
+
+    merged_paths_by_store = dict(session_state.get("address_image_sent_paths_by_store", {}) or {})
+    for summary in (user_summary, session_summary):
+        for store, paths in dict(summary.get("address_image_sent_paths_by_store", {}) or {}).items():
+            existing_paths = [
+                str(path).strip()
+                for path in (merged_paths_by_store.get(store, []) or [])
+                if str(path).strip()
+            ]
+            for path in (paths or []):
+                clean_path = str(path).strip()
+                if clean_path and clean_path not in existing_paths:
+                    existing_paths.append(clean_path)
+            merged_paths_by_store[store] = existing_paths
+    session_state["address_image_sent_paths_by_store"] = merged_paths_by_store
+
+    merged_sent_address_stores = set(session_state.get("sent_address_stores", []) or [])
+    merged_sent_address_stores.update(user_summary.get("sent_address_stores", []) or [])
+    merged_sent_address_stores.update(session_summary.get("sent_address_stores", []) or [])
+    session_state["sent_address_stores"] = list(merged_sent_address_stores)
+
+    contact_last_sent = str(user_summary.get("contact_image_last_sent_at", "") or "")
+    session_contact_last_sent = str(session_summary.get("contact_image_last_sent_at", "") or "")
+    if session_contact_last_sent:
+        contact_last_sent = session_contact_last_sent
+    if contact_last_sent:
+        session_state["contact_image_last_sent_at"] = contact_last_sent
+    session_state["contact_image_sent_paths"] = list(
+        dict.fromkeys(
+            [
+                *[
+                    str(path).strip()
+                    for path in (session_state.get("contact_image_sent_paths", []) or [])
+                    if str(path).strip()
+                ],
+                *[
+                    str(path).strip()
+                    for path in (user_summary.get("contact_image_sent_paths", []) or [])
+                    if str(path).strip()
+                ],
+                *[
+                    str(path).strip()
+                    for path in (session_summary.get("contact_image_sent_paths", []) or [])
+                    if str(path).strip()
+                ],
+            ]
+        )
+    )
+
+    latest_store = str(session_summary.get("last_target_store", "") or user_summary.get("last_target_store", "") or "").strip()
     if latest_store:
         session_state["last_target_store"] = latest_store
         facts = dict(session_state.get("conversation_facts", {}) or {})
         facts["recommended_store"] = latest_store
         session_state["conversation_facts"] = facts
-        if int(user_summary.get("address_image_sent_count", 0) or 0) > 0:
+        if max(
+            int(user_summary.get("address_image_sent_count", 0) or 0),
+            int(session_summary.get("address_image_sent_count", 0) or 0),
+        ) > 0:
             session_state["conversation_stage"] = str(session_state.get("conversation_stage", "") or "address_image_sent")
 
     session_video = summarize_session_video_from_log(agent, session_id=session_id)
@@ -916,7 +995,7 @@ def summarize_user_media_from_logs(agent, user_id_hash: str) -> Dict[str, Any]:
 def store_recommend_display_name(agent, target_store: str, fallback_name: str = "") -> str:
     del agent
     if target_store == "beijing_chaoyang":
-        return "北京朝阳店"
+        return "北京朝阳门店"
     return str(fallback_name or "门店")
 
 
@@ -1079,6 +1158,68 @@ def summarize_session_video_from_log(agent, session_id: str) -> Dict[str, Any]:
     return summary
 
 
+def summarize_session_media_from_logs(agent, session_id: str) -> Dict[str, Any]:
+    summary = {
+        "address_image_sent_count": 0,
+        "contact_image_sent_count": 0,
+        "address_image_last_sent_at_by_store": {},
+        "address_image_sent_paths_by_store": {},
+        "sent_address_stores": [],
+        "contact_image_last_sent_at": "",
+        "contact_image_sent_paths": [],
+        "last_target_store": "",
+    }
+    records = scan_session_media_records_by_session(agent, session_id=session_id)
+    if not records:
+        return summary
+
+    address_ts_map: Dict[str, datetime] = {}
+    address_sent_paths_by_store: Dict[str, List[str]] = {}
+    sent_address_stores: set[str] = set()
+    last_target_store = ""
+    last_target_store_ts: Optional[datetime] = None
+    contact_last_ts: Optional[datetime] = None
+    contact_sent_paths: List[str] = []
+
+    for rec in records:
+        media_type = rec.get("type", "")
+        ts = agent._parse_iso(str(rec.get("timestamp", "") or ""))
+        if media_type == "address_image":
+            summary["address_image_sent_count"] += 1
+            target_store = str(rec.get("target_store", "") or "")
+            media_path = str(rec.get("path", "") or "").strip()
+            if target_store:
+                sent_address_stores.add(target_store)
+                store_paths = address_sent_paths_by_store.setdefault(target_store, [])
+                if media_path and media_path not in store_paths:
+                    store_paths.append(media_path)
+                if ts and (target_store not in address_ts_map or ts > address_ts_map[target_store]):
+                    address_ts_map[target_store] = ts
+                if ts and (not last_target_store_ts or ts > last_target_store_ts):
+                    last_target_store = target_store
+                    last_target_store_ts = ts
+                elif not ts and not last_target_store:
+                    last_target_store = target_store
+        elif media_type == "contact_image":
+            summary["contact_image_sent_count"] += 1
+            media_path = str(rec.get("path", "") or "").strip()
+            if media_path and media_path not in contact_sent_paths:
+                contact_sent_paths.append(media_path)
+            if ts and (not contact_last_ts or ts > contact_last_ts):
+                contact_last_ts = ts
+
+    summary["sent_address_stores"] = sorted(sent_address_stores)
+    summary["last_target_store"] = last_target_store
+    summary["address_image_last_sent_at_by_store"] = {
+        store: dt.isoformat() for store, dt in address_ts_map.items()
+    }
+    summary["address_image_sent_paths_by_store"] = address_sent_paths_by_store
+    if contact_last_ts:
+        summary["contact_image_last_sent_at"] = contact_last_ts.isoformat()
+    summary["contact_image_sent_paths"] = contact_sent_paths
+    return summary
+
+
 def build_video_media_item(agent, trigger_source: str) -> Optional[Dict[str, Any]]:
     custom_builder = getattr(agent, "_build_video_media_item", None)
     custom_func = getattr(custom_builder, "__func__", None)
@@ -1182,6 +1323,77 @@ def scan_session_media_records(agent, log_path: Path, user_id_hash: str) -> List
             )
     except Exception:
         return records
+    return records
+
+
+def scan_session_media_records_by_session(agent, session_id: str) -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    pending_attempts: Dict[str, List[Dict[str, Any]]] = {
+        "address_image": [],
+        "contact_image": [],
+        "delayed_video": [],
+    }
+    for log_path in session_log_candidates(agent, session_id):
+        try:
+            for raw_line in log_path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                if str(record.get("session_id", "") or "") != session_id:
+                    continue
+                event_type = str(record.get("event_type", "") or "")
+                payload = record.get("payload", {})
+                if not isinstance(payload, dict):
+                    payload = {}
+
+                if event_type == "media_attempt":
+                    media_type = str(payload.get("type", "") or "")
+                    if media_type in pending_attempts:
+                        pending_attempts[media_type].append(payload)
+                    continue
+
+                if event_type != "media_result":
+                    continue
+
+                media_type = str(payload.get("type", "") or "")
+                if media_type not in pending_attempts:
+                    continue
+                if not bool(payload.get("success")):
+                    queue = pending_attempts.get(media_type, [])
+                    if queue:
+                        queue.pop(0)
+                    continue
+
+                attempt_payload = {}
+                queue = pending_attempts.get(media_type, [])
+                if queue:
+                    attempt_payload = queue.pop(0)
+
+                path = str((attempt_payload or {}).get("path", "") or "")
+                target_store = str((attempt_payload or {}).get("target_store", "") or "").strip()
+                if media_type == "address_image" and not target_store:
+                    target_store = infer_store_from_image_path(agent, path)
+
+                records.append(
+                    {
+                        "type": media_type,
+                        "timestamp": str(record.get("timestamp", "") or ""),
+                        "path": path,
+                        "target_store": target_store,
+                        "store_name": str((attempt_payload or {}).get("store_name", "") or ""),
+                        "store_address": str((attempt_payload or {}).get("store_address", "") or ""),
+                        "detected_region": str((attempt_payload or {}).get("detected_region", "") or ""),
+                        "route_reason": str((attempt_payload or {}).get("route_reason", "") or ""),
+                    }
+                )
+        except Exception:
+            continue
     return records
 
 

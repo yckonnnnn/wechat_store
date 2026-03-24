@@ -119,6 +119,7 @@ def normalize_reply_text(agent: Any, text: str) -> str:
     value = re.sub(r"(?:\s+|^)(\d{1,2}:\d{2})(?:已读|未读|送达)?$", "", value).strip()
     value = " ".join(value.split())
     value = agent._strip_inline_emoji_symbols(value)
+    value = value.replace("～", "").replace("~", "")
     value = re.sub(r"吧到(?=[。！？!?，,；;]|$)", "吧", value)
     value = re.sub(r"呢到(?=[。！？!?，,；;]|$)", "呢", value)
 
@@ -130,10 +131,25 @@ def normalize_reply_text(agent: Any, text: str) -> str:
 
     if not value:
         value = "姐姐我在呢"
+    can_shorten = (
+        len(value) > 32
+        and "门店" in value
+        and "北京" in value
+        and "上海" in value
+        and any(token in value for token in ("静安", "人广", "虹口", "五角场", "徐汇"))
+        and not re.search(r"\d{3,}", value)
+        and "哪个城市" not in value
+        and "什么城市" not in value
+    )
+    compact_candidates = [part.strip() for part in re.split(r"[；;，,]", value) if part.strip()]
+    if can_shorten and compact_candidates:
+        value = compact_candidates[0]
+    if can_shorten and len(value) > 32:
+        value = value[:32].rstrip("，,；;。！？!? ")
     value = value.rstrip("，,；; ")
     if not re.search(r"[。！？!?]$", value):
         value = f"{value}。"
-    emoji = "🌹" if force_default_emoji else random.choice(agent._reply_emoji_pool)
+    emoji = "🌹" if force_default_emoji else "🌹"
     return f"{value}{emoji}"
 
 
@@ -362,6 +378,8 @@ def apply_llm_reply_guardrails(
         return finalize(agent._render_guardrail_reply(SERVICE_HOURS_SAFE_REPLY))
 
     if (
+        allow_address_guardrails
+        and
         int(state.get("address_image_sent_count", 0) or 0) > 0
         and str((state.get("conversation_facts", {}) or {}).get("recommended_store", "") or state.get("last_target_store", "") or "")
         and (
@@ -431,7 +449,7 @@ def apply_llm_reply_guardrails(
                 },
             )
 
-    if reply_has_non_whitelist_detailed_address(reply):
+    if allow_address_guardrails and reply_has_non_whitelist_detailed_address(reply):
         store_key = agent._resolve_guardrail_store_key(text, reply, state, history)
         if store_key:
             store = agent.knowledge_service.get_store_display(store_key)
