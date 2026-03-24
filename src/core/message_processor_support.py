@@ -198,7 +198,7 @@ def convert_history(messages: List[MediaMessage]) -> List[Dict[str, str]]:
     """Convert the latest conversation slice into the role/content format used by the agent."""
     history: List[Dict[str, str]] = []
     source = messages[:-1] if messages and messages[-1].get("is_user", False) else messages
-    for message in source[-12:]:
+    for message in source:
         text = str(message.get("text") or "").strip()
         if not text:
             continue

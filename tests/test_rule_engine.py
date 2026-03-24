@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from src.core.agent_types import AgentDecision
+from src.core.message_processor_support import convert_history
 from src.core.private_cs_agent import CustomerServiceAgent
 from src.data.knowledge_repository import KnowledgeRepository
 from src.data.memory_store import MemoryStore
@@ -2093,6 +2094,296 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertTrue(d2.kb_repeat_rewritten)
             self.assertTrue(any(item.get("type") == "address_image" for item in media_decision.media_items))
 
+    def test_price_typo_query_still_triggers_price_priority(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, _ = self._build_agent(temp_dir)
+            repository.add(
+                "这款价格多少钱？价格多少？",
+                "姐姐，这类一般在3000到6000之间，具体要看材质、头围和想要的效果。💗",
+                intent="price",
+                tags=["价格"],
+            )
+
+            d = agent.decide("chat_price_typo", "价格错别字用户", "这款价各多烧", [])
+
+            self.assertIn(d.rule_id, {"PRICE_PRIORITY", "PRICE_PRIORITY_FALLBACK"})
+            self.assertEqual(d.intent, "price")
+
+    def test_prompt_summary_prefers_conversation_stage_from_session_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = self._build_agent(temp_dir)
+            agent._current_prompt_session_state = {
+                "conversation_stage": "address_image_sent",
+                "current_turn_action": "revisit_previous_info",
+                "active_topic": "store_recommendation",
+                "last_answer_topic": "store_recommendation",
+                "conversation_facts": {
+                    "city": "北京",
+                    "recommended_store": "beijing_chaoyang",
+                },
+            }
+
+            state = agent._summarize_llm_conversation_state(
+                latest_user_text="位置图再发我看下",
+                conversation_history=[],
+                standard_reply_intent="",
+            )
+
+            self.assertEqual(state.get("city_confirmed"), "北京")
+            self.assertEqual(state.get("store_confirmed"), "北京朝阳店")
+            self.assertEqual(state.get("current_stage"), "位置图已发送")
+            self.assertIn("位置信息", state.get("reply_goal", ""))
+            self.assertIn("不要跳去联系方式", state.get("avoid_repeat", ""))
+
+    def test_address_image_sent_updates_conversation_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = self._build_agent(
+                temp_dir,
+                address_image_files=["北京地址.jpg"],
+                store_targets={"北京地址.jpg": "beijing_chaoyang"},
+            )
+            session_id = "chat_media_state"
+            user_name = "地址状态用户"
+
+            agent.mark_media_sent(
+                session_id=session_id,
+                user_name=user_name,
+                media_item={"type": "address_image", "path": "北京地址.jpg", "target_store": "beijing_chaoyang"},
+                success=True,
+            )
+
+            user_hash = agent._hash_user(user_name)
+            session_state = agent.memory_store.get_session_state(session_id, user_hash=user_hash)
+            self.assertEqual(session_state.get("conversation_stage"), "address_image_sent")
+            self.assertEqual(session_state.get("active_topic"), "store_recommendation")
+            self.assertEqual(
+                str((session_state.get("conversation_facts", {}) or {}).get("recommended_store", "") or ""),
+                "beijing_chaoyang",
+            )
+
+    def test_appointment_after_store_confirmation_does_not_reset_region(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, _ = self._build_agent(
+                temp_dir,
+                address_image_files=["北京地址.jpg"],
+                store_targets={"北京地址.jpg": "beijing_chaoyang"},
+            )
+            repository.add(
+                "怎么预约？要预约吗？提前预约吗？",
+                "姐姐，我们这边是需要提前预约的，您告诉我大概方便的时间，我帮您安排。",
+                intent="appointment",
+                tags=["预约"],
+            )
+
+            session_id = "chat_appointment_progress"
+            user_name = "预约推进用户"
+            d1 = agent.decide(session_id, user_name, "我在北京大兴", [])
+            self.assertEqual(d1.rule_id, "ADDR_STORE_RECOMMEND")
+            media_decision = agent.judge_post_reply_media(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text="我在北京大兴",
+                reply_text=d1.reply_text,
+                conversation_history=[],
+                decision=d1,
+            )
+            self.assertTrue(any(item.get("type") == "address_image" for item in media_decision.media_items))
+            agent.mark_reply_sent(session_id, user_name, d1.reply_text)
+            for item in media_decision.media_items:
+                agent.mark_media_sent(session_id, user_name, item, success=True)
+
+            d2 = agent.decide(session_id, user_name, "到了店里要预约吗", [])
+
+            self.assertEqual(d2.intent, "appointment")
+            self.assertIn("预约", d2.reply_text)
+            self.assertNotIn("哪个城市", d2.reply_text)
+            self.assertNotIn("哪个区域", d2.reply_text)
+
+    def test_store_to_appointment_followup_uses_current_turn_action(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = self._build_agent(temp_dir)
+            decision = AgentDecision(
+                reply_text="姐姐，是需要提前预约的，您把大概方便的时间告诉我，我这边就帮您往下安排。",
+                intent="appointment",
+                route_reason="unknown",
+                reply_goal="",
+                media_plan="none",
+                reply_source="knowledge",
+                rule_id="APPOINTMENT_PRIORITY",
+            )
+            session_state = {
+                "last_answer_topic": "store_recommendation",
+                "last_answer_text_normalized": agent._normalize_for_dedupe("姐姐，推荐您去北京朝阳店，我给您发一张位置图。"),
+                "active_topic": "store_recommendation",
+                "last_target_store": "beijing_chaoyang",
+                "conversation_facts": {"recommended_store": "beijing_chaoyang", "city": "北京"},
+                "current_turn_action": "revisit_previous_info",
+            }
+
+            should_contextualize = agent._should_contextualize_followup_reply(
+                latest_user_text="怎么预约",
+                current_topic="appointment",
+                current_facts={"target_store": "beijing_chaoyang", "appointment_ready": True},
+                decision=decision,
+                session_state=session_state,
+            )
+
+            self.assertTrue(should_contextualize)
+
+    def test_new_region_query_does_not_reuse_previous_store(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = self._build_agent(temp_dir)
+            route = {
+                "city": "shanghai",
+                "target_store": "unknown",
+                "reason": "shanghai_need_district",
+                "route_type": "need_district",
+                "store_address": None,
+                "detected_region": "上海",
+            }
+            session_state = {
+                "conversation_facts": {"recommended_store": "beijing_chaoyang", "city": "北京"},
+                "last_target_store": "beijing_chaoyang",
+            }
+
+            enriched = agent._enrich_route_from_conversation_state("我现在在上海，哪个最近的", route, session_state)
+
+            self.assertEqual(enriched.get("target_store"), "unknown")
+            self.assertEqual(enriched.get("reason"), "shanghai_need_district")
+            self.assertEqual(enriched.get("detected_region"), "上海")
+
+    def test_prompt_summary_prefers_explicit_latest_city_and_store(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = self._build_agent(temp_dir)
+            agent._current_prompt_session_state = {
+                "conversation_stage": "address_image_sent",
+                "current_turn_action": "revisit_previous_info",
+                "active_topic": "store_recommendation",
+                "last_answer_topic": "store_recommendation",
+                "conversation_facts": {
+                    "city": "北京",
+                    "recommended_store": "beijing_chaoyang",
+                },
+            }
+
+            state = agent._summarize_llm_conversation_state(
+                latest_user_text="我现在在上海徐汇",
+                conversation_history=[],
+                standard_reply_intent="",
+            )
+
+            self.assertEqual(state.get("city_confirmed"), "上海")
+            self.assertEqual(state.get("store_confirmed"), "徐汇店")
+
+    def test_position_revisit_after_address_image_keeps_address_flow(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, llm = self._build_agent(
+                temp_dir,
+                address_image_files=["北京地址.jpg"],
+                store_targets={"北京地址.jpg": "beijing_chaoyang"},
+            )
+            agent.reply_mode = "llm_direct"
+            llm.reply_queue = [
+                "姐姐您看下我发的位置图，按图找会更直观些。🌷",
+            ]
+
+            session_id = "chat_position_revisit"
+            user_name = "位置图回看用户"
+            user_hash = agent._hash_user(user_name)
+            agent.memory_store.update_session_state(
+                session_id,
+                {
+                    "last_target_store": "beijing_chaoyang",
+                    "address_image_sent_count": 1,
+                    "sent_address_stores": ["beijing_chaoyang"],
+                    "conversation_stage": "address_image_sent",
+                    "active_topic": "store_recommendation",
+                    "conversation_facts": {"recommended_store": "beijing_chaoyang", "city": "北京"},
+                    "last_answer_topic": "store_recommendation",
+                    "last_answer_facts": {"target_store": "beijing_chaoyang", "store_name": "北京朝阳店"},
+                    "last_answer_text_normalized": agent._normalize_for_dedupe("姐姐，推荐您去北京朝阳店，我给您发一张位置图。"),
+                    "current_turn_action": "revisit_previous_info",
+                },
+                user_hash=user_hash,
+            )
+            agent.memory_store.save()
+
+            d2 = agent.decide(session_id, user_name, "位置图再发我看下", [])
+            media_decision = agent.judge_post_reply_media(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text="位置图再发我看下",
+                reply_text=d2.reply_text,
+                conversation_history=[],
+                decision=d2,
+            )
+
+            self.assertNotIn("加您好友", d2.reply_text)
+            self.assertNotIn("留个☎️", d2.reply_text)
+            self.assertTrue(any(item.get("type") == "address_image" for item in media_decision.media_items))
+            self.assertFalse(any(item.get("type") == "contact_image" for item in media_decision.media_items))
+
+    def test_convert_history_keeps_full_conversation(self):
+        messages = [
+            {"text": f"第{i}句", "is_user": bool(i % 2)}
+            for i in range(1, 16)
+        ]
+
+        history = convert_history(messages)
+
+        self.assertEqual(len(history), 14)
+        self.assertEqual(history[0]["content"], "第1句")
+        self.assertEqual(history[-1]["content"], "第14句")
+
+    def test_address_revisit_contact_like_llm_reply_is_rewritten_back_to_position(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, llm = self._build_agent(
+                temp_dir,
+                address_image_files=["北京地址.jpg"],
+                store_targets={"北京地址.jpg": "beijing_chaoyang"},
+            )
+            agent.reply_mode = "llm_direct"
+            user_name = "地址回看兜底用户"
+            session_id = "chat_address_revisit_guardrail"
+            user_hash = agent._hash_user(user_name)
+            agent.memory_store.update_session_state(
+                session_id,
+                {
+                    "last_target_store": "beijing_chaoyang",
+                    "address_image_sent_count": 1,
+                    "sent_address_stores": ["beijing_chaoyang"],
+                    "conversation_stage": "address_image_sent",
+                    "conversation_facts": {"recommended_store": "beijing_chaoyang", "city": "北京"},
+                },
+                user_hash=user_hash,
+            )
+            agent.memory_store.save()
+            llm.reply_text = "姐姐，您留个，我来加您并跟您具体沟通。💕"
+
+            d = agent.decide(session_id, user_name, "位置图再发我看下", [])
+            media_decision = agent.judge_post_reply_media(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text="位置图再发我看下",
+                reply_text=d.reply_text,
+                conversation_history=[],
+                decision=d,
+            )
+
+            self.assertIn("位置", d.reply_text)
+            self.assertNotIn("留个", d.reply_text)
+            self.assertTrue(any(item.get("type") == "address_image" for item in media_decision.media_items))
+            self.assertFalse(any(item.get("type") == "contact_image" for item in media_decision.media_items))
+
     def test_franchise_query_is_not_misclassified_as_out_of_coverage(self):
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)
@@ -2670,6 +2961,7 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertTrue(media_decision.send_address_image)
             self.assertTrue(any(item.get("type") == "address_image" for item in media_decision.media_items))
             self.assertEqual(media_decision.media_items[0].get("target_store"), "sh_renmin")
+            self.assertFalse(any(item.get("type") == "contact_image" for item in media_decision.media_items))
 
     def test_multi_store_distribution_reply_does_not_queue_address_image(self):
         with tempfile.TemporaryDirectory() as td:

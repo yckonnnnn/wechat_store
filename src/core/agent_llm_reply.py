@@ -30,6 +30,7 @@ def decide_llm_reply(
     allow_precise_address_closure: bool = True,
 ) -> AgentDecision:
     agent._current_prompt_conversation_history = conversation_history or []
+    agent._current_prompt_session_state = dict(session_state or {})
     llm_started_at = time.perf_counter()
     prompt_started_at = time.perf_counter()
     composed_prompt, prompt_meta = agent._build_general_llm_prompt(latest_user_text)
@@ -68,9 +69,12 @@ def decide_llm_reply(
             effective_user_message = (
                 f"用户当前问题：{latest_user_text}\n"
                 f"上一轮已经回答的主题：{previous_topic}\n"
+                f"当前会话阶段：{str((session_state or {}).get('conversation_stage', '') or 'unknown')}\n"
+                f"本轮动作：{str((session_state or {}).get('current_turn_action', '') or 'followup_same_topic')}\n"
                 f"上一轮核心事实：{_format_contextual_facts(previous_facts)}\n"
                 f"这一轮必须保留的核心事实：{current_fact_text}\n"
-                "请只回答用户这轮新增的问题，不要整段重复上一轮；核心数字、时间、门店名不能改。"
+                "请只回答用户这轮新增的问题，不要整段重复上一轮；核心数字、时间、门店名不能改；"
+                "除非用户明确问怎么联系，否则不要转去留电话或加好友。"
             )
     if (
         not user_message_override
@@ -293,23 +297,46 @@ def contextualize_topic_followup_reply(
     conversation_history: List[Dict[str, str]],
     session_state: Dict[str, Any],
 ) -> Tuple[str, bool]:
-    if current_topic != previous_topic or current_topic not in {"price", "service_hours", "lifespan", "store_recommendation"}:
+    if current_topic not in {"price", "service_hours", "lifespan", "store_recommendation", "appointment"}:
         return base_reply_text, False
-
+    if current_topic != previous_topic:
+        if not (
+            current_topic == "appointment"
+            and previous_topic == "store_recommendation"
+            and str((session_state or {}).get("current_turn_action", "") or "") == "advance_to_next_step"
+        ):
+            return base_reply_text, False
+    previous_expression = str(((session_state or {}).get("topic_reply_memory", {}) or {}).get(current_topic, "") or "")
+    stage = str((session_state or {}).get("conversation_stage", "") or "")
+    action = str((session_state or {}).get("current_turn_action", "") or "")
     previous_text = str(session_state.get("last_answer_text_normalized", "") or "")
-    if not previous_text:
+    previous_store_facts = dict(previous_facts or {})
+    if current_topic == "appointment" and not current_facts.get("target_store") and previous_store_facts.get("target_store"):
+        current_facts = dict(current_facts or {})
+        current_facts["target_store"] = previous_store_facts.get("target_store")
+    if current_topic == "appointment" and not current_facts.get("appointment_ready"):
+        current_facts = dict(current_facts or {})
+        current_facts["appointment_ready"] = True
+
+    if not previous_text and current_topic != "appointment":
         return base_reply_text, False
 
     prompt = (
         f"用户当前问题：{latest_user_text}\n"
         f"上一轮已回答主题：{previous_topic}\n"
+        f"当前会话阶段：{stage or 'unknown'}\n"
+        f"本轮动作：{action or 'followup_same_topic'}\n"
+        f"本主题最近一次表达方式：{previous_expression or 'unknown'}\n"
         f"上一轮核心事实：{_format_contextual_facts(previous_facts)}\n"
         f"这一轮必须保留的核心事实：{_format_contextual_facts(current_facts)}\n"
         f"这一轮基准回复：{base_reply_text}\n"
         "请用一句自然客服话术回答用户这轮新增问题。\n"
         "要求：不要整段重复上一轮；核心事实、数字、时间、门店名不能改；"
-        "如果用户是在确认、比较、补问，就补充差异点；如果是在表达异议，先回应异议。"
+        "如果用户是在确认、比较、补问，就补充差异点；如果是在表达异议，先回应异议；"
+        "如果已经确认门店或已经发过位置图，不要回头重新问城市；"
+        "如果是在继续问预约，就直接承接预约下一步，不要跳去联系方式，除非用户明确问怎么联系。"
     )
+    agent._current_prompt_session_state = dict(session_state or {})
     composed_prompt, _ = agent._build_general_llm_prompt(latest_user_text)
     agent.llm_service.set_system_prompt(composed_prompt)
     success, result, _metrics = unpack_llm_result(
@@ -321,13 +348,11 @@ def contextualize_topic_followup_reply(
     if success:
         candidate = agent._normalize_reply_text(result)
         normalized_candidate = agent._normalize_for_dedupe(candidate)
-        if (
-            candidate
-            and normalized_candidate
-            and normalized_candidate != previous_text
-            and _candidate_preserves_contextual_facts(current_topic=current_topic, current_facts=current_facts, candidate=candidate)
-        ):
-            return candidate, True
+        if candidate and normalized_candidate and _candidate_preserves_contextual_facts(current_topic=current_topic, current_facts=current_facts, candidate=candidate):
+            if not previous_text or normalized_candidate != previous_text:
+                return candidate, True
+            if current_topic == "appointment" and action == "advance_to_next_step":
+                return candidate, True
 
     fallback = build_contextual_followup_fallback(
         agent,
@@ -360,6 +385,8 @@ def build_contextual_followup_fallback(
     if current_topic == "store_recommendation":
         store_name = str(current_facts.get("store_name", "") or "这家门店")
         return agent._normalize_reply_text(f"姐姐，是的哦，推荐您去{store_name}会更方便，位置图我已经给您发了。")
+    if current_topic == "appointment":
+        return agent._normalize_reply_text("姐姐，是需要提前预约的，您把大概方便的时间告诉我，我这边就帮您往下安排。")
     return ""
 
 
@@ -388,6 +415,9 @@ def base_followup_fact_hint(
     if current_topic == "store_recommendation":
         store_name = str(previous_facts.get("store_name", "") or conversation_state.get("store_confirmed", "") or "").strip()
         return store_name if store_name and store_name != "未知" else ""
+    if current_topic == "appointment":
+        target_store = str(previous_facts.get("target_store", "") or "").strip()
+        return target_store or "需要预约"
     return ""
 
 
@@ -406,6 +436,8 @@ def _candidate_preserves_contextual_facts(current_topic: str, current_facts: Dic
     if current_topic == "store_recommendation":
         store_name = re.sub(r"\s+", "", str(current_facts.get("store_name", "") or "")).lower()
         return bool(store_name) and store_name in normalized
+    if current_topic == "appointment":
+        return any(token in normalized for token in ("预约", "安排", "时间", "到店"))
     return True
 
 

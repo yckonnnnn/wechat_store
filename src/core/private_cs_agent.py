@@ -742,6 +742,11 @@ class CustomerServiceAgent:
                 reply_mode=self.reply_mode,
             )
         route = self.knowledge_service.resolve_store_recommendation(text)
+        route = self._enrich_route_from_conversation_state(
+            latest_user_text=raw_text,
+            route=route,
+            session_state=session_state,
+        )
         if self._should_recover_to_shanghai_arrival_help(text, session_state):
             route = {
                 "city": "shanghai",
@@ -837,7 +842,7 @@ class CustomerServiceAgent:
         elif appointment_kb_decision and appointment_kb_decision.reply_source == "knowledge":
             decision = appointment_kb_decision
         elif self._should_apply_rule_decision(text=text, intent=intent, route=route, session_state=session_state) and not (
-            self.reply_mode == REPLY_MODE_LLM_DIRECT and self._should_keep_llm_direct_address_guardrails(text)
+            self.reply_mode == REPLY_MODE_LLM_DIRECT and self._should_keep_llm_direct_address_guardrails(text, session_state=session_state)
         ):
             print(f"[DEBUG] 走规则决策: intent={intent}, route_reason={route.get('reason', 'unknown')}, target_store={route.get('target_store', 'unknown')}")
             decision = self._decide_rule_reply(
@@ -852,13 +857,17 @@ class CustomerServiceAgent:
         else:
             print(f"[DEBUG] 不走规则决策，走知识库或LLM: intent={intent}, route_reason={route.get('reason', 'unknown')}")
             if self.reply_mode == REPLY_MODE_LLM_DIRECT:
+                llm_direct_address_guardrails = self._should_apply_llm_direct_address_guardrails(
+                    text=text,
+                    session_state=session_state,
+                )
                 decision = self._decide_llm_reply(
                     latest_user_text=raw_text,
                     intent=intent,
                     route_reason=str(route.get("reason", "unknown") or "unknown"),
                     conversation_history=conversation_history or [],
                     session_state=session_state,
-                    allow_address_guardrails=False,
+                    allow_address_guardrails=llm_direct_address_guardrails,
                     allow_precise_address_closure=True,
                 )
             else:
@@ -946,6 +955,14 @@ class CustomerServiceAgent:
             route=route,
             session_state=session_state,
         )
+        conversation_state_updates = self._build_conversation_state_updates(
+            latest_user_text=raw_text,
+            decision=decision,
+            route=route,
+            session_state=session_state,
+            current_answer_topic=current_answer_topic,
+            current_answer_facts=current_answer_facts,
+        )
         contextualized = False
         if self._should_contextualize_followup_reply(
             latest_user_text=raw_text,
@@ -1019,6 +1036,7 @@ class CustomerServiceAgent:
                 "last_answer_facts": current_answer_facts,
                 "last_answer_mode": current_answer_mode,
                 "last_answer_text_normalized": self._normalize_for_dedupe(decision.reply_text),
+                **conversation_state_updates,
             },
             user_hash=user_hash,
         )
@@ -1380,6 +1398,8 @@ class CustomerServiceAgent:
             )
         ):
             return False
+        if has_explicit_price_signal:
+            return True
         return any(keyword in normalized for keyword in PRICE_PRIORITY_KEYWORDS)
 
     def _decide_price_priority_reply(
@@ -1889,7 +1909,8 @@ class CustomerServiceAgent:
         if route_type != "coverage" or not target_store or target_store == "unknown":
             return ""
         if not (
-            self.knowledge_service.is_address_query(text)
+            self._looks_like_appointment_query(text)
+            or self.knowledge_service.is_address_query(text)
             or self._has_precise_geo_context_for_current_query(route)
         ):
             return ""
@@ -2096,7 +2117,7 @@ class CustomerServiceAgent:
             return service_hours_priority_decision
 
         if self._should_apply_rule_decision(text=text, intent=intent, route=route, session_state=session_state):
-            if self._should_keep_llm_direct_address_guardrails(text):
+            if self._should_keep_llm_direct_address_guardrails(text, session_state=session_state):
                 return None
             rule_decision = self._decide_rule_reply(
                 text=text,
@@ -2107,20 +2128,59 @@ class CustomerServiceAgent:
                 user_state=user_state,
                 is_first_turn_global=is_first_turn_global,
             )
-            if str(rule_decision.rule_id or "") in {"ADDR_STORE_RECOMMEND", "ADDR_OUT_OF_COVERAGE"}:
+            if str(rule_decision.rule_id or "") in {"ADDR_STORE_RECOMMEND", "ADDR_OUT_OF_COVERAGE", "ADDR_TEXT_AFTER_IMAGE"}:
                 return rule_decision
 
         return None
 
-    def _should_keep_llm_direct_address_guardrails(self, text: str) -> bool:
+    def _should_keep_llm_direct_address_guardrails(self, text: str, session_state: Optional[Dict[str, Any]] = None) -> bool:
         normalized = re.sub(r"\s+", "", str(text or "")).lower()
         if not normalized:
             return False
+        session_state = dict(session_state or {})
+        has_known_store = str(session_state.get("last_target_store", "") or "").strip() not in {"", "unknown"}
+        has_sent_address = int(session_state.get("address_image_sent_count", 0) or 0) > 0
+        if has_known_store and has_sent_address:
+            if self.knowledge_service.is_address_query(text):
+                return False
+            if self.knowledge_service.is_shanghai_route_alias_address_candidate(text):
+                return False
+            if any(token in normalized for token in ("位置图", "再发", "看图", "位置")):
+                return False
         if self.knowledge_service.is_address_query(text):
             return True
         if self.knowledge_service.is_shanghai_route_alias_address_candidate(text):
             return True
         return any(token in normalized for token in ("具体地点", "具体位置", "具体地址"))
+
+    def _should_apply_llm_direct_address_guardrails(
+        self,
+        text: str,
+        session_state: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        if self._should_keep_llm_direct_address_guardrails(text, session_state=session_state):
+            return True
+
+        normalized = re.sub(r"\s+", "", str(text or "")).lower()
+        if not normalized:
+            return False
+
+        session_state = dict(session_state or {})
+        facts = dict(session_state.get("conversation_facts", {}) or {})
+        known_store = str(
+            facts.get("recommended_store", "")
+            or session_state.get("last_target_store", "")
+            or ""
+        ).strip()
+        has_sent_address = int(session_state.get("address_image_sent_count", 0) or 0) > 0
+        if not has_sent_address or known_store in {"", "unknown"}:
+            return False
+
+        if self.knowledge_service.is_address_query(text):
+            return True
+        if self.knowledge_service.is_shanghai_route_alias_address_candidate(text):
+            return True
+        return any(token in normalized for token in ("位置图", "再发", "看图", "位置"))
 
     def _decide_media_placeholder_reply(
         self,
@@ -2733,6 +2793,226 @@ class CustomerServiceAgent:
             return "sh_xuhui"
         return ""
 
+    def _enrich_route_from_conversation_state(
+        self,
+        latest_user_text: str,
+        route: Dict[str, Any],
+        session_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        enriched = dict(route or {})
+        target_store = str(enriched.get("target_store", "") or "").strip()
+        if target_store and target_store != "unknown":
+            return enriched
+
+        known_store = str(
+            (session_state.get("conversation_facts", {}) or {}).get("recommended_store", "")
+            or session_state.get("last_target_store", "")
+            or ""
+        ).strip()
+        if not known_store or known_store == "unknown":
+            return enriched
+
+        route_reason = str(enriched.get("reason", "") or "").strip()
+        route_city = str(enriched.get("city", "") or "").strip()
+        route_detected_region = str(enriched.get("detected_region", "") or "").strip()
+        if route_reason and route_reason not in {"unknown", "conversation_store_resume"}:
+            return enriched
+        if route_city and route_city not in {"", "unknown"}:
+            return enriched
+        if route_detected_region:
+            return enriched
+
+        normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
+        if not normalized:
+            return enriched
+
+        asks_address = (
+            self.knowledge_service.is_address_query(latest_user_text)
+            or self.knowledge_service.is_shanghai_route_alias_address_candidate(latest_user_text)
+            or any(token in normalized for token in ("位置图", "位置图片", "看图", "再发我看下", "再发一下", "位置"))
+        )
+        asks_appointment = self._looks_like_appointment_query(latest_user_text)
+        same_store_confirmation = any(token in normalized for token in ("对吧", "是吧", "就是这家", "还是这家", "最近的"))
+
+        if not (asks_address or asks_appointment or same_store_confirmation):
+            return enriched
+
+        enriched["target_store"] = known_store
+        enriched["route_type"] = "coverage"
+        enriched["reason"] = str(enriched.get("reason", "") or "conversation_store_resume")
+        facts = dict(session_state.get("conversation_facts", {}) or {})
+        if not enriched.get("detected_region"):
+            enriched["detected_region"] = str(facts.get("city", "") or session_state.get("last_detected_region", "") or "")
+        return enriched
+
+    def _build_conversation_state_updates(
+        self,
+        latest_user_text: str,
+        decision: AgentDecision,
+        route: Dict[str, Any],
+        session_state: Dict[str, Any],
+        current_answer_topic: str,
+        current_answer_facts: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        facts = dict(session_state.get("conversation_facts", {}) or {})
+        active_topic = str(session_state.get("active_topic", "") or "")
+        previous_topics = [
+            str(item).strip()
+            for item in (session_state.get("previous_topics", []) or [])
+            if str(item).strip()
+        ]
+        topic_reply_memory = dict(session_state.get("topic_reply_memory", {}) or {})
+        current_turn_action = self._infer_current_turn_action(
+            latest_user_text=latest_user_text,
+            decision=decision,
+            route=route,
+            session_state=session_state,
+            current_answer_topic=current_answer_topic,
+        )
+
+        route_city = str(route.get("city", "") or route.get("detected_region", "") or "").strip()
+        if route_city and route_city not in {"unknown", "coverage"}:
+            facts["city"] = route_city
+        recommended_store = str(
+            current_answer_facts.get("target_store", "")
+            or route.get("target_store", "")
+            or facts.get("recommended_store", "")
+            or session_state.get("last_target_store", "")
+            or ""
+        ).strip()
+        if recommended_store and recommended_store != "unknown":
+            facts["recommended_store"] = recommended_store
+        if current_answer_topic == "price" and current_answer_facts.get("price_range"):
+            facts["price_range"] = str(current_answer_facts.get("price_range", "") or "")
+        if current_answer_topic == "service_hours" and current_answer_facts.get("business_hours"):
+            facts["business_hours"] = str(current_answer_facts.get("business_hours", "") or "")
+        if current_answer_topic == "lifespan" and current_answer_facts.get("lifespan"):
+            facts["lifespan"] = str(current_answer_facts.get("lifespan", "") or "")
+        if self._looks_like_appointment_query(latest_user_text) or "预约" in str(decision.reply_text or ""):
+            facts["appointment_ready"] = True
+
+        if current_answer_topic:
+            if active_topic and active_topic != current_answer_topic:
+                previous_topics = [topic for topic in [active_topic, *previous_topics] if topic and topic != current_answer_topic]
+            active_topic = current_answer_topic
+        previous_topics = previous_topics[:3]
+
+        reply_expression_type = self._infer_reply_expression_type(
+            latest_user_text=latest_user_text,
+            current_answer_topic=current_answer_topic,
+            decision=decision,
+            current_turn_action=current_turn_action,
+        )
+        if current_answer_topic and reply_expression_type:
+            topic_reply_memory[current_answer_topic] = reply_expression_type
+
+        conversation_stage = self._infer_conversation_stage(
+            latest_user_text=latest_user_text,
+            decision=decision,
+            route=route,
+            session_state=session_state,
+            facts=facts,
+            current_answer_topic=current_answer_topic,
+            current_turn_action=current_turn_action,
+        )
+
+        return {
+            "conversation_facts": facts,
+            "conversation_stage": conversation_stage,
+            "topic_reply_memory": topic_reply_memory,
+            "active_topic": active_topic,
+            "previous_topics": previous_topics,
+            "current_turn_action": current_turn_action,
+        }
+
+    def _infer_current_turn_action(
+        self,
+        latest_user_text: str,
+        decision: AgentDecision,
+        route: Dict[str, Any],
+        session_state: Dict[str, Any],
+        current_answer_topic: str,
+    ) -> str:
+        normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
+        previous_active_topic = str(session_state.get("active_topic", "") or "")
+        conversation_stage = str(session_state.get("conversation_stage", "") or "")
+        known_store = str((session_state.get("conversation_facts", {}) or {}).get("recommended_store", "") or session_state.get("last_target_store", "") or "")
+
+        if known_store and self._looks_like_appointment_query(latest_user_text):
+            return "advance_to_next_step"
+        if known_store and (
+            self.knowledge_service.is_address_query(latest_user_text)
+            or any(token in normalized for token in ("位置图", "再发", "看图", "位置"))
+        ):
+            return "revisit_previous_info" if conversation_stage == "address_image_sent" else "confirm_previous_fact"
+        if current_answer_topic and current_answer_topic == previous_active_topic:
+            if any(token in normalized for token in ("对吧", "是吧", "是不是", "也是", "一样", "差不多")):
+                return "confirm_previous_fact"
+            return "followup_same_topic"
+        if previous_active_topic == "store_recommendation" and current_answer_topic == "appointment":
+            return "advance_to_next_step"
+        if current_answer_topic:
+            return "new_topic"
+        if decision.rule_id in {"ADDR_TEXT_AFTER_IMAGE", "ADDR_CONTACT_AFTER_TEXT"}:
+            return "revisit_previous_info"
+        return "new_topic"
+
+    def _infer_reply_expression_type(
+        self,
+        latest_user_text: str,
+        current_answer_topic: str,
+        decision: AgentDecision,
+        current_turn_action: str,
+    ) -> str:
+        normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
+        if current_answer_topic == "price":
+            if any(token in normalized for token in ("贵", "便宜", "优惠", "折扣", "划算")):
+                return "objection_response"
+            if any(token in normalized for token in ("一样", "也是", "差不多", "第一款", "第二款")):
+                return "difference_explainer"
+            return "range_answer"
+        if current_answer_topic == "service_hours":
+            return "confirm_answer" if current_turn_action != "new_topic" else "standard_answer"
+        if current_answer_topic == "lifespan":
+            return "confirm_answer" if current_turn_action != "new_topic" else "standard_answer"
+        if current_answer_topic == "store_recommendation":
+            if decision.rule_id == "ADDR_STORE_RECOMMEND":
+                return "store_recommendation"
+            if current_turn_action == "revisit_previous_info":
+                return "address_revisit"
+            return "location_followup"
+        if current_answer_topic == "appointment":
+            return "appointment_progress" if current_turn_action == "advance_to_next_step" else "appointment_definition"
+        return ""
+
+    def _infer_conversation_stage(
+        self,
+        latest_user_text: str,
+        decision: AgentDecision,
+        route: Dict[str, Any],
+        session_state: Dict[str, Any],
+        facts: Dict[str, Any],
+        current_answer_topic: str,
+        current_turn_action: str,
+    ) -> str:
+        if bool(facts.get("appointment_ready")) and self._looks_like_appointment_query(latest_user_text):
+            return "appointment_ready"
+        if current_answer_topic == "appointment":
+            return "appointment_ready"
+        if int(session_state.get("address_image_sent_count", 0) or 0) > 0 and str(facts.get("recommended_store", "") or ""):
+            return "address_image_sent"
+        if current_answer_topic == "store_recommendation" or decision.rule_id == "ADDR_STORE_RECOMMEND":
+            return "store_recommended"
+        if current_answer_topic == "price":
+            return "price_answered"
+        if current_answer_topic == "service_hours":
+            return "service_hours_answered"
+        if current_answer_topic == "lifespan":
+            return "lifespan_answered"
+        if current_turn_action == "advance_to_next_step" and str(facts.get("recommended_store", "") or ""):
+            return "appointment_ready"
+        return str(session_state.get("conversation_stage", "") or "")
+
     def _build_answer_context_summary(
         self,
         latest_user_text: str,
@@ -2784,6 +3064,13 @@ class CustomerServiceAgent:
                     "store_name": self._store_recommend_display_name(target_store, store.get("store_name", "门店")),
                 }
                 mode = "rule_recommendation"
+        elif self._looks_like_appointment_query(text) or "预约" in str(decision.reply_text or ""):
+            topic = "appointment"
+            facts = {
+                "target_store": str(route.get("target_store", "") or session_state.get("last_target_store", "") or ""),
+                "appointment_ready": True,
+            }
+            mode = "direct_kb" if decision.reply_source == "knowledge" else "contextual_llm"
 
         return topic, facts, mode
 
@@ -2795,13 +3082,25 @@ class CustomerServiceAgent:
         decision: AgentDecision,
         session_state: Dict[str, Any],
     ) -> bool:
-        if current_topic not in {"price", "service_hours", "lifespan", "store_recommendation"}:
+        if current_topic not in {"price", "service_hours", "lifespan", "store_recommendation", "appointment"}:
             return False
         previous_topic = str(session_state.get("last_answer_topic", "") or "")
+        current_turn_action = self._infer_current_turn_action(
+            latest_user_text=latest_user_text,
+            decision=decision,
+            route={},
+            session_state=session_state,
+            current_answer_topic=current_topic,
+        )
         if previous_topic != current_topic:
-            return False
+            if not (
+                current_topic == "appointment"
+                and previous_topic == "store_recommendation"
+                and current_turn_action == "advance_to_next_step"
+            ):
+                return False
         previous_text = str(session_state.get("last_answer_text_normalized", "") or "")
-        if not previous_text:
+        if not previous_text and current_topic != "appointment":
             return False
         current_text_normalized = self._normalize_for_dedupe(decision.reply_text)
 
@@ -2822,6 +3121,8 @@ class CustomerServiceAgent:
             previous_facts = session_state.get("last_answer_facts", {}) or {}
             if str(previous_facts.get("target_store", "") or "") != str(current_facts.get("target_store", "") or ""):
                 return False
+        if current_topic == "appointment" and current_turn_action not in {"advance_to_next_step", "followup_same_topic", "confirm_previous_fact"}:
+            return False
 
         if decision.reply_source not in {"knowledge", "rule", "llm"} and decision.rule_id != "LLM_KB_VARIANT_FALLBACK":
             return False
@@ -2836,6 +3137,7 @@ class CustomerServiceAgent:
             "service_hours": ("周一", "周二", "周三", "周四", "周五", "这个时间", "也是这个时间", "到几点"),
             "lifespan": ("也是", "这个寿命", "都这样", "这款也是", "也是这个"),
             "store_recommendation": ("对吧", "是吧", "最近的", "就是这家", "还是这家"),
+            "appointment": ("预约", "要预约", "怎么预约", "几点去", "什么时候去", "周一去", "安排时间"),
         }
         return any(token in normalized for token in topic_cues.get(current_topic, ()))
 

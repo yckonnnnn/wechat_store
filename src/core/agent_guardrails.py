@@ -295,6 +295,16 @@ def build_reply_closure_info(
         info["contact_closure_hit"] = True
         if not info.get("closure_type"):
             info["closure_type"] = "contact"
+    normalized_reply = normalize_service_hours_check_text(reply_text)
+    if (
+        not info.get("contact_closure_hit")
+        and str(info.get("closure_type", "") or "") not in {"store_recommendation", "address_image_promise", "precise_address"}
+        and normalized_reply
+        and any(token in normalized_reply for token in ("留个", "留个☎️", "留个方式", "加您", "加你", "加好友", "联系您", "主动跟您介绍", "具体沟通"))
+    ):
+        info["contact_closure_hit"] = True
+        if not info.get("closure_type"):
+            info["closure_type"] = "contact"
 
     info["reply_text"] = str(reply_text or "")
     return info
@@ -350,6 +360,29 @@ def apply_llm_reply_guardrails(
 
     if is_service_hours_query(text) and not reply_has_correct_service_hours(reply):
         return finalize(agent._render_guardrail_reply(SERVICE_HOURS_SAFE_REPLY))
+
+    if (
+        int(state.get("address_image_sent_count", 0) or 0) > 0
+        and str((state.get("conversation_facts", {}) or {}).get("recommended_store", "") or state.get("last_target_store", "") or "")
+        and (
+            agent.knowledge_service.is_address_query(text)
+            or any(token in normalize_service_hours_check_text(text) for token in ("位置图", "再发", "看图", "位置"))
+        )
+    ):
+        normalized_reply = normalize_service_hours_check_text(reply)
+        if any(token in normalized_reply for token in ("留个", "加您", "加你", "加好友", "联系方式", "具体沟通", "主动跟您介绍")):
+            store_key = str((state.get("conversation_facts", {}) or {}).get("recommended_store", "") or state.get("last_target_store", "") or "")
+            if store_key and store_key != "unknown":
+                store = agent.knowledge_service.get_store_display(store_key)
+                store_name = str(store.get("store_name", "") or "门店")
+                return finalize(
+                    agent._normalize_reply_text(f"姐姐，{store_name}位置可以看图中圈圈的位置哦"),
+                    {
+                        "closure_type": "address_image_promise",
+                        "target_store": store_key,
+                        "contact_closure_hit": False,
+                    },
+                )
 
     if agent._contains_explicit_phone_number(reply):
         if agent._has_price_priority(text):

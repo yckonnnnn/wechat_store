@@ -177,6 +177,11 @@ def judge_post_reply_media(
     normalized_text = agent.knowledge_service.normalize_user_text(latest_user_text).strip()
     history = conversation_history or []
     route = agent.knowledge_service.resolve_store_recommendation(normalized_text)
+    route = agent._enrich_route_from_conversation_state(
+        latest_user_text=normalized_text,
+        route=route,
+        session_state=session_state,
+    )
     intent = decision.intent if decision is not None else agent._detect_intent(normalized_text)
     closure_info = agent._build_reply_closure_info(
         reply_text=reply_text,
@@ -204,13 +209,13 @@ def judge_post_reply_media(
     if (
         not media_items
         and str(closure_info.get("closure_type", "") or "") in {"store_recommendation", "address_image_promise"}
-        and str(closure_info.get("target_store", "") or "")
     ):
+        closure_target_store = str(closure_info.get("target_store", "") or route.get("target_store", "") or session_state.get("last_target_store", "") or "")
         item, reason_hint = queue_address_image(
             agent,
             session_id=session_id,
             session_state=session_state,
-            target_store=str(closure_info.get("target_store", "") or ""),
+            target_store=closure_target_store,
             route_reason=(
                 "address_image_promise_closure"
                 if str(closure_info.get("closure_type", "") or "") == "address_image_promise"
@@ -227,6 +232,36 @@ def judge_post_reply_media(
             )
         elif reason_hint and not skip_reason:
             skip_reason = reason_hint
+
+    if not media_items:
+        normalized_reply = re.sub(r"\s+", "", str(reply_text or "")).lower()
+        known_store = str(route.get("target_store", "") or session_state.get("last_target_store", "") or "")
+        current_turn_action = str(session_state.get("current_turn_action", "") or "")
+        conversation_stage = str(session_state.get("conversation_stage", "") or "")
+        mentions_position_image = any(token in normalized_reply for token in ("位置图", "按图", "看图", "圈圈位置"))
+        if (
+            known_store
+            and known_store != "unknown"
+            and mentions_position_image
+            and (
+                current_turn_action == "revisit_previous_info"
+                or conversation_stage == "address_image_sent"
+                or int(session_state.get("address_image_sent_count", 0) or 0) > 0
+            )
+        ):
+            item, reason_hint = queue_address_image(
+                agent,
+                session_id=session_id,
+                session_state=session_state,
+                target_store=known_store,
+                route_reason="conversation_address_revisit",
+                detected_region=route.get("detected_region", "") or "",
+            )
+            if item:
+                media_items = _upsert_media_item(agent, media_items, item)
+                reasons.append("conversation_address_revisit")
+            elif reason_hint and not skip_reason:
+                skip_reason = reason_hint
 
     needs_contact_closure_image = bool(closure_info.get("contact_closure_hit"))
     if decision is not None and str(decision.reply_source or "") == "fallback":
@@ -331,6 +366,11 @@ def mark_media_sent(agent, session_id: str, user_name: str, media_item: Dict[str
             sent_paths_by_store[target_store] = sent_paths
             session_state["address_image_sent_paths_by_store"] = sent_paths_by_store
             session_state["last_target_store"] = target_store
+            facts = dict(session_state.get("conversation_facts", {}) or {})
+            facts["recommended_store"] = target_store
+            session_state["conversation_facts"] = facts
+            session_state["active_topic"] = "store_recommendation"
+            session_state["conversation_stage"] = "address_image_sent"
         session_state["sent_address_stores"] = list(stores)
 
     elif media_type == "contact_image":
@@ -348,6 +388,8 @@ def mark_media_sent(agent, session_id: str, user_name: str, media_item: Dict[str
         session_state["contact_image_sent_paths"] = sent_paths
         session_state["contact_warmup"] = False
         session_state["last_geo_pending"] = False
+        if str(session_state.get("conversation_stage", "") or "") == "appointment_ready":
+            session_state["active_topic"] = "appointment"
 
     if media_type in REQUIRED_MEDIA_TYPES:
         agent._remove_pending_required_media(session_state, media_item)
@@ -627,6 +669,11 @@ def sync_media_state_from_conversation_log(
     latest_store = str(user_summary.get("last_target_store", "") or "").strip()
     if latest_store:
         session_state["last_target_store"] = latest_store
+        facts = dict(session_state.get("conversation_facts", {}) or {})
+        facts["recommended_store"] = latest_store
+        session_state["conversation_facts"] = facts
+        if int(user_summary.get("address_image_sent_count", 0) or 0) > 0:
+            session_state["conversation_stage"] = str(session_state.get("conversation_stage", "") or "address_image_sent")
 
     session_video = summarize_session_video_from_log(agent, session_id=session_id)
     session_state["session_video_armed"] = bool(session_video.get("contact_sent"))
