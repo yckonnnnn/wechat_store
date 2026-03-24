@@ -208,6 +208,16 @@ def judge_post_reply_media(
     media_items: List[Dict[str, Any]] = []
     reasons: List[str] = []
     skip_reason = ""
+    block_unresolved_address_media = bool(
+        decision is not None
+        and callable(getattr(agent, "_should_block_unresolved_address_media", None))
+        and agent._should_block_unresolved_address_media(
+            latest_user_text=latest_user_text,
+            decision=decision,
+            route=route,
+            session_state=session_state,
+        )
+    )
 
     if decision is not None and str(getattr(decision, "rule_id", "") or "") in {
         "CONTACT_PHONE_SUBMITTED",
@@ -217,6 +227,8 @@ def judge_post_reply_media(
         return MediaJudgeDecision(skip_reason="contact_already_captured")
 
     if (
+        not block_unresolved_address_media
+        and
         (not remote_flow_active)
         and (not is_appointment_decision)
         and closure_info.get("precise_address_hit")
@@ -237,6 +249,8 @@ def judge_post_reply_media(
             skip_reason = reason_hint
 
     if (
+        not block_unresolved_address_media
+        and
         (not remote_flow_active)
         and (not is_appointment_decision)
         and not media_items
@@ -265,7 +279,7 @@ def judge_post_reply_media(
         elif reason_hint and not skip_reason:
             skip_reason = reason_hint
 
-    if not media_items:
+    if not media_items and not block_unresolved_address_media:
         normalized_reply = re.sub(r"\s+", "", str(reply_text or "")).lower()
         known_store = str(route.get("target_store", "") or session_state.get("last_target_store", "") or "")
         current_turn_action = str(session_state.get("current_turn_action", "") or "")
@@ -296,6 +310,9 @@ def judge_post_reply_media(
                 reasons.append("conversation_address_revisit")
             elif reason_hint and not skip_reason:
                 skip_reason = reason_hint
+
+    if block_unresolved_address_media and not skip_reason:
+        skip_reason = "address_geo_pending"
 
     needs_contact_closure_image = bool(closure_info.get("contact_closure_hit"))
     if decision is not None and bool(getattr(decision, "force_contact_image", False)):
@@ -1108,7 +1125,6 @@ def populate_first_turn_media_plan(
     user_name: str,
     decision: AgentDecision,
 ) -> None:
-    del user_name
     decision.first_turn_image_items = []
     decision.first_turn_video_items = []
     decision.first_turn_text_required = bool(decision.is_first_turn_global)
@@ -1116,6 +1132,16 @@ def populate_first_turn_media_plan(
 
     if not decision.is_first_turn_global:
         return
+
+    user_hash = agent._hash_user(user_name or session_id)
+    if callable(getattr(agent, "_should_block_unresolved_address_media", None)) and agent._should_block_unresolved_address_media(
+        latest_user_text="",
+        decision=decision,
+        route={"reason": decision.route_reason},
+        session_state=agent.memory_store.get_session_state(session_id, user_hash=user_hash),
+    ):
+        decision.first_turn_media_guard_applied = True
+        decision.first_turn_image_items = []
 
     image_items = [
         dict(item)

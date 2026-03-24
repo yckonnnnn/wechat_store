@@ -767,18 +767,25 @@ class CustomerServiceAgent:
     ) -> AgentDecision:
         """主决策入口"""
         self.memory_store.prune_expired(ttl_days=self.memory_ttl_days)
+        visible_history = list(conversation_history or [])
 
         user_hash = self._hash_user(user_name or session_id)
         session_state = self.memory_store.get_session_state(session_id, user_hash=user_hash)
         user_state = self.memory_store.get_user_state(user_hash)
         if first_turn_global_override is None:
-            is_first_turn_global = self.is_user_first_turn_global(user_id_hash=user_hash)
+            is_first_turn_global = not bool(visible_history)
         else:
             is_first_turn_global = bool(first_turn_global_override)
         self._sync_media_state_from_conversation_log(
             session_id=session_id,
             user_hash=user_hash,
             session_state=session_state,
+        )
+        self._reconcile_conversation_context_with_visible_history(
+            latest_user_text=latest_user_text,
+            conversation_history=visible_history,
+            session_state=session_state,
+            user_state=user_state,
         )
 
         raw_text = (latest_user_text or "").strip()
@@ -1543,6 +1550,20 @@ class CustomerServiceAgent:
         normalized = self.knowledge_service.normalize_user_text(reply_text)
         if not normalized:
             return False
+        if any(
+            token in normalized
+            for token in (
+                "什么城市",
+                "哪个城市",
+                "什么区域",
+                "哪个区域",
+                "方便告诉我",
+                "针对性推荐门店",
+                "先确认一下",
+                "确认一下",
+            )
+        ):
+            return False
         if self._infer_answer_type(reply_text) in {"store_address", "address_general"}:
             return True
         if any(token in normalized for token in ("北京1家", "北京只有1家", "上海有5家", "上海共有5家")):
@@ -1552,6 +1573,189 @@ class CustomerServiceAgent:
         ):
             return True
         return False
+
+    def _history_has_geo_followup_prompt(self, conversation_history: List[Dict[str, str]]) -> bool:
+        prompt_tokens = (
+            "什么城市",
+            "哪个城市",
+            "什么区域",
+            "哪个区域",
+            "方便告诉我",
+            "北京朝阳1家",
+            "上海5家",
+            "静安",
+            "虹口",
+            "五角场",
+            "徐汇",
+        )
+        for item in reversed(conversation_history or []):
+            if str(item.get("role", "") or "") != "assistant":
+                continue
+            normalized = self.knowledge_service.normalize_user_text(str(item.get("content", "") or ""))
+            if normalized and any(token in normalized for token in prompt_tokens):
+                return True
+        return False
+
+    def _clear_address_session_context(
+        self,
+        session_state: Dict[str, Any],
+        *,
+        clear_geo_prompt: bool,
+    ) -> None:
+        session_state["address_prompt_count"] = 0
+        session_state["sent_address_stores"] = []
+        session_state["address_image_sent_count"] = 0
+        session_state["address_image_last_sent_at_by_store"] = {}
+        session_state["address_image_sent_paths_by_store"] = {}
+        session_state["last_target_store"] = ""
+        session_state["address_info_shared"] = False
+        session_state["address_text_reply_count_by_store"] = {}
+        session_state["address_contact_reply_count_by_store"] = {}
+        facts = dict(session_state.get("conversation_facts", {}) or {})
+        facts.pop("recommended_store", None)
+        facts.pop("city", None)
+        session_state["conversation_facts"] = facts
+        if str(session_state.get("conversation_stage", "") or "") in {"address_image_sent", "store_recommended"}:
+            session_state["conversation_stage"] = ""
+        if clear_geo_prompt:
+            session_state["geo_followup_round"] = 0
+            session_state["geo_choice_offered"] = False
+            session_state["last_geo_pending"] = False
+            session_state["last_detected_region"] = ""
+            session_state["last_geo_route_reason"] = "unknown"
+            session_state["last_geo_updated_at"] = ""
+
+    def _history_has_contact_context(
+        self,
+        latest_user_text: str,
+        conversation_history: List[Dict[str, str]],
+    ) -> bool:
+        contact_tokens = (
+            "留个",
+            "留个方式",
+            "留个电话",
+            "留个☎️",
+            "加您",
+            "加你",
+            "加好友",
+            "联系方式",
+            "联系您",
+            "专属客服",
+            "预约",
+        )
+        if self._looks_like_phone_submission(latest_user_text):
+            return True
+        for item in conversation_history or []:
+            content = str(item.get("content", "") or "")
+            if not content:
+                continue
+            if str(item.get("role", "") or "") == "user" and self._looks_like_phone_submission(content):
+                return True
+            normalized = self.knowledge_service.normalize_user_text(content)
+            if normalized and any(token in normalized for token in contact_tokens):
+                return True
+        return False
+
+    def _clear_contact_session_context(self, session_state: Dict[str, Any]) -> None:
+        session_state["contact_image_sent_count"] = 0
+        session_state["contact_image_last_sent_at"] = ""
+        session_state["contact_image_sent_paths"] = []
+        session_state["contact_warmup"] = False
+        session_state["remote_contact_image_sent"] = False
+        session_state["remote_contact_captured"] = False
+        if str(session_state.get("active_topic", "") or "") == "appointment":
+            session_state["active_topic"] = ""
+        if str(session_state.get("conversation_stage", "") or "") == "appointment_ready":
+            session_state["conversation_stage"] = ""
+        facts = dict(session_state.get("conversation_facts", {}) or {})
+        facts.pop("appointment_ready", None)
+        session_state["conversation_facts"] = facts
+
+    def _clear_transient_user_context(self, user_state: Dict[str, Any]) -> None:
+        user_state["video_armed"] = False
+        user_state["video_sent"] = False
+        user_state["post_contact_reply_count"] = 0
+        user_state["recent_reply_hashes"] = []
+
+    def _clear_conversation_state_for_fresh_start(
+        self,
+        session_state: Dict[str, Any],
+        user_state: Dict[str, Any],
+    ) -> None:
+        self._clear_address_session_context(session_state, clear_geo_prompt=True)
+        self._clear_contact_session_context(session_state)
+        session_state["last_route_reason"] = "unknown"
+        session_state["last_intent"] = "general"
+        session_state["last_reply_goal"] = "解答"
+        session_state["active_topic"] = ""
+        session_state["previous_topics"] = []
+        session_state["topic_reply_memory"] = {}
+        session_state["last_answer_topic"] = ""
+        session_state["last_answer_facts"] = {}
+        session_state["last_answer_mode"] = ""
+        session_state["last_answer_text_normalized"] = ""
+        session_state["pending_required_media"] = []
+        session_state["planned_required_media"] = []
+        session_state["session_video_armed"] = False
+        session_state["session_video_sent"] = False
+        session_state["session_post_contact_reply_count"] = 0
+        session_state["session_user_message_count_after_contact"] = 0
+        session_state["purchase_both_first_hint_sent"] = False
+        self._clear_transient_user_context(user_state)
+
+    def _reconcile_conversation_context_with_visible_history(
+        self,
+        latest_user_text: str,
+        conversation_history: List[Dict[str, str]],
+        session_state: Dict[str, Any],
+        user_state: Dict[str, Any],
+    ) -> None:
+        visible_history = list(conversation_history or [])
+        if not visible_history:
+            self._clear_conversation_state_for_fresh_start(session_state, user_state)
+            return
+
+        visible_store = self._infer_store_from_context_text(latest_user_text)
+        if not visible_store:
+            for item in reversed(visible_history):
+                resolved = self._infer_store_from_context_text(str(item.get("content", "") or ""))
+                if resolved:
+                    visible_store = resolved
+                    break
+
+        address_info_shared = self._history_has_address_info_shared(visible_history)
+        geo_prompt_visible = self._history_has_geo_followup_prompt(visible_history)
+        contact_context_visible = self._history_has_contact_context(latest_user_text, visible_history)
+
+        if not visible_store and not address_info_shared and not geo_prompt_visible:
+            self._clear_address_session_context(session_state, clear_geo_prompt=True)
+        if not contact_context_visible:
+            self._clear_contact_session_context(session_state)
+
+        if visible_store:
+            session_state["last_target_store"] = visible_store
+            facts = dict(session_state.get("conversation_facts", {}) or {})
+            facts["recommended_store"] = visible_store
+            inferred_city = self._infer_city_from_store_key(visible_store)
+            if inferred_city:
+                facts["city"] = inferred_city
+                session_state["last_detected_region"] = inferred_city
+            session_state["conversation_facts"] = facts
+        else:
+            session_state["last_target_store"] = ""
+            facts = dict(session_state.get("conversation_facts", {}) or {})
+            facts.pop("recommended_store", None)
+            session_state["conversation_facts"] = facts
+
+        session_state["address_info_shared"] = bool(address_info_shared)
+
+        if not geo_prompt_visible:
+            session_state["last_geo_pending"] = False
+            session_state["last_geo_route_reason"] = "unknown"
+            session_state["geo_followup_round"] = 0
+            session_state["geo_choice_offered"] = False
+            if not visible_store:
+                session_state["last_detected_region"] = ""
 
     def _is_precise_address_followup(self, text: str) -> bool:
         normalized = re.sub(r"\s+", "", str(text or "")).lower()
@@ -3210,6 +3414,48 @@ class CustomerServiceAgent:
             return "sh_xuhui"
         return ""
 
+    def _infer_city_from_store_key(self, store_key: str) -> str:
+        normalized = str(store_key or "").strip()
+        if not normalized:
+            return ""
+        if normalized == "beijing_chaoyang":
+            return "beijing"
+        if normalized.startswith("sh_"):
+            return "shanghai"
+        return ""
+
+    def _should_block_unresolved_address_media(
+        self,
+        latest_user_text: str,
+        decision: AgentDecision,
+        route: Dict[str, Any],
+        session_state: Dict[str, Any],
+    ) -> bool:
+        if str(decision.intent or "") != "address":
+            return False
+
+        route_reason = str(
+            decision.route_reason or route.get("reason", "") or session_state.get("last_geo_route_reason", "")
+        ).strip()
+        if route_reason in {"need_region", "need_district", "shanghai_need_district", "need_clarify", "sh_route_need_clarify"}:
+            return True
+
+        explicit_store = self._infer_store_from_context_text(latest_user_text)
+        if explicit_store:
+            return False
+
+        if str(decision.reply_goal or "") == "追问地区":
+            return True
+
+        if int(session_state.get("address_image_sent_count", 0) or 0) > 0:
+            return False
+
+        target_store = str(route.get("target_store", "") or "").strip()
+        if target_store and target_store != "unknown":
+            return False
+
+        return self.knowledge_service.is_address_query(latest_user_text)
+
     def _enrich_route_from_conversation_state(
         self,
         latest_user_text: str,
@@ -3219,6 +3465,20 @@ class CustomerServiceAgent:
         enriched = dict(route or {})
         target_store = str(enriched.get("target_store", "") or "").strip()
         if target_store and target_store != "unknown":
+            return enriched
+
+        explicit_store = self._infer_store_from_context_text(latest_user_text)
+        if explicit_store:
+            enriched["target_store"] = explicit_store
+            enriched["route_type"] = str(enriched.get("route_type", "") or "coverage")
+            if str(enriched.get("reason", "") or "").strip() in {"", "unknown"}:
+                enriched["reason"] = "explicit_store_mention"
+            explicit_city = self._infer_city_from_store_key(explicit_store)
+            if explicit_city:
+                if not str(enriched.get("detected_region", "") or "").strip():
+                    enriched["detected_region"] = explicit_city
+                if not str(enriched.get("city", "") or "").strip():
+                    enriched["city"] = explicit_city
             return enriched
 
         known_store = str(
@@ -3652,9 +3912,43 @@ class CustomerServiceAgent:
         if decision.standard_reply_intent == "service_hours":
             return True
         normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
-        has_time_signal = any(token in normalized for token in ("营业时间", "几点", "到几点", "下班", "时间"))
+        direct_service_hours_signal = any(token in normalized for token in ("营业时间", "几点", "到几点", "下班"))
+        generic_time_signal = "时间" in normalized
         has_weekday_signal = any(token in normalized for token in ("周一", "周二", "周三", "周四", "周五", "周几"))
-        if has_time_signal or (has_weekday_signal and any(token in normalized for token in ("这个时间", "也是这个时间"))):
+        travel_time_signal = any(
+            token in normalized
+            for token in (
+                "过段时间",
+                "这段时间",
+                "前段时间",
+                "四月份",
+                "五月份",
+                "六月份",
+                "七月份",
+                "八月份",
+                "九月份",
+                "十月份",
+                "十一月份",
+                "十二月份",
+                "1月份",
+                "2月份",
+                "3月份",
+                "4月份",
+                "5月份",
+                "6月份",
+                "7月份",
+                "8月份",
+                "9月份",
+                "什么时候去",
+                "去北京",
+                "去上海",
+                "来北京",
+                "来上海",
+            )
+        )
+        if direct_service_hours_signal or (generic_time_signal and not travel_time_signal) or (
+            has_weekday_signal and any(token in normalized for token in ("这个时间", "也是这个时间"))
+        ):
             return True
         detail = self.knowledge_service.find_answer_detail(str(latest_user_text or ""), threshold=self.knowledge_threshold)
         detail_intent = str(detail.get("intent", "") or "").strip().lower()
