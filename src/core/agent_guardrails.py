@@ -68,8 +68,6 @@ ADDRESS_IMAGE_PROMISE_CUES = (
     "看图",
     "按图",
     "跟着图",
-    "图中圈圈",
-    "圈圈的位置",
     "看图片",
     "位置可以看图",
 )
@@ -86,7 +84,7 @@ SERVICE_HOURS_QUERY_KEYWORDS = (
     "开门时间",
     "关门时间",
 )
-SERVICE_HOURS_SAFE_REPLY = "姐姐我们工作日周一到周五，营业时间是上午9:30到下午6:00哦"
+SERVICE_HOURS_SAFE_REPLY = "姐姐我们工作日周一到周五上班，营业时间是上午9:30到下午6:00，周六周日不上班哦"
 
 DEFAULT_PRECISE_ADDRESS_CLOSURE_POOL: List[str] = [
     "姐姐您看下我发的位置图，按图找会更直观些，方便的话我也可以继续帮您安排预约呀🌹",
@@ -394,7 +392,7 @@ def apply_llm_reply_guardrails(
                 store = agent.knowledge_service.get_store_display(store_key)
                 store_name = str(store.get("store_name", "") or "门店")
                 return finalize(
-                    agent._normalize_reply_text(f"姐姐，{store_name}位置可以看图中圈圈的位置哦"),
+                    agent._normalize_reply_text(f"姐姐，{store_name}位置直接看图片就可以哦"),
                     {
                         "closure_type": "address_image_promise",
                         "target_store": store_key,
@@ -455,7 +453,7 @@ def apply_llm_reply_guardrails(
             store = agent.knowledge_service.get_store_display(store_key)
             store_name = str(store.get("store_name", "") or "门店")
             return finalize(
-                agent._normalize_reply_text(f"姐姐，{store_name}位置可以看图中圈圈的位置哦"),
+                agent._normalize_reply_text(f"姐姐，{store_name}位置直接看图片就可以哦"),
                 {
                     "closure_type": "store_recommendation",
                     "target_store": store_key,
@@ -470,7 +468,7 @@ def apply_llm_reply_guardrails(
         if store_key:
             store = agent.knowledge_service.get_store_display(store_key)
             store_name = str(store.get("store_name", "") or "门店")
-            return finalize(agent._normalize_reply_text(f"姐姐，{store_name}位置可以看图中圈圈的位置哦"))
+            return finalize(agent._normalize_reply_text(f"姐姐，{store_name}位置直接看图片就可以哦"))
         if agent._reply_contains_unsupported_address_detail(reply):
             return finalize(agent._render_guardrail_reply(agent._address_fact_fallback))
         return finalize(agent._render_guardrail_reply(agent._address_fact_fallback))

@@ -177,7 +177,7 @@ def build_address_text_after_image_decision(
     store_name = str(store.get("store_name", "") or "门店")
 
     return AgentDecision(
-        reply_text=agent._normalize_reply_text(f"姐姐，{store_name}位置可以看图中圈圈的位置哦"),
+        reply_text=agent._normalize_reply_text(f"姐姐，{store_name}位置直接看图片就可以哦"),
         intent="address",
         route_reason=str(route.get("reason", "unknown") or "unknown"),
         reply_goal="解答",
@@ -424,7 +424,7 @@ def decide_rule_reply(
             and int(session_state.get("contact_image_sent_count", 0) or 0) >= 3
         ):
             return AgentDecision(
-                reply_text="姐姐，请往上滑看图中画框框的地方找我～♥️",
+                reply_text="姐姐，请往上滑看图片添加我哦～♥️",
                 intent="purchase" if intent == "purchase" else "address",
                 route_reason="out_of_coverage",
                 reply_goal="推进购买意图",

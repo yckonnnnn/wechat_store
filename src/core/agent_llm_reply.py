@@ -377,7 +377,7 @@ def build_contextual_followup_fallback(
             "姐姐，大方向还是在3000、4000、5000、6000这些区间里，不过具体还要看材质、长度和想要的效果。"
         )
     if current_topic == "service_hours":
-        business_hours = str(current_facts.get("business_hours", "") or "上午9:30到下午6:00")
+        business_hours = str(current_facts.get("business_hours", "") or "周一到周五上午9:30到下午6:00，周六周日不上班")
         return agent._normalize_reply_text(f"姐姐，时间没变哦，还是{business_hours}。")
     if current_topic == "lifespan":
         lifespan = str(current_facts.get("lifespan", "") or "3到5年")
@@ -409,7 +409,7 @@ def base_followup_fact_hint(
     if current_topic == "price":
         return str(previous_facts.get("price_range", "") or "3000-6000")
     if current_topic == "service_hours":
-        return str(previous_facts.get("business_hours", "") or "上午9:30到下午6:00")
+        return str(previous_facts.get("business_hours", "") or "周一到周五上午9:30到下午6:00，周六周日不上班")
     if current_topic == "lifespan":
         return str(previous_facts.get("lifespan", "") or "3到5年")
     if current_topic == "store_recommendation":

@@ -39,6 +39,10 @@ APPOINTMENT_PRIORITY_KEYWORDS = (
     "约时间",
     "几点方便",
     "哪天方便",
+    "怎么约",
+    "怎么约呀",
+    "约呀",
+    "预月",
 )
 REQUIRED_MEDIA_TYPES = ("address_image", "contact_image", "delayed_video")
 MATERIAL_LIBRARY_VIDEO_SENTINEL = "__material_library_video__"
@@ -188,6 +192,7 @@ def judge_post_reply_media(
         session_state=session_state,
     )
     intent = decision.intent if decision is not None else agent._detect_intent(normalized_text)
+    is_appointment_decision = str(intent or "") == "appointment"
     closure_info = agent._build_reply_closure_info(
         reply_text=reply_text,
         base_info=dict(getattr(decision, "reply_closure_info", {}) or {}) if decision is not None else None,
@@ -196,7 +201,18 @@ def judge_post_reply_media(
     reasons: List[str] = []
     skip_reason = ""
 
-    if closure_info.get("precise_address_hit") and str(closure_info.get("target_store", "") or ""):
+    if decision is not None and str(getattr(decision, "rule_id", "") or "") in {
+        "CONTACT_PHONE_SUBMITTED",
+        "CONTACT_ALREADY_ADDED",
+        "CONTACT_ALREADY_CAPTURED",
+    }:
+        return MediaJudgeDecision(skip_reason="contact_already_captured")
+
+    if (
+        not is_appointment_decision
+        and closure_info.get("precise_address_hit")
+        and str(closure_info.get("target_store", "") or "")
+    ):
         item, reason_hint = queue_address_image(
             agent,
             session_id=session_id,
@@ -212,7 +228,8 @@ def judge_post_reply_media(
             skip_reason = reason_hint
 
     if (
-        not media_items
+        not is_appointment_decision
+        and not media_items
         and str(closure_info.get("closure_type", "") or "") in {"store_recommendation", "address_image_promise"}
     ):
         closure_target_store = str(closure_info.get("target_store", "") or route.get("target_store", "") or session_state.get("last_target_store", "") or "")
@@ -245,7 +262,8 @@ def judge_post_reply_media(
         conversation_stage = str(session_state.get("conversation_stage", "") or "")
         mentions_position_image = any(token in normalized_reply for token in ("位置图", "按图", "看图", "圈圈位置"))
         if (
-            known_store
+            not is_appointment_decision
+            and known_store
             and known_store != "unknown"
             and mentions_position_image
             and (
@@ -269,12 +287,27 @@ def judge_post_reply_media(
                 skip_reason = reason_hint
 
     needs_contact_closure_image = bool(closure_info.get("contact_closure_hit"))
+    if decision is not None and bool(getattr(decision, "force_contact_image", False)):
+        needs_contact_closure_image = True
+        reasons.append("decision_force_contact_image")
     if decision is not None and str(decision.reply_source or "") == "fallback":
         needs_contact_closure_image = True
         reasons.append("llm_fallback_contact")
     if agent._looks_like_direct_contact_request(normalized_text):
         needs_contact_closure_image = True
         reasons.append("direct_contact_request")
+    if (
+        not needs_contact_closure_image
+        and int(session_state.get("contact_image_sent_count", 0) or 0) <= 0
+        and (
+            agent._looks_like_appointment_query(normalized_text)
+            or str(getattr(decision, "intent", "") or "") == "appointment"
+            or "预约" in re.sub(r"\s+", "", str(reply_text or ""))
+        )
+        and not agent._looks_like_phone_submission(normalized_text)
+    ):
+        needs_contact_closure_image = True
+        reasons.append("appointment_contact_followup")
 
     if needs_contact_closure_image:
         item, reason_hint = queue_contact_image(

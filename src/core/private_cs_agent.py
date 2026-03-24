@@ -87,9 +87,9 @@ SHIPPING_BLOCK_KEYWORDS = (
     "到家",
 )
 SHIPPING_BLOCK_REPLACEMENT = "姐姐我们是到店定制哦"
-ADDRESS_UNSUPPORTED_FALLBACK = "姐姐，门店位置您可以看图里圈圈的位置哦，需要的话我也可以继续帮您安排"
+ADDRESS_UNSUPPORTED_FALLBACK = "姐姐，门店位置您可以直接看图片哦，需要的话我也可以继续帮您安排"
 MATERIAL_LIBRARY_VIDEO_SENTINEL = "__material_library_video__"
-ADDRESS_FACT_FALLBACK = "姐姐，门店位置您可以看图里圈圈的位置哦，我这边也可以继续帮您安排"
+ADDRESS_FACT_FALLBACK = "姐姐，门店位置您可以直接看图片哦，我这边也可以继续帮您安排"
 ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK = "您发个☎️，我来加您好友，具体给您介绍怎么走，位置在哪里"
 PRICE_FACT_FALLBACK = "姐姐，具体的价格，设计，您可以留个☎️，我来添加您，专门给您详细介绍"
 PRICE_GUARDRAIL_SAFE_REPLY = "姐姐，我们的价格有3000、4000、5000、6000不同档位，具体要根据材质、款式、头围、脸型和需求方案来定。"
@@ -98,6 +98,9 @@ PHONE_LEAK_BLOCK_FALLBACK = "姐姐，您提供电话，我来联系您，可以
 REMOTE_SUPPORT_FACT_FALLBACK = "姐姐，外地也支持远程定制，不过精准度会比到店稍低一些哦。❤️"
 EMPATHY_REMOTE_SUPPORT_FALLBACK = "姐姐那您先注意休息，身体要紧，不方便来上海的话我们也可以先远程帮您看看。❤️"
 USER_PHONE_SUBMITTED_REPLY = "收到啦姐姐，我稍后加您好友，具体跟你详细介绍❤️"
+CONTACT_ALREADY_ADDED_REPLY = "好的姐姐，我这边看到了，咱们就按刚才的方式接着聊，我来给您详细介绍❤️"
+CONTACT_ALREADY_CAPTURED_REPLY = "收到啦姐姐，您之前留的方式我这边已经记下了，不用重复发，我会尽快联系您详细介绍❤️"
+WEEKEND_CLOSED_REPLY = "姐姐，我们工作日周一到周五上班，营业时间是上午9:30到下午6:00，周六周日不上班哦。"
 MA_TEACHER_ROLE_FALLBACK = "姐姐，马老师是做短视频拍摄的，暂时不负责做头发、剪头和假发处理哦。🥰"
 MA_TEACHER_DIRECT_QUERY_FALLBACK = "姐姐，马老师是做短视频拍摄的，暂时无法安排🥰"
 IMAGE_MEDIA_REPLY_POOL = (
@@ -436,6 +439,10 @@ APPOINTMENT_PRIORITY_KEYWORDS = (
     "如何预约",
     "需要预约",
     "要预约",
+    "怎么约",
+    "怎么约呀",
+    "约呀",
+    "预月",
 )
 PROCESS_PRIORITY_KEYWORDS = (
     "来一次",
@@ -485,13 +492,13 @@ DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
     "ask_sh_arrival_point": "姐姐，您到上海后一般在哪个站下车呀？像虹桥站、上海站、浦东机场这些都可以告诉我，我帮您针对性推荐门店🌹",
     "ask_sh_route_clarify": "姐姐，您说的是上海哪条路附近呀？我帮您匹配最近门店🌹",
     "ask_ambiguous_short_fragment": "姐姐，您是想问门店地址吗？您告诉我大概在哪个区域，我帮您匹配最近门店🌹",
-    "store_recommend": "姐姐，推荐您去{store_name}，我给您发一张位置图，您跟着图中圈圈的位置会更直观，如果找不到可以留个☎️，我来具体给你发路线～",
-    "non_coverage_contact": "姐姐，{region}暂时没有我们的门店，目前假发是需要根据头围和脸型进行私人定制的，您可以看看下面图中画圈圈的地方，会有专门的老师跟您远程鉴定～💗",
-    "contact_intro": "姐姐可以看下红框框的内容，您按图添加后我这边一对一继续跟进您呀😊",
-    "purchase_contact_intro": "姐姐可以看看图中画框框的地方，会有专门的老师给您介绍～❤️",
-    "purchase_contact_remind_only": "姐姐，请注意一下上面图中的圈圈位置哦，可以详细给您介绍怎么买～💗",
-    "purchase_contact_remote_remind_only": "姐姐，您可以往上看看图中画圈的地方，我让老师一对一跟您远程定制❤️",
-    "strong_intent_after_both_first": "姐姐，您可以看上面的画圈圈地方，我让老师跟您预约～💗",
+    "store_recommend": "姐姐，推荐您去{store_name}，我给您发一张位置图，您直接看图片会更直观，如果找不到可以留个☎️，我来具体给你发路线～",
+    "non_coverage_contact": "姐姐，{region}暂时没有我们的门店，目前假发是需要根据头围和脸型进行私人定制的，您可以直接看下面的图片，会有专门的老师跟您远程鉴定～💗",
+    "contact_intro": "姐姐您直接看图片添加后跟我说一声，我这边一对一继续跟进您呀😊",
+    "purchase_contact_intro": "姐姐您可以直接看图片添加，会有专门的老师给您介绍～❤️",
+    "purchase_contact_remind_only": "姐姐，您直接看上面的图片添加就可以，可以详细给您介绍怎么买～💗",
+    "purchase_contact_remote_remind_only": "姐姐，您可以往上看图片添加，我让老师一对一跟您远程定制❤️",
+    "strong_intent_after_both_first": "姐姐，您可以直接看上面的图片添加，我让老师跟您预约～💗",
     "contact_followup_1": "姐姐您看下我刚发的联系方式图，按图添加后跟我说一声，我马上接着帮您安排😊",
     "contact_followup_2": "姐姐刚刚那张联系方式图您点开就能看到，添加后回我一句，我立刻继续帮您跟进😊",
     "llm_fallback": "姐姐因咨询较多，您加我联系方式，我直接跟你电话沟通更快～🌹",
@@ -741,6 +748,19 @@ class CustomerServiceAgent:
                 rule_applied=True,
                 reply_mode=self.reply_mode,
             )
+        contact_progress_ack_decision = self._build_contact_progress_ack_decision(
+            text=text,
+            session_state=session_state,
+            conversation_history=conversation_history,
+        )
+        if contact_progress_ack_decision is not None:
+            return contact_progress_ack_decision
+        weekend_closed_decision = self._build_weekend_closed_decision(
+            text=text,
+            session_state=session_state,
+        )
+        if weekend_closed_decision is not None:
+            return weekend_closed_decision
         route = self.knowledge_service.resolve_store_recommendation(text)
         route = self._enrich_route_from_conversation_state(
             latest_user_text=raw_text,
@@ -843,12 +863,12 @@ class CustomerServiceAgent:
             decision = business_block_priority_decision
         elif process_priority_decision is not None:
             decision = process_priority_decision
+        elif appointment_kb_decision is not None:
+            decision = appointment_kb_decision
         elif address_text_after_image_decision is not None:
             decision = address_text_after_image_decision
         elif address_contact_after_text_decision is not None:
             decision = address_contact_after_text_decision
-        elif appointment_kb_decision is not None:
-            decision = appointment_kb_decision
         elif (
             self._should_apply_rule_decision(text=text, intent=intent, route=route, session_state=session_state)
             and not skip_rule_for_generic_llm_direct_address
@@ -1229,6 +1249,107 @@ class CustomerServiceAgent:
             "如何联系",
         )
         return any(pattern in normalized for pattern in direct_patterns)
+
+    def _looks_like_contact_added_confirmation(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(text or "")).lower()
+        if not normalized:
+            return False
+        patterns = (
+            "刚才加你了",
+            "刚刚加你了",
+            "已经加你了",
+            "加你了",
+            "加你微信了",
+            "加你好友了",
+            "加上你了",
+            "加上了",
+        )
+        return any(pattern in normalized for pattern in patterns)
+
+    def _looks_like_contact_already_captured(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(text or "")).lower()
+        if not normalized:
+            return False
+        patterns = (
+            "留了两次电话",
+            "留过电话了",
+            "留过两次电话",
+            "已经留过电话了",
+            "已经留电话了",
+            "留了电话了",
+            "刚才留过电话",
+            "我都留电话了",
+        )
+        return any(pattern in normalized for pattern in patterns)
+
+    def _build_contact_progress_ack_decision(
+        self,
+        text: str,
+        session_state: Dict[str, Any],
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+    ) -> Optional[AgentDecision]:
+        history = conversation_history or []
+        has_contact_context = (
+            int(session_state.get("contact_image_sent_count", 0) or 0) > 0
+            or int(session_state.get("session_post_contact_reply_count", 0) or 0) > 0
+            or any(self._looks_like_phone_submission(str(item.get("content", "") or "")) for item in history if item.get("role") == "user")
+            or any("稍后加您好友" in str(item.get("content", "") or "") for item in history if item.get("role") == "assistant")
+        )
+        if self._looks_like_contact_added_confirmation(text) and has_contact_context:
+            return AgentDecision(
+                reply_text=CONTACT_ALREADY_ADDED_REPLY,
+                intent="contact",
+                route_reason="contact_already_added",
+                reply_goal="承接联系方式",
+                media_plan="none",
+                reply_source="rule",
+                rule_id="CONTACT_ALREADY_ADDED",
+                rule_applied=True,
+                reply_mode=self.reply_mode,
+            )
+        if self._looks_like_contact_already_captured(text) and has_contact_context:
+            return AgentDecision(
+                reply_text=CONTACT_ALREADY_CAPTURED_REPLY,
+                intent="contact",
+                route_reason="contact_already_captured",
+                reply_goal="承接联系方式",
+                media_plan="none",
+                reply_source="rule",
+                rule_id="CONTACT_ALREADY_CAPTURED",
+                rule_applied=True,
+                reply_mode=self.reply_mode,
+            )
+        return None
+
+    def _looks_like_weekend_closed_query(self, text: str, session_state: Optional[Dict[str, Any]] = None) -> bool:
+        normalized = re.sub(r"\s+", "", str(text or "")).lower()
+        if not normalized:
+            return False
+        has_weekend = any(token in normalized for token in ("周六", "周日", "周末", "星期六", "星期日", "礼拜六", "礼拜天"))
+        if not has_weekend:
+            return False
+        active_topic = str((session_state or {}).get("active_topic", "") or "")
+        has_visit_signal = any(token in normalized for token in ("去", "过去", "到店", "营业", "上班", "开门", "时间", "几点", "预约"))
+        return has_visit_signal or active_topic in {"service_hours", "appointment", "store_recommendation"}
+
+    def _build_weekend_closed_decision(
+        self,
+        text: str,
+        session_state: Optional[Dict[str, Any]] = None,
+    ) -> Optional[AgentDecision]:
+        if not self._looks_like_weekend_closed_query(text, session_state=session_state):
+            return None
+        return AgentDecision(
+            reply_text=WEEKEND_CLOSED_REPLY,
+            intent="general",
+            route_reason="weekend_closed",
+            reply_goal="解答",
+            media_plan="none",
+            reply_source="rule",
+            rule_id="SERVICE_HOURS_WEEKEND_CLOSED",
+            rule_applied=True,
+            reply_mode=self.reply_mode,
+        )
 
     def _should_trigger_precise_address_contact_image(
         self,
@@ -1756,7 +1877,7 @@ class CustomerServiceAgent:
         kb_intent = str(kb_detail.get("intent", "") or "").strip().lower()
         tags = {str(tag).strip() for tag in (kb_detail.get("tags", []) or []) if str(tag).strip()}
         if not (kb_detail.get("matched") and (kb_intent == "service_hours" or "营业时间" in tags)):
-            fallback_answer = "姐姐，我们工作日周一到周五，营业时间是上午9:30到下午6:00哦。"
+            fallback_answer = WEEKEND_CLOSED_REPLY
             return AgentDecision(
                 reply_text=fallback_answer,
                 intent="general",
@@ -1886,13 +2007,45 @@ class CustomerServiceAgent:
         user_id_hash: str = "",
     ) -> Optional[AgentDecision]:
         state = dict(session_state or {})
-        store_specific_reply = self._build_store_appointment_contact_reply(latest_user_text, route)
+        store_specific_reply = self._build_store_appointment_contact_reply(
+            latest_user_text,
+            route,
+            session_state=state,
+        )
         kb_detail = self.knowledge_service.find_answer_detail(
             latest_user_text,
             threshold=self.knowledge_threshold,
         )
         kb_intent = str(kb_detail.get("intent", "") or "").strip().lower()
         tags = {str(tag).strip() for tag in (kb_detail.get("tags", []) or []) if str(tag).strip()}
+        if store_specific_reply:
+            has_sent_address = int(state.get("address_image_sent_count", 0) or 0) > 0
+            route_target_store = str(route.get("target_store", "") or "").strip()
+            if not route_target_store or route_target_store == "unknown":
+                route_target_store = str(state.get("last_target_store", "") or "").strip()
+            explicit_location = str(route.get("reason", "") or "").strip() not in {"", "unknown"}
+            if (explicit_location or has_sent_address) and route_target_store and route_target_store != "unknown":
+                should_force_contact_image = int(state.get("contact_image_sent_count", 0) or 0) <= 0
+                return AgentDecision(
+                    reply_text=store_specific_reply,
+                    intent="appointment",
+                    route_reason=str(route.get("reason", "unknown") or "unknown"),
+                    reply_goal="承接联系方式" if should_force_contact_image else "解答",
+                    media_plan="contact_image" if should_force_contact_image else "none",
+                    reply_source="knowledge",
+                    rule_id="KB_MATCH_CONTACT_IMAGE",
+                    rule_applied=False,
+                    kb_match_score=float(kb_detail.get("score", 0.0) or 0.0),
+                    kb_match_question=str(kb_detail.get("question", "") or ""),
+                    kb_match_mode="appointment_route_contact_fallback",
+                    kb_item_id=str(kb_detail.get("item_id", "") or ""),
+                    kb_variant_total=0,
+                    kb_variant_selected_index=-1,
+                    kb_variant_fallback_llm=False,
+                    kb_confident=True,
+                    force_contact_image=should_force_contact_image,
+                    kb_contact_trigger_type="appointment",
+                )
         has_both_images_sent = (
             int(state.get("address_image_sent_count", 0) or 0) > 0
             and int(state.get("contact_image_sent_count", 0) or 0) > 0
@@ -1902,30 +2055,6 @@ class CustomerServiceAgent:
         if not (kb_detail.get("matched") and (kb_intent == "appointment" or "预约" in tags)):
             if has_both_images_sent:
                 return None
-            has_sent_address = int(state.get("address_image_sent_count", 0) or 0) > 0
-            route_target_store = str(route.get("target_store", "") or "").strip()
-            explicit_location = str(route.get("reason", "") or "").strip() not in {"", "unknown"}
-            if store_specific_reply and (explicit_location or has_sent_address) and route_target_store and route_target_store != "unknown":
-                return AgentDecision(
-                    reply_text=store_specific_reply,
-                    intent="appointment",
-                    route_reason=str(route.get("reason", "unknown") or "unknown"),
-                    reply_goal="解答",
-                    media_plan="contact_image",
-                    reply_source="knowledge",
-                    rule_id="KB_MATCH_CONTACT_IMAGE",
-                    rule_applied=False,
-                    kb_match_score=0.0,
-                    kb_match_question="",
-                    kb_match_mode="appointment_route_contact_fallback",
-                    kb_item_id="",
-                    kb_variant_total=0,
-                    kb_variant_selected_index=-1,
-                    kb_variant_fallback_llm=False,
-                    kb_confident=True,
-                    force_contact_image=True,
-                    kb_contact_trigger_type="appointment",
-                )
             return None
 
         kb_answer = str(kb_detail.get("answer", "") or "").strip()
@@ -1952,8 +2081,8 @@ class CustomerServiceAgent:
             reply_text=answer,
             intent="appointment",
             route_reason=str(route.get("reason", "unknown") or "unknown"),
-            reply_goal="解答",
-            media_plan="contact_image",
+            reply_goal="承接联系方式" if int(state.get("contact_image_sent_count", 0) or 0) <= 0 else "解答",
+            media_plan="contact_image" if int(state.get("contact_image_sent_count", 0) or 0) <= 0 else "none",
             reply_source="knowledge",
             rule_id="KB_MATCH_CONTACT_IMAGE",
             rule_applied=False,
@@ -1965,17 +2094,26 @@ class CustomerServiceAgent:
             kb_variant_selected_index=selected_index if selected_answer else (-1 if exhausted else 0),
             kb_variant_fallback_llm=False,
             kb_confident=True,
-            force_contact_image=True,
+            force_contact_image=int(state.get("contact_image_sent_count", 0) or 0) <= 0,
             kb_contact_trigger_type="appointment",
         )
 
-    def _build_store_appointment_contact_reply(self, latest_user_text: str, route: Dict[str, Any]) -> str:
+    def _build_store_appointment_contact_reply(
+        self,
+        latest_user_text: str,
+        route: Dict[str, Any],
+        session_state: Optional[Dict[str, Any]] = None,
+    ) -> str:
         text = str(latest_user_text or "").strip()
         if not text:
             return ""
+        state = dict(session_state or {})
         route_type = str(route.get("route_type", "") or "").strip()
         target_store = str(route.get("target_store", "") or "").strip()
-        if route_type != "coverage" or not target_store or target_store == "unknown":
+        if (not target_store or target_store == "unknown"):
+            target_store = str(state.get("last_target_store", "") or "").strip()
+        has_store_context = bool(target_store and target_store != "unknown")
+        if route_type != "coverage" and not has_store_context:
             return ""
         if not (
             self._looks_like_appointment_query(text)
@@ -1987,7 +2125,9 @@ class CustomerServiceAgent:
         store_name = str(store.get("store_name", "") or self._store_recommend_display_name(target_store, "门店"))
         if target_store == "beijing_chaoyang" and store_name.endswith("门店"):
             store_name = f"{store_name[:-2]}店"
-        return f"姐姐，我们是需要预约的，推荐您到{store_name}，具体位置您可以看下面的圈圈+我好友，我发给您路线地址❤️"
+        if int(state.get("contact_image_sent_count", 0) or 0) <= 0:
+            return "姐姐，预约需要加专属客服帮您预约到店，好有老师接待您！❤️"
+        return f"姐姐，您加上专属客服后，把方便的时间发我，我这边就帮您安排{store_name}的预约到店，好有老师接待您！❤️"
 
     def _looks_like_process_query(self, text: str) -> bool:
         normalized = re.sub(r"\s+", "", str(text or "")).lower()
@@ -2186,6 +2326,17 @@ class CustomerServiceAgent:
         )
         if service_hours_priority_decision is not None:
             return service_hours_priority_decision
+
+        if self._looks_like_appointment_query(text):
+            appointment_priority_decision = self._decide_appointment_priority_reply(
+                latest_user_text=text,
+                route=route,
+                session_state=session_state,
+                user_state=user_state,
+                user_id_hash=user_id_hash,
+            )
+            if appointment_priority_decision is not None:
+                return appointment_priority_decision
 
         address_text_after_image_decision = self._build_address_text_after_image_decision(
             latest_user_text=text,
@@ -3147,7 +3298,7 @@ class CustomerServiceAgent:
         ):
             topic = "service_hours"
             facts = {
-                "business_hours": self._extract_business_hours_fact(decision.reply_text) or "上午9:30到下午6:00",
+                "business_hours": self._extract_business_hours_fact(decision.reply_text) or "周一到周五上午9:30到下午6:00，周六周日不上班",
                 "kb_item_id": str(decision.kb_item_id or ""),
             }
             mode = "direct_kb" if decision.reply_source == "knowledge" else "contextual_llm"
@@ -3219,6 +3370,10 @@ class CustomerServiceAgent:
             if str(previous_facts.get("target_store", "") or "") != str(current_facts.get("target_store", "") or ""):
                 return False
         if current_topic == "appointment" and current_turn_action not in {"advance_to_next_step", "followup_same_topic", "confirm_previous_fact"}:
+            return False
+        if current_topic == "appointment" and bool(getattr(decision, "force_contact_image", False)):
+            return False
+        if current_topic == "appointment" and str(getattr(decision, "rule_id", "") or "") == "KB_MATCH_CONTACT_IMAGE":
             return False
 
         if decision.reply_source not in {"knowledge", "rule", "llm"} and decision.rule_id != "LLM_KB_VARIANT_FALLBACK":
