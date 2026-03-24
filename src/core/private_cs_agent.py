@@ -899,14 +899,6 @@ class CustomerServiceAgent:
                 user_id_hash=user_hash,
             )
 
-        skip_rule_for_generic_llm_direct_address = (
-            self.reply_mode == REPLY_MODE_LLM_DIRECT
-            and self.knowledge_service.is_address_query(text)
-            and str(route.get("reason", "") or "unknown") == "unknown"
-            and str(session_state.get("last_target_store", "") or "").strip() in {"", "unknown"}
-            and int(session_state.get("address_image_sent_count", 0) or 0) <= 0
-        )
-
         if remote_flow_decision is not None:
             decision = remote_flow_decision
         elif decision is not None:
@@ -925,7 +917,6 @@ class CustomerServiceAgent:
             decision = address_contact_after_text_decision
         elif (
             self._should_apply_rule_decision(text=text, intent=intent, route=route, session_state=session_state)
-            and not skip_rule_for_generic_llm_direct_address
             and not (
                 self.reply_mode == REPLY_MODE_LLM_DIRECT
                 and self._should_keep_llm_direct_address_guardrails(text, session_state=session_state)
@@ -2512,7 +2503,11 @@ class CustomerServiceAgent:
                 user_state=user_state,
                 is_first_turn_global=is_first_turn_global,
             )
-            if str(rule_decision.rule_id or "") in {"ADDR_STORE_RECOMMEND", "ADDR_OUT_OF_COVERAGE", "ADDR_TEXT_AFTER_IMAGE"}:
+            rule_id = str(rule_decision.rule_id or "")
+            if (
+                rule_id in {"ADDR_STORE_RECOMMEND", "ADDR_OUT_OF_COVERAGE", "ADDR_TEXT_AFTER_IMAGE"}
+                or rule_id.startswith("ADDR_ASK_")
+            ):
                 return rule_decision
 
         return None

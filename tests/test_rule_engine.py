@@ -924,6 +924,20 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertNotIn("上海店详细地址", d.reply_text)
             self.assertNotIn("北京店详细地址", d.reply_text)
 
+    def test_llm_direct_address_query_cityless_still_asks_region(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+            agent.reply_mode = "llm_direct"
+            llm.reply_text = "姐姐，北京朝阳门店位置直接看图片就可以哦。🌹"
+
+            d = agent.decide("chat_detail_llm_direct", "用户地址直答", "地址在哪", [])
+
+            self.assertEqual(d.rule_id, "ADDR_ASK_REGION_R1")
+            self.assertEqual(d.reply_source, "rule")
+            self.assertEqual(d.media_plan, "none")
+            self.assertIn("您在什么城市/区域", d.reply_text)
+            self.assertEqual(llm.calls, 0)
+
     def test_address_query_out_of_coverage_still_rule(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, _, _ = self._build_agent(Path(td))
