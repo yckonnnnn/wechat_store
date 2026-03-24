@@ -938,6 +938,47 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertIn("您在什么城市/区域", d.reply_text)
             self.assertEqual(llm.calls, 0)
 
+    def test_first_turn_address_query_is_hard_blocked_to_geo_followup(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+            agent.reply_mode = "llm_direct"
+            llm.reply_text = "姐姐，北京朝阳门店位置直接看图片就可以哦。🌹"
+
+            d = agent.decide(
+                "chat_detail_first_turn_hard_block",
+                "首次问地址用户",
+                "地址在哪？",
+                [],
+                first_turn_global_override=True,
+            )
+
+            self.assertTrue(d.is_first_turn_global)
+            self.assertEqual(d.rule_id, "ADDR_ASK_REGION_R1")
+            self.assertEqual(d.reply_source, "rule")
+            self.assertEqual(d.media_plan, "none")
+            self.assertIn("您在什么城市/区域", d.reply_text)
+            self.assertEqual(llm.calls, 0)
+
+    def test_first_turn_address_give_me_still_hard_blocks_to_geo_followup(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent, _, _, llm = self._build_agent(Path(td))
+            agent.reply_mode = "llm_direct"
+            llm.reply_text = "姐姐，北京朝阳门店位置直接看图片就可以哦。🌹"
+
+            d = agent.decide(
+                "chat_detail_first_turn_address_give_me",
+                "首次问地址用户",
+                "地址给我",
+                [],
+                first_turn_global_override=True,
+            )
+
+            self.assertEqual(d.rule_id, "ADDR_ASK_REGION_R1")
+            self.assertEqual(d.reply_source, "rule")
+            self.assertEqual(d.media_plan, "none")
+            self.assertIn("您在什么城市/区域", d.reply_text)
+            self.assertEqual(llm.calls, 0)
+
     def test_address_query_out_of_coverage_still_rule(self):
         with tempfile.TemporaryDirectory() as td:
             agent, _, _, _ = self._build_agent(Path(td))

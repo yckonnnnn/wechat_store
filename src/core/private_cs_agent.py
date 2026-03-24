@@ -808,10 +808,10 @@ class CustomerServiceAgent:
         )
         if weekend_closed_decision is not None:
             return weekend_closed_decision
-        route = self.knowledge_service.resolve_store_recommendation(text)
+        raw_route = self.knowledge_service.resolve_store_recommendation(text)
         route = self._enrich_route_from_conversation_state(
             latest_user_text=raw_text,
-            route=route,
+            route=raw_route,
             session_state=session_state,
         )
         if self._should_recover_to_shanghai_arrival_help(text, session_state):
@@ -833,13 +833,29 @@ class CustomerServiceAgent:
                 "detected_region": "外地",
             }
         intent = self._detect_intent(text)
-        decision: Optional[AgentDecision] = None
+        forced_first_turn_address_decision: Optional[AgentDecision] = None
+        if (
+            is_first_turn_global
+            and self._looks_like_generic_address_opening(raw_text, intent=intent)
+            and str(raw_route.get("target_store", "") or "").strip() in {"", "unknown"}
+            and str(raw_route.get("reason", "") or "unknown") in {"unknown", "need_region", "need_clarify"}
+        ):
+            forced_first_turn_address_decision = self._decide_rule_reply(
+                text=text,
+                intent="address",
+                route=raw_route,
+                session_state=session_state,
+                conversation_history=conversation_history or [],
+                user_state=user_state,
+                is_first_turn_global=is_first_turn_global,
+            )
+        decision: Optional[AgentDecision] = forced_first_turn_address_decision
         remote_flow_decision = self._build_remote_flow_decision(
             text=raw_text,
             route=route,
             session_state=session_state,
         )
-        if self.reply_mode == REPLY_MODE_LLM_DIRECT:
+        if decision is None and self.reply_mode == REPLY_MODE_LLM_DIRECT:
             decision = self._decide_llm_direct_seed_reply(
                 latest_user_text=raw_text,
                 intent=intent,
@@ -2532,6 +2548,20 @@ class CustomerServiceAgent:
         if has_known_store and self.knowledge_service.is_address_query(text):
             return True
         return False
+
+    def _looks_like_generic_address_opening(self, text: str, intent: str = "") -> bool:
+        normalized = re.sub(r"\s+", "", str(text or "")).lower()
+        if not normalized:
+            return False
+        if str(intent or "") == "address":
+            if any(token in normalized for token in ("地址", "位置", "门店", "哪家店")):
+                return True
+        opening_tokens = (
+            "地址在哪", "地址在哪里", "地址在哪儿", "地址给我", "把地址发我",
+            "位置在哪", "位置在哪里", "门店在哪", "门店在哪里", "店在哪", "店在哪里",
+            "发我地址", "给我地址", "位置发我", "发个地址", "店地址",
+        )
+        return any(token in normalized for token in opening_tokens)
 
     def _should_apply_llm_direct_address_guardrails(
         self,
