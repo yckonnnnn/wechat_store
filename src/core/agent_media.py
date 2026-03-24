@@ -229,6 +229,7 @@ def judge_post_reply_media(
             target_store=str(closure_info.get("target_store", "") or ""),
             route_reason="precise_address_closure",
             detected_region=route.get("detected_region", "") or "",
+            user_name=user_name,
         )
         if item:
             media_items = _upsert_media_item(agent, media_items, item)
@@ -254,6 +255,7 @@ def judge_post_reply_media(
                 else "store_recommendation_closure"
             ),
             detected_region=route.get("detected_region", "") or "",
+            user_name=user_name,
         )
         if item:
             media_items = _upsert_media_item(agent, media_items, item)
@@ -290,6 +292,7 @@ def judge_post_reply_media(
                 target_store=known_store,
                 route_reason="conversation_address_revisit",
                 detected_region=route.get("detected_region", "") or "",
+                user_name=user_name,
             )
             if item:
                 media_items = _upsert_media_item(agent, media_items, item)
@@ -343,6 +346,48 @@ def judge_post_reply_media(
         elif reason_hint and not skip_reason:
             skip_reason = reason_hint
 
+    # 【新增】路线追问特殊分支：已发地址图后，用户追问路线/导航等，发送固定回复 + 联系方式图（仅一次）
+    address_image_sent_count = int(session_state.get("address_image_sent_count", 0) or 0)
+    last_target_store = str(session_state.get("last_target_store", "") or "")
+    is_precise_address_followup = bool(
+        last_target_store
+        and last_target_store != "unknown"
+        and address_image_sent_count > 0
+        and agent._is_precise_address_followup(latest_user_text)
+    )
+    route_followup_contact_sent = bool(session_state.get("route_followup_contact_sent", False))
+    if is_precise_address_followup and not route_followup_contact_sent and not media_items:
+        # 发送固定话术
+        template_text = agent._get_reply_template("route_followup_contact")
+        if template_text:
+            agent.conversation_log.append_assistant_reply(
+                session_id=session_id,
+                user_hash=user_hash,
+                text=template_text,
+                is_rule_reply=True,
+                rule_id="ROUTE_FOLLOWUP_CONTACT",
+            )
+        # 标记已发送，避免重复
+        session_state["route_followup_contact_sent"] = True
+        agent.memory_store.update_session_state(session_id, session_state, user_hash=user_hash)
+        agent.memory_store.save()
+        # 入队联系方式图
+        item, reason_hint = queue_contact_image(
+            agent,
+            session_id=session_id,
+            text=normalized_text,
+            intent="contact",
+            reason="route_followup",
+            route=route,
+            session_state=session_state,
+            force_contact_image=True,
+        )
+        if item:
+            media_items = _upsert_media_item(agent, media_items, item)
+            reasons.append("route_followup_contact")
+        elif reason_hint and not skip_reason:
+            skip_reason = reason_hint
+
     if media_items:
         return MediaJudgeDecision(
             send_contact_image=any(str(x.get("type", "") or "") == "contact_image" for x in media_items),
@@ -372,6 +417,7 @@ def judge_post_reply_media(
             media_plan="contact_image",
             session_state=session_state,
             user_state=agent.memory_store.get_user_state(user_hash),
+            user_name=user_name,
             force_contact_image=True,
         )
         return MediaJudgeDecision(
@@ -426,6 +472,14 @@ def mark_media_sent(agent, session_id: str, user_name: str, media_item: Dict[str
             session_state["active_topic"] = "store_recommendation"
             session_state["conversation_stage"] = "address_image_sent"
         session_state["sent_address_stores"] = list(stores)
+
+        # 【新增】写入 user_state，实现跨会话去重
+        user_sent_stores = set(user_state.get("address_image_sent_stores", []) or [])
+        if target_store:
+            user_sent_stores.add(target_store)
+            user_state["address_image_sent_stores"] = list(user_sent_stores)
+            agent.memory_store.update_user_state(user_hash, user_state)
+            agent.memory_store.save()  # 立即持久化
 
     elif media_type == "contact_image":
         sent_count = int(session_state.get("contact_image_sent_count", 0) or 0)
@@ -532,6 +586,7 @@ def plan_media_items(
     media_plan: str,
     session_state: Dict[str, Any],
     user_state: Dict[str, Any],
+    user_name: str = "",
     force_contact_image: bool = False,
 ) -> Tuple[List[Dict[str, Any]], str]:
     del user_state
@@ -553,6 +608,7 @@ def plan_media_items(
             target_store=target_store,
             route_reason=reason,
             detected_region=detected_region,
+            user_name=user_name,
         )
         if item:
             items.append(item)
@@ -585,10 +641,26 @@ def queue_address_image(
     target_store: str,
     route_reason: str,
     detected_region: str,
+    user_name: str = "",
 ) -> Tuple[Optional[Dict[str, Any]], str]:
     del session_id
     if target_store == "unknown":
         return None, "address_target_unknown"
+
+    # 【新增】按用户检查该店是否已发过地址图（跨会话生效）
+    # 注意：user_name 必须有效，不能 fallback 到 session_id，否则会导致跨会话去重失效
+    if not user_name:
+        user_name = str(session_state.get("user_name", "") or "")
+    if not user_name:
+        # 如果还是没有用户名，说明是测试场景或异常情况，跳过跨会话去重
+        user_state = {}
+        sent_stores = set()
+    else:
+        user_hash = agent._hash_user(user_name)
+        user_state = agent.memory_store.get_user_state(user_hash)
+        sent_stores = set(user_state.get("address_image_sent_stores", []) or [])
+    if target_store in sent_stores:
+        return None, "address_image_already_sent_for_store"
 
     image_path = pick_address_image(agent, target_store, session_state=session_state)
     if not image_path:

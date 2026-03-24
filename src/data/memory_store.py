@@ -109,6 +109,8 @@ class MemoryStore:
             "video_sent": False,
             "post_contact_reply_count": 0,
             "recent_reply_hashes": [],
+            # 地址图片去重字段：记录该用户已接收过地址图的门店列表（跨会话生效）
+            "address_image_sent_stores": [],
         }
 
     def get_session_state(self, session_id: str, user_hash: str = "") -> Dict[str, Any]:
@@ -258,3 +260,5 @@ class MemoryStore:
         state.setdefault("video_sent", False)
         state.setdefault("post_contact_reply_count", 0)
         state.setdefault("recent_reply_hashes", [])
+        # 兼容旧数据：新增字段默认值为空列表
+        state.setdefault("address_image_sent_stores", [])

@@ -1042,6 +1042,7 @@ class CustomerServiceAgent:
                 media_plan=original_media_plan,
                 session_state=session_state,
                 user_state=user_state,
+                user_name=user_name,
                 force_contact_image=bool(decision.force_contact_image),
             )
         decision.media_items = media_items
@@ -1537,41 +1538,33 @@ class CustomerServiceAgent:
             return True
         return False
 
+    def _get_reply_template(self, key: str) -> str:
+        """获取配置化回复模板"""
+        default_templates = {
+            "route_followup_contact": "姐姐您可以看图片上联系方式添加我，然后具体路线怎么走我会发给您 😊",
+        }
+        template = self._reply_templates.get(key)
+        if template:
+            return template
+        return default_templates.get(key, "")
+
     def _is_precise_address_followup(self, text: str) -> bool:
         normalized = re.sub(r"\s+", "", str(text or "")).lower()
         if not normalized:
             return False
         precise_keywords = (
-            "具体地址",
-            "具体位置",
-            "具体在哪",
-            "多少号",
-            "几号",
-            "几楼",
-            "楼层",
-            "哪一栋",
-            "哪栋",
-            "哪个门",
-            "从哪进",
-            "哪个出口",
-            "几号出口",
-            "导航",
-            "怎么导航",
-            "怎么走",
-            "怎么去",
-            "怎么过去",
-            "如何去",
-            "如何过去",
-            "坐车",
-            "坐什么车",
-            "地铁",
-            "几号线",
-            "哪一站",
-            "哪个站",
-            "开车怎么去",
-            "打车到哪里",
-            "定位",
-            "停车",
+            # 路线类
+            "具体地址", "具体位置", "具体在哪",
+            "怎么导航", "怎么走", "路线", "导航", "坐地铁", "哪个出口", "几号出口", "停车",
+            # 细地址类
+            "多少号", "几号", "门牌号", "地址",
+            "几楼", "楼层",
+            "哪一栋", "哪栋", "哪个门", "从哪进",
+            # 现有其他触发词
+            "怎么去", "怎么过去", "如何去", "如何过去",
+            "坐车", "坐什么车", "地铁", "几号线",
+            "哪一站", "哪个站", "开车怎么去",
+            "打车到哪里", "定位",
         )
         generic_only_patterns = (
             "地址在哪",
@@ -2754,6 +2747,7 @@ class CustomerServiceAgent:
         media_plan: str,
         session_state: Dict[str, Any],
         user_state: Dict[str, Any],
+        user_name: str = "",
         force_contact_image: bool = False,
     ) -> Tuple[List[Dict[str, Any]], str]:
         return agent_media.plan_media_items(
@@ -2766,6 +2760,7 @@ class CustomerServiceAgent:
             media_plan=media_plan,
             session_state=session_state,
             user_state=user_state,
+            user_name=user_name,
             force_contact_image=force_contact_image,
         )
 
