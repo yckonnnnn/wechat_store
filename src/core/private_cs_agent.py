@@ -79,6 +79,47 @@ NEG_SHANGHAI_HINT_KEYWORDS = (
     "不是上海",
     "不去上海",
 )
+REMOTE_REGION_HINT_KEYWORDS = (
+    "不在上海",
+    "不是上海",
+    "不去上海",
+    "不在北京",
+    "不是北京",
+    "不去北京",
+    "外地",
+    "异地",
+    "哈尔滨",
+)
+REMOTE_VISIT_BLOCK_KEYWORDS = (
+    "没空去店里",
+    "不方便到店",
+    "不能到店",
+    "无法到店",
+    "不方便去店里",
+    "没办法到店",
+)
+REMOTE_SHIPPING_QUERY_KEYWORDS = (
+    "邮寄",
+    "快递",
+    "寄过去",
+    "寄吗",
+    "能不能邮寄",
+    "可以快递吗",
+    "可以邮寄吗",
+)
+REMOTE_PURCHASE_PROGRESS_KEYWORDS = (
+    "怎么买",
+    "想买",
+    "购买",
+    "怎么购买",
+    "怎么买呢",
+)
+REMOTE_URGENT_KEYWORDS = (
+    "快点回我",
+    "别绕了",
+    "直接说",
+    "快点",
+)
 
 SHIPPING_BLOCK_KEYWORDS = (
     "包邮",
@@ -101,6 +142,11 @@ USER_PHONE_SUBMITTED_REPLY = "收到啦姐姐，我稍后加您好友，具体�
 CONTACT_ALREADY_ADDED_REPLY = "好的姐姐，我这边看到了，咱们就按刚才的方式接着聊，我来给您详细介绍❤️"
 CONTACT_ALREADY_CAPTURED_REPLY = "收到啦姐姐，您之前留的方式我这边已经记下了，不用重复发，我会尽快联系您详细介绍❤️"
 WEEKEND_CLOSED_REPLY = "姐姐，我们工作日周一到周五上班，营业时间是上午9:30到下午6:00，周六周日不上班哦。"
+REMOTE_FLOW_ENTRY_REPLY = "姐姐，外地也可以远程定制，您直接看上面的图片加专属客服，我让老师一对一帮您看，合适的话再给您安排。❤️"
+REMOTE_FLOW_FOLLOWUP_REPLY = "姐姐，您加上专属客服后，把大概情况发过去，老师会先帮您看适不适合远程定制，再跟您说后面的安排。❤️"
+REMOTE_FLOW_URGENT_REPLY = "姐姐您别着急，外地这边是可以远程定制的，您直接加上专属客服，我们这边马上接着给您安排。❤️"
+REMOTE_FLOW_SHIPPING_REPLY = "姐姐，可以远程定制的，合适的话后面也可以给您寄，您先加上专属客服，我们这边先帮您看看情况。❤️"
+REMOTE_FLOW_DIRECT_ADD_REPLY = "好的姐姐，我这就加您❤️"
 MA_TEACHER_ROLE_FALLBACK = "姐姐，马老师是做短视频拍摄的，暂时不负责做头发、剪头和假发处理哦。🥰"
 MA_TEACHER_DIRECT_QUERY_FALLBACK = "姐姐，马老师是做短视频拍摄的，暂时无法安排🥰"
 IMAGE_MEDIA_REPLY_POOL = (
@@ -787,6 +833,11 @@ class CustomerServiceAgent:
             }
         intent = self._detect_intent(text)
         decision: Optional[AgentDecision] = None
+        remote_flow_decision = self._build_remote_flow_decision(
+            text=raw_text,
+            route=route,
+            session_state=session_state,
+        )
         if self.reply_mode == REPLY_MODE_LLM_DIRECT:
             decision = self._decide_llm_direct_seed_reply(
                 latest_user_text=raw_text,
@@ -855,7 +906,9 @@ class CustomerServiceAgent:
             and int(session_state.get("address_image_sent_count", 0) or 0) <= 0
         )
 
-        if decision is not None:
+        if remote_flow_decision is not None:
+            decision = remote_flow_decision
+        elif decision is not None:
             pass
         elif price_priority_decision is not None:
             decision = price_priority_decision
@@ -1241,6 +1294,8 @@ class CustomerServiceAgent:
             "如何加",
             "加你",
             "加你们",
+            "加我微信",
+            "直接加我",
             "怎么添加",
             "如何添加",
             "怎么加微信",
@@ -1249,6 +1304,96 @@ class CustomerServiceAgent:
             "如何联系",
         )
         return any(pattern in normalized for pattern in direct_patterns)
+
+    def _normalize_flow_text(self, text: str) -> str:
+        return re.sub(r"\s+", "", str(text or "")).lower()
+
+    def _looks_like_remote_region_query(self, text: str) -> bool:
+        normalized = self._normalize_flow_text(text)
+        return bool(normalized) and any(token in normalized for token in REMOTE_REGION_HINT_KEYWORDS)
+
+    def _looks_like_remote_visit_block(self, text: str) -> bool:
+        normalized = self._normalize_flow_text(text)
+        return bool(normalized) and any(token in normalized for token in REMOTE_VISIT_BLOCK_KEYWORDS)
+
+    def _looks_like_remote_shipping_query(self, text: str) -> bool:
+        normalized = self._normalize_flow_text(text)
+        return bool(normalized) and any(token in normalized for token in REMOTE_SHIPPING_QUERY_KEYWORDS)
+
+    def _looks_like_remote_purchase_progress(self, text: str) -> bool:
+        normalized = self._normalize_flow_text(text)
+        return bool(normalized) and any(token in normalized for token in REMOTE_PURCHASE_PROGRESS_KEYWORDS)
+
+    def _looks_like_remote_urgent_query(self, text: str) -> bool:
+        normalized = self._normalize_flow_text(text)
+        return bool(normalized) and any(token in normalized for token in REMOTE_URGENT_KEYWORDS)
+
+    def _looks_like_remote_contact_followup(self, text: str) -> bool:
+        normalized = self._normalize_flow_text(text)
+        if not normalized:
+            return False
+        if self._looks_like_direct_contact_request(text):
+            return True
+        return any(token in normalized for token in ("微信", "电话", "留个", "加我"))
+
+    def _is_remote_flow_active(self, session_state: Optional[Dict[str, Any]] = None) -> bool:
+        return bool((session_state or {}).get("remote_flow_active", False))
+
+    def _is_remote_flow_first_contact(self, session_state: Optional[Dict[str, Any]] = None) -> bool:
+        state = dict(session_state or {})
+        return not bool(state.get("remote_contact_image_sent", False) or int(state.get("contact_image_sent_count", 0) or 0) > 0)
+
+    def _build_remote_flow_decision(
+        self,
+        text: str,
+        route: Dict[str, Any],
+        session_state: Dict[str, Any],
+    ) -> Optional[AgentDecision]:
+        normalized = self._normalize_flow_text(text)
+        if not normalized:
+            return None
+
+        route_reason = str(route.get("reason", "") or "unknown")
+        remote_active = self._is_remote_flow_active(session_state)
+        explicit_remote = (
+            route_reason in {"out_of_coverage", "not_in_shanghai_remote"}
+            or self._looks_like_remote_region_query(text)
+            or self._looks_like_remote_visit_block(text)
+            or self._looks_like_remote_shipping_query(text)
+        )
+        remote_followup = remote_active and (
+            self._looks_like_remote_shipping_query(text)
+            or self._looks_like_remote_purchase_progress(text)
+            or self._looks_like_remote_urgent_query(text)
+            or self._looks_like_remote_contact_followup(text)
+        )
+        if not explicit_remote and not remote_followup:
+            return None
+
+        first_contact = self._is_remote_flow_first_contact(session_state)
+        if self._looks_like_remote_urgent_query(text):
+            reply_text = REMOTE_FLOW_URGENT_REPLY
+        elif self._looks_like_direct_contact_request(text):
+            reply_text = REMOTE_FLOW_DIRECT_ADD_REPLY
+        elif self._looks_like_remote_shipping_query(text):
+            reply_text = REMOTE_FLOW_SHIPPING_REPLY
+        elif first_contact:
+            reply_text = REMOTE_FLOW_ENTRY_REPLY
+        else:
+            reply_text = REMOTE_FLOW_FOLLOWUP_REPLY
+
+        return AgentDecision(
+            reply_text=reply_text,
+            intent="purchase",
+            route_reason="remote_flow_entry" if first_contact else "remote_flow_followup",
+            reply_goal="承接联系方式" if first_contact else "推进购买意图",
+            media_plan="contact_image" if first_contact else "none",
+            reply_source="rule",
+            rule_id="REMOTE_FLOW_ENTRY" if first_contact else "REMOTE_FLOW_FOLLOWUP",
+            rule_applied=True,
+            force_contact_image=first_contact,
+            reply_mode=self.reply_mode,
+        )
 
     def _looks_like_contact_added_confirmation(self, text: str) -> bool:
         normalized = re.sub(r"\s+", "", str(text or "")).lower()
@@ -1278,6 +1423,7 @@ class CustomerServiceAgent:
             "已经留电话了",
             "留了电话了",
             "刚才留过电话",
+            "我都留两次电话了",
             "我都留电话了",
         )
         return any(pattern in normalized for pattern in patterns)
@@ -3171,7 +3317,50 @@ class CustomerServiceAgent:
             "active_topic": active_topic,
             "previous_topics": previous_topics,
             "current_turn_action": current_turn_action,
+            **self._build_remote_flow_state_updates(
+                latest_user_text=latest_user_text,
+                decision=decision,
+                route=route,
+                session_state=session_state,
+            ),
         }
+
+    def _build_remote_flow_state_updates(
+        self,
+        latest_user_text: str,
+        decision: AgentDecision,
+        route: Dict[str, Any],
+        session_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        updates = {
+            "remote_flow_active": bool(session_state.get("remote_flow_active", False)),
+            "remote_contact_image_sent": bool(session_state.get("remote_contact_image_sent", False)),
+            "remote_flow_reason": str(session_state.get("remote_flow_reason", "") or ""),
+            "remote_contact_captured": bool(session_state.get("remote_contact_captured", False)),
+        }
+        route_reason = str(getattr(decision, "route_reason", "") or "")
+        if route_reason in {"remote_flow_entry", "remote_flow_followup", "out_of_coverage", "not_in_shanghai_remote"}:
+            updates["remote_flow_active"] = True
+            updates["remote_flow_reason"] = route_reason
+        if str(getattr(decision, "rule_id", "") or "") in {
+            "CONTACT_PHONE_SUBMITTED",
+            "CONTACT_ALREADY_ADDED",
+            "CONTACT_ALREADY_CAPTURED",
+        }:
+            updates["remote_contact_captured"] = True
+
+        normalized = self._normalize_flow_text(latest_user_text)
+        if route.get("target_store") and str(route.get("target_store") or "") != "unknown" and not (
+            self._looks_like_remote_region_query(latest_user_text)
+            or self._looks_like_remote_visit_block(latest_user_text)
+            or self._looks_like_remote_shipping_query(latest_user_text)
+        ):
+            updates["remote_flow_active"] = False
+            updates["remote_flow_reason"] = ""
+        if not updates["remote_flow_active"]:
+            updates["remote_contact_image_sent"] = False
+            updates["remote_contact_captured"] = False
+        return updates
 
     def _infer_current_turn_action(
         self,

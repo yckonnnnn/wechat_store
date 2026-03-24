@@ -193,6 +193,14 @@ def judge_post_reply_media(
     )
     intent = decision.intent if decision is not None else agent._detect_intent(normalized_text)
     is_appointment_decision = str(intent or "") == "appointment"
+    is_remote_flow_decision = str(getattr(decision, "route_reason", "") or "") in {
+        "remote_flow_entry",
+        "remote_flow_followup",
+        "out_of_coverage",
+        "not_in_shanghai_remote",
+    }
+    remote_flow_active = bool(session_state.get("remote_flow_active", False) or is_remote_flow_decision)
+    remote_contact_sent = bool(session_state.get("remote_contact_image_sent", False) or int(session_state.get("contact_image_sent_count", 0) or 0) > 0)
     closure_info = agent._build_reply_closure_info(
         reply_text=reply_text,
         base_info=dict(getattr(decision, "reply_closure_info", {}) or {}) if decision is not None else None,
@@ -209,7 +217,8 @@ def judge_post_reply_media(
         return MediaJudgeDecision(skip_reason="contact_already_captured")
 
     if (
-        not is_appointment_decision
+        (not remote_flow_active)
+        and (not is_appointment_decision)
         and closure_info.get("precise_address_hit")
         and str(closure_info.get("target_store", "") or "")
     ):
@@ -228,7 +237,8 @@ def judge_post_reply_media(
             skip_reason = reason_hint
 
     if (
-        not is_appointment_decision
+        (not remote_flow_active)
+        and (not is_appointment_decision)
         and not media_items
         and str(closure_info.get("closure_type", "") or "") in {"store_recommendation", "address_image_promise"}
     ):
@@ -262,7 +272,8 @@ def judge_post_reply_media(
         conversation_stage = str(session_state.get("conversation_stage", "") or "")
         mentions_position_image = any(token in normalized_reply for token in ("位置图", "按图", "看图", "圈圈位置"))
         if (
-            not is_appointment_decision
+            (not remote_flow_active)
+            and (not is_appointment_decision)
             and known_store
             and known_store != "unknown"
             and mentions_position_image
@@ -296,6 +307,11 @@ def judge_post_reply_media(
     if agent._looks_like_direct_contact_request(normalized_text):
         needs_contact_closure_image = True
         reasons.append("direct_contact_request")
+    if remote_flow_active and not remote_contact_sent and is_remote_flow_decision:
+        needs_contact_closure_image = True
+        reasons.append("remote_flow_first_contact")
+    if remote_flow_active and remote_contact_sent and is_remote_flow_decision:
+        needs_contact_closure_image = False
     if (
         not needs_contact_closure_image
         and int(session_state.get("contact_image_sent_count", 0) or 0) <= 0
@@ -415,6 +431,8 @@ def mark_media_sent(agent, session_id: str, user_name: str, media_item: Dict[str
         sent_count = int(session_state.get("contact_image_sent_count", 0) or 0)
         session_state["contact_image_sent_count"] = sent_count + 1
         session_state["contact_image_last_sent_at"] = now
+        if bool(session_state.get("remote_flow_active", False)):
+            session_state["remote_contact_image_sent"] = True
         sent_paths = [
             str(path).strip()
             for path in (session_state.get("contact_image_sent_paths", []) or [])

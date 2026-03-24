@@ -282,6 +282,154 @@ class FollowupRegressionTestCase(unittest.TestCase):
             self.assertEqual(decision.rule_id, "CONTACT_PHONE_SUBMITTED")
             self.assertFalse(media_decision.media_items)
 
+    def test_remote_out_of_town_first_turn_sends_only_contact_image(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = helper._build_agent(temp_dir)
+
+            decision = agent.decide("remote_first_turn", "异地用户", "我不在上海 我在哈尔滨", [])
+            media_decision = agent.judge_post_reply_media(
+                session_id="remote_first_turn",
+                user_name="异地用户",
+                latest_user_text="我不在上海 我在哈尔滨",
+                reply_text=decision.reply_text,
+                conversation_history=[],
+                decision=decision,
+            )
+
+            self.assertEqual(decision.rule_id, "REMOTE_FLOW_ENTRY")
+            self.assertIn("远程定制", decision.reply_text)
+            self.assertTrue(any(item.get("type") == "contact_image" for item in (media_decision.media_items or [])))
+            self.assertFalse(any(item.get("type") == "address_image" for item in (media_decision.media_items or [])))
+
+    def test_remote_followup_after_contact_image_uses_text_only(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = helper._build_agent(temp_dir)
+
+            session_id = "remote_followup_text_only"
+            user_name = "异地追问用户"
+            history = []
+
+            first = agent.decide(session_id, user_name, "我不在上海 我在哈尔滨", history)
+            first_media = agent.judge_post_reply_media(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text="我不在上海 我在哈尔滨",
+                reply_text=first.reply_text,
+                conversation_history=history,
+                decision=first,
+            )
+            for item in (first_media.media_items or []):
+                agent.mark_media_sent(session_id, user_name, item, True)
+            history.extend(
+                [
+                    {"role": "user", "content": "我不在上海 我在哈尔滨"},
+                    {"role": "assistant", "content": first.reply_text},
+                ]
+            )
+
+            second = agent.decide(session_id, user_name, "快点回我", history)
+            second_media = agent.judge_post_reply_media(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text="快点回我",
+                reply_text=second.reply_text,
+                conversation_history=history,
+                decision=second,
+            )
+
+            self.assertEqual(second.rule_id, "REMOTE_FLOW_FOLLOWUP")
+            self.assertIn("别着急", second.reply_text)
+            self.assertFalse(second_media.media_items)
+
+    def test_remote_shipping_followup_stays_remote_and_does_not_repeat_media(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = helper._build_agent(temp_dir)
+
+            session_id = "remote_shipping_followup"
+            user_name = "异地邮寄用户"
+            history = []
+
+            first = agent.decide(session_id, user_name, "我不在上海 我在哈尔滨", history)
+            first_media = agent.judge_post_reply_media(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text="我不在上海 我在哈尔滨",
+                reply_text=first.reply_text,
+                conversation_history=history,
+                decision=first,
+            )
+            for item in (first_media.media_items or []):
+                agent.mark_media_sent(session_id, user_name, item, True)
+            history.extend(
+                [
+                    {"role": "user", "content": "我不在上海 我在哈尔滨"},
+                    {"role": "assistant", "content": first.reply_text},
+                ]
+            )
+
+            second = agent.decide(session_id, user_name, "能不能邮寄", history)
+            second_media = agent.judge_post_reply_media(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text="能不能邮寄",
+                reply_text=second.reply_text,
+                conversation_history=history,
+                decision=second,
+            )
+
+            self.assertEqual(second.rule_id, "REMOTE_FLOW_FOLLOWUP")
+            self.assertIn("远程定制", second.reply_text)
+            self.assertIn("寄", second.reply_text)
+            self.assertFalse(second_media.media_items)
+
+    def test_remote_flow_contact_request_after_image_does_not_repeat_media(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = helper._build_agent(temp_dir)
+
+            session_id = "remote_contact_request_after_image"
+            user_name = "异地联系用户"
+            history = []
+
+            first = agent.decide(session_id, user_name, "我不在上海 我在哈尔滨", history)
+            first_media = agent.judge_post_reply_media(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text="我不在上海 我在哈尔滨",
+                reply_text=first.reply_text,
+                conversation_history=history,
+                decision=first,
+            )
+            for item in (first_media.media_items or []):
+                agent.mark_media_sent(session_id, user_name, item, True)
+            history.extend(
+                [
+                    {"role": "user", "content": "我不在上海 我在哈尔滨"},
+                    {"role": "assistant", "content": first.reply_text},
+                ]
+            )
+
+            second = agent.decide(session_id, user_name, "那你直接加我微信吧", history)
+            second_media = agent.judge_post_reply_media(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text="那你直接加我微信吧",
+                reply_text=second.reply_text,
+                conversation_history=history,
+                decision=second,
+            )
+
+            self.assertEqual(second.rule_id, "REMOTE_FLOW_FOLLOWUP")
+            self.assertIn("专属客服", second.reply_text)
+            self.assertFalse(second_media.media_items)
+
 
 if __name__ == "__main__":
     unittest.main()
