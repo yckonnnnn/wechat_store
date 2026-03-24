@@ -271,6 +271,48 @@ class DummyBrowserStaleFollowup(QObject):
         callback(True, {"ok": True})
 
 
+class DummyBrowserNoUnreadButCurrentChat(QObject):
+    page_loaded = Signal(bool)
+    url_changed = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.grab_calls = 0
+
+    def find_and_click_first_unread(self, callback):
+        callback(True, {"found": False, "clicked": False})
+
+    def find_and_click_unread_by_usernames(self, user_names, callback):
+        del user_names
+        callback(True, {"found": False, "clicked": False})
+
+    def grab_chat_data(self, callback):
+        self.grab_calls += 1
+        callback(
+            True,
+            {
+                "user_name": "当前会话用户",
+                "chat_session_key": "",
+                "chat_session_fingerprint": "fp_current_chat_probe",
+                "messages": [
+                    {"text": "姐姐您好", "is_user": False},
+                    {"text": "你们营业时间是？", "is_user": True},
+                ],
+            },
+        )
+
+    def send_message(self, text, callback):
+        del text
+        callback(True, {"ok": True})
+
+    def send_image(self, media_path, callback):
+        del media_path
+        callback(True, {"ok": True})
+
+    def send_video_from_material_library(self, callback):
+        callback(True, {"ok": True})
+
+
 class DummyBrowserFlowRetry(QObject):
     page_loaded = Signal(bool)
     url_changed = Signal(str)
@@ -1826,6 +1868,32 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
 
             self.assertIn(3000, scheduled)
 
+    def test_no_unread_probes_current_chat_and_processes_new_message(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserNoUnreadButCurrentChat()
+            sessions = SessionManager()
+            agent = DummyAgent(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            captured = []
+            stale_called = []
+
+            def fake_on_chat_data(success, result, auto_reply):
+                captured.append((success, auto_reply, result))
+                processor._reset_cycle()
+
+            processor._on_chat_data = fake_on_chat_data
+            processor._check_stale_replied_sessions = lambda: stale_called.append(True)
+            processor._check_unread_and_enter()
+
+            self.assertEqual(browser.grab_calls, 1)
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0][0], True)
+            self.assertEqual(captured[0][1], True)
+            self.assertFalse(stale_called)
+
     def test_stale_followup_candidate_ignores_memory_flag_and_uses_log_only(self):
         with tempfile.TemporaryDirectory() as td:
             memory_store = MemoryStore(Path(td) / "memory.json")
@@ -1907,6 +1975,122 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
 
             self.assertIsNone(candidate)
             self.assertIn("日志中已存在发送记录", reason)
+
+    def test_stale_followup_uses_one_minute_threshold_and_new_text(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserStaleFollowup("超时用户")
+            sessions = SessionManager()
+            agent = DummyAgent(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            user_hash = processor._build_user_hash("超时用户", "user_timeout")
+            log_path = processor.conversation_logger._session_file("user_timeout", user_name="超时用户")
+            record = {
+                "timestamp": (datetime.now() - timedelta(seconds=90)).isoformat(),
+                "session_id": "user_timeout",
+                "user_id_hash": user_hash,
+                "event_type": "assistant_reply",
+                "reply_source": "rule",
+                "rule_id": "TEST",
+                "model_name": "",
+                "payload": {"text": "上一轮回复", "user_name": "超时用户"},
+            }
+            log_path.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+
+            candidate, reason = processor._find_stale_followup_candidate()
+
+            self.assertIsNotNone(candidate)
+            self.assertEqual(reason, "")
+            self.assertEqual(processor._STALE_FOLLOWUP_AFTER_SECONDS, 60)
+            self.assertEqual(
+                processor._STALE_FOLLOWUP_TEXT,
+                "姐姐，记得请添加我好友哦，我会发详细定位还有乘车路线以及预约/价格方面事项给到您~❤️",
+            )
+
+    def test_stale_followup_sends_text_then_contact_image(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent = build_real_agent(temp_dir, contact_image_files=["contact.jpg"])
+            browser = DummyBrowserFirstTurnSequence()
+            sessions = SessionManager()
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(temp_dir / "conversations")
+            original_single_shot = QTimer.singleShot
+
+            def fake_single_shot(delay_ms, callback):
+                del delay_ms
+                callback()
+
+            QTimer.singleShot = staticmethod(fake_single_shot)
+            try:
+                processor._send_stale_followup_message(
+                    session_id="stale_followup_media",
+                    user_name="超时用户",
+                    user_hash=processor._build_user_hash("超时用户", "stale_followup_media"),
+                )
+            finally:
+                QTimer.singleShot = original_single_shot
+
+            self.assertEqual(browser.sequence, ["text", "image"])
+
+    def test_stale_followup_waits_before_contact_image(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent = build_real_agent(temp_dir, contact_image_files=["contact.jpg"])
+            browser = DummyBrowserFirstTurnSequence()
+            sessions = SessionManager()
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(temp_dir / "conversations")
+
+            scheduled = []
+            original_single_shot = QTimer.singleShot
+
+            def fake_single_shot(delay_ms, callback):
+                scheduled.append(delay_ms)
+                callback()
+
+            QTimer.singleShot = staticmethod(fake_single_shot)
+            try:
+                processor._send_stale_followup_message(
+                    session_id="stale_followup_media_delay",
+                    user_name="超时用户",
+                    user_hash=processor._build_user_hash("超时用户", "stale_followup_media_delay"),
+                )
+            finally:
+                QTimer.singleShot = original_single_shot
+
+            self.assertIn(processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS, scheduled)
+
+    def test_stale_followup_not_found_enters_retry_cooldown(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserStaleFollowup("别的用户")
+            sessions = SessionManager()
+            agent = DummyAgent(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            user_hash = processor._build_user_hash("超时用户", "user_timeout")
+            log_path = processor.conversation_logger._session_file("user_timeout", user_name="超时用户")
+            record = {
+                "timestamp": (datetime.now() - timedelta(seconds=90)).isoformat(),
+                "session_id": "user_timeout",
+                "user_id_hash": user_hash,
+                "event_type": "assistant_reply",
+                "reply_source": "rule",
+                "rule_id": "TEST",
+                "model_name": "",
+                "payload": {"text": "上一轮回复", "user_name": "超时用户"},
+            }
+            log_path.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+
+            processor._check_stale_replied_sessions()
+            candidate, _ = processor._find_stale_followup_candidate()
+
+            self.assertIsNone(candidate)
+            self.assertIn(user_hash, processor._stale_followup_skip_until)
 
 
 if __name__ == "__main__":

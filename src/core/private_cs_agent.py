@@ -605,7 +605,7 @@ class CustomerServiceAgent:
         self.use_knowledge_first = True
         self.knowledge_threshold = 0.6
         self.memory_ttl_days = 30
-        self.first_reply_video_enabled = False
+        self.first_reply_video_enabled = True
         self.reply_mode = REPLY_MODE_LEGACY
 
         self._address_index: Dict[str, List[str]] = {
@@ -1033,7 +1033,7 @@ class CustomerServiceAgent:
         decision.purchase_both_first_hint_sent = bool(
             session_state.get("purchase_both_first_hint_sent", False)
         )
-        decision.is_first_turn_global = False if self.reply_mode == REPLY_MODE_LLM_DIRECT else bool(is_first_turn_global)
+        decision.is_first_turn_global = bool(is_first_turn_global)
         both_images_sent = self._has_both_images_sent(session_state)
         decision.both_images_sent_state = both_images_sent
         decision.video_trigger_user_count = int(session_state.get("session_user_message_count_after_contact", 0) or 0)
@@ -1056,19 +1056,13 @@ class CustomerServiceAgent:
         decision.media_items = media_items
         decision.media_skip_reason = media_skip_reason
         decision.first_turn_media_guard_applied = False
-        if self.reply_mode != REPLY_MODE_LLM_DIRECT:
-            self._populate_first_turn_media_plan(
-                session_id=session_id,
-                user_name=user_name,
-                decision=decision,
-            )
-            if not bool(getattr(self, "first_reply_video_enabled", False)):
-                decision.first_turn_video_items = []
-        else:
-            decision.first_turn_image_items = []
+        self._populate_first_turn_media_plan(
+            session_id=session_id,
+            user_name=user_name,
+            decision=decision,
+        )
+        if not bool(getattr(self, "first_reply_video_enabled", False)):
             decision.first_turn_video_items = []
-            decision.first_turn_text_required = False
-            decision.first_turn_retry_policy = {}
         if not decision.media_items:
             decision.media_plan = "none"
 

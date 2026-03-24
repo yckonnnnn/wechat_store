@@ -58,7 +58,7 @@ class AgentStatusTab(QWidget):
         row.addWidget(self.use_kb_checkbox)
 
         self.first_reply_video_checkbox = QCheckBox("首轮回复后直接触发视频")
-        self.first_reply_video_checkbox.setChecked(False)
+        self.first_reply_video_checkbox.setChecked(True)
         row.addWidget(self.first_reply_video_checkbox)
 
         row.addWidget(QLabel("知识库阈值"))

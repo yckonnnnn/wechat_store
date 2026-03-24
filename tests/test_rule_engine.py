@@ -1215,6 +1215,31 @@ class RuleEngineTestCase(unittest.TestCase):
             self.assertEqual(len(d.first_turn_video_items), 1)
             self.assertEqual(d.first_turn_video_items[0].get("type"), "delayed_video")
 
+    def test_first_reply_video_is_enabled_by_default(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = self._build_agent(temp_dir)
+
+            d = agent.decide("chat_first_reply_default_on", "默认首轮视频用户", "我在门头沟怎么买", [])
+
+            self.assertTrue(agent.first_reply_video_enabled)
+            self.assertTrue(d.is_first_turn_global)
+            self.assertEqual(len(d.first_turn_video_items), 1)
+            self.assertEqual(d.first_turn_video_items[0].get("type"), "delayed_video")
+
+    def test_first_reply_video_still_attaches_in_llm_direct_mode(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = self._build_agent(temp_dir)
+            agent.reply_mode = "llm_direct"
+
+            d = agent.decide("chat_first_reply_llm_direct_on", "默认首轮视频用户", "我在门头沟怎么买", [])
+
+            self.assertTrue(agent.first_reply_video_enabled)
+            self.assertTrue(d.is_first_turn_global)
+            self.assertEqual(len(d.first_turn_video_items), 1)
+            self.assertEqual(d.first_turn_video_items[0].get("type"), "delayed_video")
+
     def test_first_turn_global_prepares_address_image_and_video(self):
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)

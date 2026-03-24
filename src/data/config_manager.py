@@ -26,7 +26,7 @@ class ConfigManager(QObject):
             "updated_at": "",
             "current_model": "DeepSeek",
             "agent": {
-                "first_reply_video_enabled": False,
+                "first_reply_video_enabled": True,
                 "reply_mode": "llm_direct",
             },
             "models": {

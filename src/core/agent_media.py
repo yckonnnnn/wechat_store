@@ -1109,12 +1109,6 @@ def populate_first_turn_media_plan(
     decision: AgentDecision,
 ) -> None:
     del user_name
-    if str(getattr(agent, "reply_mode", "") or "") == "llm_direct":
-        decision.first_turn_image_items = []
-        decision.first_turn_video_items = []
-        decision.first_turn_text_required = False
-        decision.first_turn_retry_policy = {}
-        return
     decision.first_turn_image_items = []
     decision.first_turn_video_items = []
     decision.first_turn_text_required = bool(decision.is_first_turn_global)

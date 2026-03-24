@@ -27,9 +27,11 @@ class MessageProcessor(QObject):
     _FIRST_TURN_VIDEO_CONTINUE_DELAY_MS = 3000
     _MEDIA_SEND_AFTER_TEXT_DELAY_MS = 900
     _VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 1200
-    _STALE_FOLLOWUP_AFTER_SECONDS = 120
+    _CURRENT_CHAT_PROBE_AFTER_NO_UNREAD = True
+    _STALE_FOLLOWUP_AFTER_SECONDS = 60
     _STALE_FOLLOWUP_GRAB_DELAY_MS = 800
-    _STALE_FOLLOWUP_TEXT = "姐姐，请添加我好友，我会发详细定位还有乘车路线给您～♥️"
+    _STALE_FOLLOWUP_RETRY_COOLDOWN_SECONDS = 300
+    _STALE_FOLLOWUP_TEXT = "姐姐，记得请添加我好友哦，我会发详细定位还有乘车路线以及预约/价格方面事项给到您~❤️"
     _FIRST_TURN_AUTO_REPLY_TEXT = "因咨询较多，我是智能助手小艾，请添加真人客服一对一详细为您解答！"
     _FIRST_TURN_VIDEO_NOTICE_TEXT = _FIRST_TURN_AUTO_REPLY_TEXT
 
@@ -65,6 +67,7 @@ class MessageProcessor(QObject):
         self._pending_unread_hint: Optional[Dict[str, str]] = None
         self._pending_stale_followup: Optional[Dict[str, str]] = None
         self._last_stale_followup_status = ""
+        self._stale_followup_skip_until: Dict[str, datetime] = {}
         self._active_session_context: Optional[Dict[str, str]] = None
 
         self._poll_timer = QTimer(self)
@@ -307,9 +310,41 @@ class MessageProcessor(QObject):
                 QTimer.singleShot(delay_ms, self._grab_and_reply_active_chat)
                 return
 
-            self._check_stale_replied_sessions()
+            self._check_current_chat_after_no_unread()
 
         self.browser.find_and_click_first_unread(on_result)
+
+    def _check_current_chat_after_no_unread(self):
+        if not bool(getattr(self, "_CURRENT_CHAT_PROBE_AFTER_NO_UNREAD", True)):
+            self._check_stale_replied_sessions()
+            return
+
+        def on_result(success, result):
+            if not success:
+                self._check_stale_replied_sessions()
+                return
+
+            data = self._parse_js_payload(result)
+            messages = list(data.get("messages", []) or [])
+            user_name = (data.get("user_name") or "").strip()
+            if not messages or not user_name:
+                self._check_stale_replied_sessions()
+                return
+
+            latest_user_message = self._latest_user_text(messages)
+            if not latest_user_message:
+                self._check_stale_replied_sessions()
+                return
+
+            marker = self._build_message_marker(user_name, latest_user_message, messages)
+            if self._is_duplicate_marker(marker, latest_user_message):
+                self._check_stale_replied_sessions()
+                return
+
+            self._emit_log(f"🔎 当前会话无红点但发现新消息，直接处理: {user_name}")
+            self._on_chat_data(True, result, auto_reply=True)
+
+        self.browser.grab_chat_data(on_result)
 
     def _grab_and_reply_active_chat(self):
         if not self._running:
@@ -325,11 +360,11 @@ class MessageProcessor(QObject):
     def _check_stale_replied_sessions(self):
         candidate, reason = self._find_stale_followup_candidate()
         if not candidate:
-            self._emit_stale_followup_status(reason or "当前没有可触发的2分钟结尾话术候选")
+            self._emit_stale_followup_status(reason or "当前没有可触发的1分钟结尾话术候选")
             self._reset_cycle()
             return
 
-        self._emit_stale_followup_status(f"发现2分钟结尾话术候选: {str(candidate.get('user_name', '') or '').strip()}")
+        self._emit_stale_followup_status(f"发现1分钟结尾话术候选: {str(candidate.get('user_name', '') or '').strip()}")
         user_name = str(candidate.get("user_name", "") or "").strip()
         if not user_name:
             self._reset_cycle()
@@ -337,19 +372,22 @@ class MessageProcessor(QObject):
 
         find_chat = getattr(self.browser, "find_and_click_chat_by_username", None)
         if not callable(find_chat):
-            self._emit_log("⚠️ 浏览器不支持按用户名切换会话，跳过2分钟结尾话术")
+            self._emit_log("⚠️ 浏览器不支持按用户名切换会话，跳过1分钟结尾话术")
             self._reset_cycle()
             return
 
         def on_result(success, result):
             if not success:
-                self._emit_log(f"⚠️ 2分钟结尾话术切换会话失败: {user_name}")
+                self._emit_log(f"⚠️ 1分钟结尾话术切换会话失败: {user_name}")
                 self._reset_cycle()
                 return
 
             payload = self._parse_js_payload(result)
             if not payload.get("found") or not payload.get("clicked"):
                 self._emit_log(f"⚠️ 未定位到超时会话: {user_name}")
+                self._stale_followup_skip_until[str(candidate.get("user_hash", "") or user_name)] = (
+                    datetime.now() + timedelta(seconds=int(getattr(self, "_STALE_FOLLOWUP_RETRY_COOLDOWN_SECONDS", 300) or 300))
+                )
                 self._reset_cycle()
                 return
 
@@ -389,7 +427,7 @@ class MessageProcessor(QObject):
 
         latest_user_message = self._latest_user_text(messages)
         if latest_user_message:
-            self._emit_log(f"⏸️ 用户 {user_name} 已有新消息，取消2分钟结尾话术")
+            self._emit_log(f"⏸️ 用户 {user_name} 已有新消息，取消1分钟结尾话术")
             self._pending_stale_followup = None
             self._reset_cycle()
             return
@@ -415,45 +453,90 @@ class MessageProcessor(QObject):
         def on_sent(success, result):
             del result
             if not success:
-                self._emit_log(f"❌ 2分钟结尾话术发送失败: {user_name}")
+                self._emit_log(f"❌ 1分钟结尾话术发送失败: {user_name}")
                 self._reset_cycle()
                 return
 
+            media_summary = {
+                "sent_types": [],
+                "failed_types": [],
+                "sent_details": [],
+            }
             self.sessions.get_or_create_session(session_id=session_id, user_name=user_name)
             self.sessions.add_message(session_id, reply_text, is_user=False, user_name=user_name)
             self.sessions.record_reply(session_id)
             self.reply_sent.emit(session_id, reply_text)
-            self._append_training_event(
-                session_id=session_id,
-                user_id_hash=user_hash,
-                event_type="stale_followup_sent",
-                user_name=user_name,
-                reply_source="stale_followup",
-                rule_id="STALE_FOLLOWUP",
-                payload={"text": reply_text, "user_name": user_name},
-            )
-            self._append_training_event(
-                session_id=session_id,
-                user_id_hash=user_hash,
-                event_type="assistant_reply",
-                user_name=user_name,
-                reply_source="stale_followup",
-                rule_id="STALE_FOLLOWUP",
-                payload={
-                    "text": reply_text,
-                    "intent": "stale_followup",
-                    "route_reason": "stale_followup",
-                    "round_media_sent": False,
-                    "round_media_sent_types": [],
-                    "round_media_failed_types": [],
-                    "round_media_sent_details": [],
-                },
-            )
-            self._emit_log(f"✅ 已发送2分钟结尾话术: {user_name}")
-            self._pending_stale_followup = None
-            self._reset_cycle()
+            self._emit_log(f"✅ 文本回复已发送: {reply_text[:80]}")
+
+            def finish_stale_followup() -> None:
+                self._append_training_event(
+                    session_id=session_id,
+                    user_id_hash=user_hash,
+                    event_type="stale_followup_sent",
+                    user_name=user_name,
+                    reply_source="stale_followup",
+                    rule_id="STALE_FOLLOWUP",
+                    payload={"text": reply_text, "user_name": user_name},
+                )
+                self._append_training_event(
+                    session_id=session_id,
+                    user_id_hash=user_hash,
+                    event_type="assistant_reply",
+                    user_name=user_name,
+                    reply_source="stale_followup",
+                    rule_id="STALE_FOLLOWUP",
+                    payload={
+                        "text": reply_text,
+                        "intent": "stale_followup",
+                        "route_reason": "stale_followup",
+                        "round_media_sent": bool(media_summary.get("sent_types")),
+                        "round_media_sent_types": list(media_summary.get("sent_types", [])),
+                        "round_media_failed_types": list(media_summary.get("failed_types", [])),
+                        "round_media_sent_details": list(media_summary.get("sent_details", [])),
+                    },
+                )
+                self._emit_log(f"✅ 已发送1分钟结尾话术: {user_name}")
+                self._pending_stale_followup = None
+                self._reset_cycle()
+
+            media_queue = self._build_stale_followup_media_queue(session_id=session_id, user_name=user_name)
+            if media_queue:
+                delay_ms = int(getattr(self, "_MEDIA_SEND_AFTER_TEXT_DELAY_MS", 900) or 0)
+                send_media = lambda: self._send_media_queue(
+                    session_id=session_id,
+                    user_name=user_name,
+                    media_queue=media_queue,
+                    media_summary=media_summary,
+                    on_complete=finish_stale_followup,
+                    defer_retry_media_types={"contact_image"},
+                )
+                if delay_ms <= 0:
+                    send_media()
+                    return
+                QTimer.singleShot(delay_ms, send_media)
+                return
+
+            finish_stale_followup()
 
         self.browser.send_message(reply_text, on_sent)
+
+    def _build_stale_followup_media_queue(self, session_id: str, user_name: str) -> List[Dict[str, Any]]:
+        del user_name
+        pick_contact_image = getattr(self.agent, "_pick_contact_image_for_session", None)
+        if not callable(pick_contact_image):
+            return []
+        session_state = dict(self.agent.memory_store.get_session_state(session_id) or {})
+        media_path = str(pick_contact_image(session_state) or "").strip()
+        if not media_path:
+            return []
+        return [
+            {
+                "type": "contact_image",
+                "path": media_path,
+                "trigger_source": "stale_followup",
+                "route_reason": "stale_followup_contact_image",
+            }
+        ]
 
     def _on_chat_data(self, success: bool, result: Any, auto_reply: bool):
         if not success:
@@ -1127,7 +1210,7 @@ class MessageProcessor(QObject):
     def _find_stale_followup_candidate(self) -> tuple[Optional[Dict[str, str]], str]:
         root_dir = getattr(self.conversation_logger, "root_dir", None)
         if not isinstance(root_dir, Path) or not root_dir.exists():
-            return None, "暂无会话日志，跳过2分钟结尾话术"
+            return None, "暂无会话日志，跳过1分钟结尾话术"
 
         now = datetime.now()
         by_user: Dict[str, Dict[str, Any]] = {}
@@ -1194,6 +1277,10 @@ class MessageProcessor(QObject):
         waiting_for_reply_end: List[str] = []
         for summary in by_user.values():
             user_name = str(summary.get("user_name", "") or "").strip() or "未知用户"
+            cooldown_key = str(summary.get("user_hash", "") or user_name)
+            skip_until = self._stale_followup_skip_until.get(cooldown_key)
+            if isinstance(skip_until, datetime) and now < skip_until:
+                continue
             if bool(summary.get("has_stale_followup", False)):
                 blocked_by_log.append(user_name)
                 continue
@@ -1203,7 +1290,7 @@ class MessageProcessor(QObject):
             last_assistant_at = summary.get("last_assistant_at")
             if last_assistant_at is None:
                 continue
-            timeout_seconds = int(getattr(self, "_STALE_FOLLOWUP_AFTER_SECONDS", 120) or 120)
+            timeout_seconds = int(getattr(self, "_STALE_FOLLOWUP_AFTER_SECONDS", 60) or 60)
             if now - last_assistant_at < timedelta(seconds=timeout_seconds):
                 waiting_for_timeout.append(user_name)
                 continue
@@ -1213,12 +1300,12 @@ class MessageProcessor(QObject):
 
         if not eligible:
             if blocked_by_log:
-                return None, f"跳过2分钟结尾话术：日志中已存在发送记录（{blocked_by_log[0]}）"
+                return None, f"跳过1分钟结尾话术：日志中已存在发送记录（{blocked_by_log[0]}）"
             if waiting_for_timeout:
-                return None, f"跳过2分钟结尾话术：距离上次回复不足2分钟（{waiting_for_timeout[0]}）"
+                return None, f"跳过1分钟结尾话术：距离上次回复不足1分钟（{waiting_for_timeout[0]}）"
             if waiting_for_reply_end:
-                return None, f"跳过2分钟结尾话术：最后一条不是客服回复（{waiting_for_reply_end[0]}）"
-            return None, "当前没有可触发的2分钟结尾话术候选"
+                return None, f"跳过1分钟结尾话术：最后一条不是客服回复（{waiting_for_reply_end[0]}）"
+            return None, "当前没有可触发的1分钟结尾话术候选"
 
         eligible.sort(key=lambda item: item.get("last_assistant_at") or now)
         chosen = eligible[0]

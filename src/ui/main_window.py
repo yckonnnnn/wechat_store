@@ -132,7 +132,7 @@ class MainWindow(QWidget):
         self.agent.set_options(
             use_knowledge_first=self.agent.use_knowledge_first,
             knowledge_threshold=self.agent.knowledge_threshold,
-            first_reply_video_enabled=bool(self.config_manager.get("agent.first_reply_video_enabled", False)),
+            first_reply_video_enabled=bool(self.config_manager.get("agent.first_reply_video_enabled", True)),
             reply_mode=str(self.config_manager.get("agent.reply_mode", "llm_direct") or "llm_direct"),
         )
         self.message_processor = None
