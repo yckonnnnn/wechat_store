@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 import test_rule_engine as rule_engine_tests
+from src.core.agent_types import AgentDecision
 
 
 class FollowupRegressionTestCase(unittest.TestCase):
@@ -310,6 +311,42 @@ class FollowupRegressionTestCase(unittest.TestCase):
             self.assertEqual(second.rule_id, "ADDR_TRAVEL_SCHEDULE_FOLLOWUP")
             self.assertIn("过来前跟我说一声", second.reply_text)
             self.assertNotIn("看图片就可以哦", second.reply_text)
+
+    def test_llm_reply_store_mention_can_drive_address_image_without_user_side_store_mapping(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = helper._build_agent(
+                temp_dir,
+                address_image_files=["静安地址.jpg"],
+                store_targets={"静安地址.jpg": "sh_jingan"},
+            )
+            agent.set_options(use_knowledge_first=True, knowledge_threshold=0.6, reply_mode="llm_direct")
+
+            session_id = "baoshan_llm_reply_drives_media"
+            user_name = "宝山用户"
+            decision = AgentDecision(
+                reply_text="姐姐，上海静安门店位置直接看图片就可以哦。🌹",
+                intent="general",
+                route_reason="sh_district_map:宝山",
+                reply_goal="解答",
+                media_plan="none",
+                reply_source="llm",
+                rule_id="LLM_FOLLOW_UP",
+            )
+            media_decision = agent.judge_post_reply_media(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text="宝山有吗",
+                reply_text=decision.reply_text,
+                conversation_history=[
+                    {"role": "user", "content": "价格是多少"},
+                    {"role": "assistant", "content": "姐姐，我们是私人定制的假发，根据不同的材质，正常3000、4000、5000、6000都有。🌹"},
+                ],
+                decision=decision,
+            )
+
+            self.assertTrue(any(item.get("target_store") == "sh_jingan" for item in (media_decision.media_items or [])))
 
     def test_weekday_appointment_followup_does_not_turn_into_service_hours(self):
         helper = rule_engine_tests.RuleEngineTestCase()
@@ -659,6 +696,15 @@ class FollowupRegressionTestCase(unittest.TestCase):
             )
             for item in (first_media.media_items or []):
                 agent.mark_media_sent(session_id, user_name, item, True)
+                helper._append_media_success_log(
+                    conversations_dir=agent.conversation_log_dir,
+                    session_id=session_id,
+                    media_type=str(item.get("type", "") or ""),
+                    media_path=str(item.get("path", "") or ""),
+                    ts="2026-03-25T10:00:00",
+                    user_id_hash=agent._hash_user(user_name),
+                    trigger_source=str(item.get("route_reason", "") or ""),
+                )
             history.extend(
                 [
                     {"role": "user", "content": "我不在上海 我在哈尔滨"},
@@ -679,6 +725,45 @@ class FollowupRegressionTestCase(unittest.TestCase):
             self.assertEqual(second.rule_id, "REMOTE_FLOW_FOLLOWUP")
             self.assertIn("别着急", second.reply_text)
             self.assertFalse(second_media.media_items)
+
+    def test_remote_followup_without_visible_contact_image_still_sends_contact_image(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = helper._build_agent(temp_dir)
+
+            session_id = "remote_followup_needs_visible_contact"
+            user_name = "外地补图用户"
+            user_hash = agent._hash_user(user_name)
+            session_state = agent.memory_store.get_session_state(session_id, user_hash=user_hash)
+            session_state.update(
+                {
+                    "remote_flow_active": True,
+                    "remote_contact_image_sent": True,
+                    "contact_image_sent_count": 2,
+                    "contact_image_sent_paths": ["contact.jpg"],
+                }
+            )
+            agent.memory_store.update_session_state(session_id, session_state, user_hash=user_hash)
+            agent.memory_store.save()
+
+            history = [
+                {"role": "user", "content": "我人在三亚"},
+                {"role": "assistant", "content": "姐姐，外地也可以远程定制。❤️"},
+            ]
+
+            second = agent.decide(session_id, user_name, "不在上海怎么买", history)
+            second_media = agent.judge_post_reply_media(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text="不在上海怎么买",
+                reply_text=second.reply_text,
+                conversation_history=history,
+                decision=second,
+            )
+
+            self.assertIn(second.rule_id, {"REMOTE_FLOW_ENTRY", "REMOTE_FLOW_FOLLOWUP"})
+            self.assertTrue(any(item.get("type") == "contact_image" for item in (second_media.media_items or [])))
 
     def test_remote_shipping_followup_stays_remote_and_does_not_repeat_media(self):
         helper = rule_engine_tests.RuleEngineTestCase()
@@ -701,6 +786,15 @@ class FollowupRegressionTestCase(unittest.TestCase):
             )
             for item in (first_media.media_items or []):
                 agent.mark_media_sent(session_id, user_name, item, True)
+                helper._append_media_success_log(
+                    conversations_dir=agent.conversation_log_dir,
+                    session_id=session_id,
+                    media_type=str(item.get("type", "") or ""),
+                    media_path=str(item.get("path", "") or ""),
+                    ts="2026-03-25T10:00:00",
+                    user_id_hash=agent._hash_user(user_name),
+                    trigger_source=str(item.get("route_reason", "") or ""),
+                )
             history.extend(
                 [
                     {"role": "user", "content": "我不在上海 我在哈尔滨"},
@@ -744,6 +838,15 @@ class FollowupRegressionTestCase(unittest.TestCase):
             )
             for item in (first_media.media_items or []):
                 agent.mark_media_sent(session_id, user_name, item, True)
+                helper._append_media_success_log(
+                    conversations_dir=agent.conversation_log_dir,
+                    session_id=session_id,
+                    media_type=str(item.get("type", "") or ""),
+                    media_path=str(item.get("path", "") or ""),
+                    ts="2026-03-25T10:00:00",
+                    user_id_hash=agent._hash_user(user_name),
+                    trigger_source=str(item.get("route_reason", "") or ""),
+                )
             history.extend(
                 [
                     {"role": "user", "content": "我不在上海 我在哈尔滨"},

@@ -183,6 +183,7 @@ def judge_post_reply_media(
 ) -> MediaJudgeDecision:
     user_hash = agent._hash_user(user_name or session_id)
     session_state = agent.memory_store.get_session_state(session_id, user_hash=user_hash)
+    session_media_summary = summarize_session_media_from_logs(agent, session_id=session_id)
     normalized_text = agent.knowledge_service.normalize_user_text(latest_user_text).strip()
     history = conversation_history or []
     route = agent.knowledge_service.resolve_store_recommendation(normalized_text)
@@ -200,11 +201,14 @@ def judge_post_reply_media(
         "not_in_shanghai_remote",
     }
     remote_flow_active = bool(session_state.get("remote_flow_active", False) or is_remote_flow_decision)
-    remote_contact_sent = bool(session_state.get("remote_contact_image_sent", False) or int(session_state.get("contact_image_sent_count", 0) or 0) > 0)
+    remote_contact_sent_in_session = bool(
+        int(session_media_summary.get("contact_image_sent_count", 0) or 0) > 0
+    )
     closure_info = agent._build_reply_closure_info(
         reply_text=reply_text,
         base_info=dict(getattr(decision, "reply_closure_info", {}) or {}) if decision is not None else None,
     )
+    reply_store = str(closure_info.get("target_store", "") or agent._infer_store_from_context_text(reply_text) or "").strip()
     media_items: List[Dict[str, Any]] = []
     reasons: List[str] = []
     skip_reason = ""
@@ -256,7 +260,7 @@ def judge_post_reply_media(
         and not media_items
         and str(closure_info.get("closure_type", "") or "") in {"store_recommendation", "address_image_promise"}
     ):
-        closure_target_store = str(closure_info.get("target_store", "") or route.get("target_store", "") or session_state.get("last_target_store", "") or "")
+        closure_target_store = str(reply_store or route.get("target_store", "") or session_state.get("last_target_store", "") or "")
         item, reason_hint = queue_address_image(
             agent,
             session_id=session_id,
@@ -281,7 +285,7 @@ def judge_post_reply_media(
 
     if not media_items and not block_unresolved_address_media:
         normalized_reply = re.sub(r"\s+", "", str(reply_text or "")).lower()
-        known_store = str(route.get("target_store", "") or session_state.get("last_target_store", "") or "")
+        known_store = str(reply_store or route.get("target_store", "") or session_state.get("last_target_store", "") or "")
         current_turn_action = str(session_state.get("current_turn_action", "") or "")
         conversation_stage = str(session_state.get("conversation_stage", "") or "")
         mentions_position_image = any(token in normalized_reply for token in ("位置图", "按图", "看图", "圈圈位置"))
@@ -324,10 +328,10 @@ def judge_post_reply_media(
     if agent._looks_like_direct_contact_request(normalized_text):
         needs_contact_closure_image = True
         reasons.append("direct_contact_request")
-    if remote_flow_active and not remote_contact_sent and is_remote_flow_decision:
+    if remote_flow_active and not remote_contact_sent_in_session and is_remote_flow_decision:
         needs_contact_closure_image = True
-        reasons.append("remote_flow_first_contact")
-    if remote_flow_active and remote_contact_sent and is_remote_flow_decision:
+        reasons.append("remote_flow_session_contact")
+    if remote_flow_active and remote_contact_sent_in_session and is_remote_flow_decision:
         needs_contact_closure_image = False
     if (
         not needs_contact_closure_image
