@@ -407,8 +407,9 @@ class RuleEngineTestCase(unittest.TestCase):
             d2 = agent.decide(session_id, user_name, "北京店具体位置", [])
             self.assertEqual(d2.rule_id, "ADDR_TEXT_AFTER_IMAGE")
             self.assertEqual(d2.reply_source, "rule")
-            self.assertEqual(d2.media_plan, "address_image")
-            self.assertTrue(d2.media_items)
+            self.assertEqual(d2.media_plan, "none")
+            self.assertFalse(d2.media_items)
+            self.assertIn("平台限制", d2.reply_text)
             self.assertNotIn("朝阳区建外SOHO东区", d2.reply_text)
 
             d3 = agent.decide(session_id, user_name, "北京店具体位置", [])
@@ -442,14 +443,59 @@ class RuleEngineTestCase(unittest.TestCase):
                 user_id_hash=user_hash,
             )
 
-            d2 = agent.decide(session_id, user_name, "多少号", [])
+            d2 = agent.decide(
+                session_id,
+                user_name,
+                "多少号",
+                [
+                    {"role": "user", "content": "北京店具体位置"},
+                    {"role": "assistant", "content": d1.reply_text},
+                ],
+            )
             self.assertEqual(d2.rule_id, "ADDR_TEXT_AFTER_IMAGE")
-            self.assertEqual(d2.media_plan, "address_image")
-            self.assertTrue(d2.media_items)
+            self.assertEqual(d2.media_plan, "none")
+            self.assertFalse(d2.media_items)
+            self.assertIn("平台限制", d2.reply_text)
             self.assertNotIn("朝阳区建外SOHO东区", d2.reply_text)
+            self.assertNotIn(d2.rule_id, {"PRICE_PRIORITY", "PRICE_PRIORITY_FALLBACK", "PRICE_PRIORITY_PRIVATE_GUIDE"})
 
-            d3 = agent.decide(session_id, user_name, "几号", [])
+            d3 = agent.decide(
+                session_id,
+                user_name,
+                "几号",
+                [
+                    {"role": "user", "content": "北京店具体位置"},
+                    {"role": "assistant", "content": d1.reply_text},
+                    {"role": "user", "content": "多少号"},
+                    {"role": "assistant", "content": d2.reply_text},
+                ],
+            )
             self.assertEqual(d3.rule_id, "ADDR_CONTACT_AFTER_TEXT")
+
+    def test_address_followup_menpaihao_does_not_fall_into_price(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = self._build_agent(temp_dir)
+            session_id = "chat_addr_menpaihao"
+            user_name = "用户门牌号价格误判"
+
+            d1 = agent.decide(session_id, user_name, "北京店具体位置", [])
+            self.assertEqual(d1.rule_id, "ADDR_STORE_RECOMMEND")
+            agent.mark_media_sent(session_id, user_name, d1.media_items[0], success=True)
+
+            d2 = agent.decide(
+                session_id,
+                user_name,
+                "门牌号多少",
+                [
+                    {"role": "user", "content": "北京店具体位置"},
+                    {"role": "assistant", "content": d1.reply_text},
+                ],
+            )
+
+            self.assertEqual(d2.rule_id, "ADDR_TEXT_AFTER_IMAGE")
+            self.assertIn("平台限制", d2.reply_text)
+            self.assertNotIn(d2.rule_id, {"PRICE_PRIORITY", "PRICE_PRIORITY_FALLBACK", "PRICE_PRIORITY_PRIVATE_GUIDE"})
 
     def test_address_query_shanghai_asks_district(self):
         with tempfile.TemporaryDirectory() as td:
@@ -550,8 +596,9 @@ class RuleEngineTestCase(unittest.TestCase):
 
             d2 = agent.decide(session_id, user_name, "南京路", [])
             self.assertEqual(d2.rule_id, "ADDR_TEXT_AFTER_IMAGE")
-            self.assertEqual(d2.media_plan, "address_image")
-            self.assertTrue(d2.media_items)
+            self.assertEqual(d2.media_plan, "none")
+            self.assertFalse(d2.media_items)
+            self.assertIn("平台限制", d2.reply_text)
             self.assertNotIn("汉口路650号亚洲大厦", d2.reply_text)
 
     def test_ambiguous_short_fragment_asks_back_instead_of_llm(self):
@@ -901,13 +948,15 @@ class RuleEngineTestCase(unittest.TestCase):
 
             d3 = agent.decide(session_id, user_name, "具体地址", [])
             self.assertEqual(d3.rule_id, "ADDR_TEXT_AFTER_IMAGE")
-            self.assertEqual(d3.media_plan, "address_image")
-            self.assertTrue(d3.media_items)
+            self.assertEqual(d3.media_plan, "none")
+            self.assertFalse(d3.media_items)
+            self.assertIn("平台限制", d3.reply_text)
             self.assertNotIn("朝阳区建外SOHO东区", d3.reply_text)
 
             d4 = agent.decide(session_id, user_name, "具体地址", [])
             self.assertEqual(d4.rule_id, "ADDR_CONTACT_AFTER_TEXT")
-            self.assertIn("您发个☎️", d4.reply_text)
+            self.assertIn("平台限制", d4.reply_text)
+            self.assertIn("留个☎️", d4.reply_text)
 
             llm.reply_text = "姐姐，北京店就在朝阳，您导航建外SOHO东区就行🌹"
             d5 = agent.decide(session_id, user_name, "具体地址", [])

@@ -150,6 +150,7 @@ def build_address_text_after_image_decision(
     if (
         intent != "address"
         and not explicit_revisit
+        and not agent._is_precise_address_followup(latest_user_text)
         and not agent.knowledge_service.is_address_query(latest_user_text)
         and not agent.knowledge_service.is_shanghai_route_alias_address_candidate(latest_user_text)
     ):
@@ -162,26 +163,28 @@ def build_address_text_after_image_decision(
         target_store = str(session_state.get("last_target_store", "") or "")
     if not target_store or target_store == "unknown":
         return None
+    explicit_store = str(agent._infer_store_from_context_text(latest_user_text) or "").strip()
+    if explicit_store and explicit_store != target_store:
+        return None
 
     sent_stores = set(session_state.get("sent_address_stores", []) or [])
     last_target_store = str(session_state.get("last_target_store", "") or "")
     has_sent_address = int(session_state.get("address_image_sent_count", 0) or 0) > 0
-    if target_store not in sent_stores and not (has_sent_address and last_target_store == target_store):
+    if target_store not in sent_stores and not (
+        not sent_stores and has_sent_address and last_target_store == target_store
+    ):
         return None
 
     text_reply_count_by_store = dict(session_state.get("address_text_reply_count_by_store", {}) or {})
     if int(text_reply_count_by_store.get(target_store, 0) or 0) >= 1:
         return None
 
-    store = agent.knowledge_service.get_store_display(target_store)
-    store_name = str(store.get("store_name", "") or "门店")
-
     return AgentDecision(
-        reply_text=agent._normalize_reply_text(f"姐姐，{store_name}位置直接看图片就可以哦"),
+        reply_text=_const(agent, "ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK", ""),
         intent="address",
         route_reason=str(route.get("reason", "unknown") or "unknown"),
         reply_goal="解答",
-        media_plan="address_image",
+        media_plan="none",
         reply_source="rule",
         rule_id="ADDR_TEXT_AFTER_IMAGE",
         rule_applied=True,
@@ -200,6 +203,7 @@ def build_address_contact_after_text_decision(
     if (
         intent != "address"
         and not explicit_revisit
+        and not agent._is_precise_address_followup(latest_user_text)
         and not agent.knowledge_service.is_address_query(latest_user_text)
         and not agent.knowledge_service.is_shanghai_route_alias_address_candidate(latest_user_text)
     ):
@@ -212,11 +216,16 @@ def build_address_contact_after_text_decision(
         target_store = str(session_state.get("last_target_store", "") or "")
     if not target_store or target_store == "unknown":
         return None
+    explicit_store = str(agent._infer_store_from_context_text(latest_user_text) or "").strip()
+    if explicit_store and explicit_store != target_store:
+        return None
 
     sent_stores = set(session_state.get("sent_address_stores", []) or [])
     last_target_store = str(session_state.get("last_target_store", "") or "")
     has_sent_address = int(session_state.get("address_image_sent_count", 0) or 0) > 0
-    if target_store not in sent_stores and not (has_sent_address and last_target_store == target_store):
+    if target_store not in sent_stores and not (
+        not sent_stores and has_sent_address and last_target_store == target_store
+    ):
         return None
 
     text_reply_count_by_store = dict(session_state.get("address_text_reply_count_by_store", {}) or {})
@@ -235,6 +244,70 @@ def build_address_contact_after_text_decision(
         media_plan="none",
         reply_source="rule",
         rule_id="ADDR_CONTACT_AFTER_TEXT",
+        rule_applied=True,
+    )
+
+
+def build_contact_followup_decision(
+    agent,
+    latest_user_text: str,
+    intent: str,
+    session_state: Dict[str, Any],
+) -> Optional[AgentDecision]:
+    if intent != "contact":
+        return None
+    if int(session_state.get("contact_image_sent_count", 0) or 0) < 1:
+        return None
+    if looks_like_phone_submission(agent, latest_user_text):
+        return None
+
+    prompt_count = int(session_state.get("contact_followup_prompt_count", 0) or 0)
+    session_state["contact_followup_prompt_count"] = prompt_count + 1
+    template_key = "contact_followup_1" if (prompt_count % 2) == 0 else "contact_followup_2"
+    return AgentDecision(
+        reply_text=agent._render_template(template_key),
+        intent="contact",
+        route_reason="contact_followup",
+        reply_goal="推进购买意图",
+        media_plan="none",
+        reply_source="rule",
+        rule_id="CONTACT_FOLLOWUP",
+        rule_applied=True,
+    )
+
+
+def build_travel_schedule_store_followup_decision(
+    agent,
+    latest_user_text: str,
+    route: Dict[str, Any],
+    session_state: Dict[str, Any],
+) -> Optional[AgentDecision]:
+    if not agent._looks_like_travel_schedule_statement(latest_user_text):
+        return None
+
+    target_store = str(route.get("target_store", "") or "").strip()
+    explicit_store = str(agent._infer_store_from_context_text(latest_user_text) or "").strip()
+    if explicit_store:
+        target_store = explicit_store
+    if not target_store or target_store == "unknown":
+        target_store = str(session_state.get("last_target_store", "") or "").strip()
+    if not target_store or target_store == "unknown":
+        return None
+
+    store = agent.knowledge_service.get_store_display(target_store)
+    store_name = agent._store_recommend_display_name(target_store, str(store.get("store_name", "") or "门店"))
+    city_name = "北京" if target_store == "beijing_chaoyang" else "上海"
+    reply_text = agent._normalize_reply_text(
+        f"姐姐，{city_name}这边是{store_name}，您过来前跟我说一声，我提前帮您安排就行"
+    )
+    return AgentDecision(
+        reply_text=reply_text,
+        intent="address",
+        route_reason="travel_schedule_store_followup",
+        reply_goal="解答",
+        media_plan="none",
+        reply_source="rule",
+        rule_id="ADDR_TRAVEL_SCHEDULE_FOLLOWUP",
         rule_applied=True,
     )
 
@@ -807,6 +880,9 @@ def decide_general_reply(
                 for tag in (kb_detail.get("tags", []) or [])
                 if str(tag).strip()
             }
+            if kb_intent in {"service_hours", "lifespan"} and agent._looks_like_travel_schedule_statement(latest_user_text):
+                kb_intent = ""
+                kb_tags = set()
             force_direct_kb = kb_intent == "service_hours" or "营业时间" in kb_tags
             confidence = kb_detail.get("confidence", "high")
             if confidence in ["low", "medium"] and not force_direct_kb:

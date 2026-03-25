@@ -606,6 +606,8 @@ def queue_address_image(
     del session_id
     if target_store == "unknown":
         return None, "address_target_unknown"
+    if target_store in {str(x).strip() for x in (session_state.get("sent_address_stores", []) or []) if str(x).strip()}:
+        return None, "address_image_already_sent"
 
     image_path = pick_address_image(agent, target_store, session_state=session_state)
     if not image_path:
@@ -1553,7 +1555,7 @@ def pick_address_image(
     if not available and excluded:
         available = [path for path in pool if path not in sent_paths]
     if not available:
-        available = list(pool)
+        return None
     return random.choice(available)
 
 

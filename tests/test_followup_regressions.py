@@ -78,6 +78,89 @@ class FollowupRegressionTestCase(unittest.TestCase):
             self.assertTrue(any(item.get("target_store") == "sh_hongkou" for item in (media_decision.media_items or [])))
             self.assertFalse(any(item.get("target_store") == "beijing_chaoyang" for item in (media_decision.media_items or [])))
 
+    def test_same_store_second_trigger_uses_natural_reply_without_repeating_image(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, llm = helper._build_agent(
+                temp_dir,
+                address_image_files=["北京地址.jpg"],
+                store_targets={"北京地址.jpg": "beijing_chaoyang"},
+            )
+            agent.set_options(use_knowledge_first=True, knowledge_threshold=0.6, reply_mode="llm_direct")
+
+            session_id = "same_store_second_trigger"
+            user_name = "重复北京用户"
+            user_hash = agent._hash_user(user_name)
+            session_state = agent.memory_store.get_session_state(session_id, user_hash=user_hash)
+            session_state.update(
+                {
+                    "last_target_store": "beijing_chaoyang",
+                    "address_image_sent_count": 1,
+                    "sent_address_stores": ["beijing_chaoyang"],
+                    "conversation_facts": {"recommended_store": "beijing_chaoyang", "city": "beijing"},
+                }
+            )
+            agent.memory_store.update_session_state(session_id, session_state, user_hash=user_hash)
+            agent.memory_store.save()
+
+            llm.reply_text = "姐姐，您到北京前跟我说一声，我提前帮您安排就好。🌹"
+            second = agent.decide(
+                session_id,
+                user_name,
+                "我在三亚，过段时间去北京找你们",
+                [
+                    {"role": "user", "content": "我在北京"},
+                    {"role": "assistant", "content": "姐姐，推荐您去北京朝阳店，我给您发一张位置图，您直接看图片会更直观。🌹"},
+                ],
+            )
+            second_media = agent.judge_post_reply_media(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text="我在三亚，过段时间去北京找你们",
+                reply_text=second.reply_text,
+                conversation_history=[
+                    {"role": "user", "content": "我在北京"},
+                    {"role": "assistant", "content": "姐姐，推荐您去北京朝阳店，我给您发一张位置图，您直接看图片会更直观。🌹"},
+                ],
+                decision=second,
+            )
+
+            self.assertNotEqual(second.rule_id, "ADDR_STORE_RECOMMEND")
+            self.assertNotIn("推荐您去北京朝阳店", second.reply_text)
+            self.assertEqual(second_media.media_items, [])
+
+    def test_address_followup_after_image_answers_naturally_without_telling_user_to_check_picture(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = helper._build_agent(
+                temp_dir,
+                address_image_files=["北京地址.jpg"],
+                store_targets={"北京地址.jpg": "beijing_chaoyang"},
+            )
+
+            session_id = "address_followup_natural_reply"
+            user_name = "地址追问用户"
+            first = agent.decide(session_id, user_name, "北京店具体位置", [])
+            agent.mark_media_sent(session_id, user_name, first.media_items[0], success=True)
+
+            second = agent.decide(
+                session_id,
+                user_name,
+                "具体地址怎么样",
+                [
+                    {"role": "user", "content": "北京店具体位置"},
+                    {"role": "assistant", "content": first.reply_text},
+                ],
+            )
+
+            self.assertEqual(second.rule_id, "ADDR_TEXT_AFTER_IMAGE")
+            self.assertIn("平台限制", second.reply_text)
+            self.assertIn("留个☎️", second.reply_text)
+            self.assertNotIn("看图片", second.reply_text)
+            self.assertNotIn("位置直接看图片", second.reply_text)
+
     def test_empty_visible_history_clears_stale_address_and_contact_context(self):
         helper = rule_engine_tests.RuleEngineTestCase()
         with tempfile.TemporaryDirectory() as td:
@@ -188,6 +271,46 @@ class FollowupRegressionTestCase(unittest.TestCase):
             self.assertNotIn("营业时间", decision.reply_text)
             self.assertNotIn("上午9：30", decision.reply_text)
 
+    def test_travel_schedule_statement_does_not_misfire_to_lifespan(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = helper._build_agent(temp_dir)
+
+            decision = agent.decide("travel_plan_not_lifespan", "行程时长用户", "我多久去北京比较方便", [])
+
+            self.assertNotEqual(decision.rule_id, "LIFESPAN_PRIORITY")
+            self.assertNotIn("3到5年", decision.reply_text)
+
+    def test_travel_schedule_statement_in_address_context_uses_natural_store_followup(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = helper._build_agent(
+                temp_dir,
+                address_image_files=["北京地址.jpg"],
+                store_targets={"北京地址.jpg": "beijing_chaoyang"},
+            )
+
+            session_id = "travel_schedule_address_context"
+            user_name = "行程地址用户"
+            first = agent.decide(session_id, user_name, "我在北京", [])
+            agent.mark_media_sent(session_id, user_name, first.media_items[0], success=True)
+
+            second = agent.decide(
+                session_id,
+                user_name,
+                "我在三亚，过段时间去北京",
+                [
+                    {"role": "user", "content": "我在北京"},
+                    {"role": "assistant", "content": first.reply_text},
+                ],
+            )
+
+            self.assertEqual(second.rule_id, "ADDR_TRAVEL_SCHEDULE_FOLLOWUP")
+            self.assertIn("过来前跟我说一声", second.reply_text)
+            self.assertNotIn("看图片就可以哦", second.reply_text)
+
     def test_weekday_appointment_followup_does_not_turn_into_service_hours(self):
         helper = rule_engine_tests.RuleEngineTestCase()
         with tempfile.TemporaryDirectory() as td:
@@ -276,6 +399,34 @@ class FollowupRegressionTestCase(unittest.TestCase):
             self.assertEqual(second.rule_id, "CONTACT_ALREADY_CAPTURED")
             self.assertNotIn("留个☎️", second.reply_text)
             self.assertNotIn("留个", second.reply_text)
+
+    def test_contact_followup_after_contact_image_stops_reminding_user_to_check_picture(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = helper._build_agent(temp_dir)
+
+            session_id = "contact_followup_natural_reply"
+            user_name = "联系方式追问用户"
+            first = agent.decide(session_id, user_name, "怎么联系你", [])
+
+            self.assertEqual(first.rule_id, "CONTACT_SEND_IMAGE")
+            agent.mark_media_sent(session_id, user_name, first.media_items[0], success=True)
+
+            second = agent.decide(
+                session_id,
+                user_name,
+                "联系方式怎么给你",
+                [
+                    {"role": "user", "content": "怎么联系你"},
+                    {"role": "assistant", "content": first.reply_text},
+                ],
+            )
+
+            self.assertEqual(second.rule_id, "CONTACT_FOLLOWUP")
+            self.assertIn("留个☎️", second.reply_text)
+            self.assertNotIn("刚发的联系方式图", second.reply_text)
+            self.assertNotIn("点开就能看到", second.reply_text)
 
     def test_weekend_visit_followup_returns_closed_days_fact(self):
         helper = rule_engine_tests.RuleEngineTestCase()

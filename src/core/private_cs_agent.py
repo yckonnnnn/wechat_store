@@ -132,7 +132,7 @@ SHIPPING_BLOCK_REPLACEMENT = "姐姐我们是到店定制哦"
 ADDRESS_UNSUPPORTED_FALLBACK = "姐姐，门店位置您可以直接看图片哦，需要的话我也可以继续帮您安排"
 MATERIAL_LIBRARY_VIDEO_SENTINEL = "__material_library_video__"
 ADDRESS_FACT_FALLBACK = "姐姐，门店位置您可以直接看图片哦，我这边也可以继续帮您安排"
-ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK = "您发个☎️，我来加您好友，具体给您介绍怎么走，位置在哪里"
+ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK = "姐姐，因为平台限制，具体地址和路线我这边暂时发不出去，您方便的话留个☎️，我来加您详细发定位和路线❤️"
 PRICE_FACT_FALLBACK = "姐姐，具体的价格，设计，您可以留个☎️，我来添加您，专门给您详细介绍"
 PRICE_GUARDRAIL_SAFE_REPLY = "姐姐，我们的价格有3000、4000、5000、6000不同档位，具体要根据材质、款式、头围、脸型和需求方案来定。"
 CONTACT_FACT_FALLBACK = "姐姐，您留个☎️，我来主动跟您介绍"
@@ -209,6 +209,7 @@ ADDRESS_FACT_QUERY_KEYWORDS = (
     "具体地址",
     "位置",
     "具体位置",
+    "门牌号",
     "多少号",
     "几号",
     "门店",
@@ -231,6 +232,7 @@ ADDRESS_FOLLOWUP_EXPLICIT_KEYWORDS = (
     "具体地址",
     "位置",
     "具体位置",
+    "门牌号",
     "多少号",
     "几号",
     "门店地址",
@@ -269,6 +271,7 @@ ADDRESS_FOLLOWUP_EXPLICIT_KEYWORDS = (
     "停车方便吗",
 )
 ADDRESS_FOLLOWUP_PRIORITY_KEYWORDS = (
+    "门牌号",
     "多少号",
     "几号",
     "具体位置",
@@ -354,6 +357,7 @@ PRICE_FACT_SPECIFIC_KEYWORDS = (
     "定制费",
 )
 ADDRESS_PRIORITY_OVER_PRICE_KEYWORDS = (
+    "门牌号",
     "多少号",
     "几号",
 )
@@ -546,8 +550,8 @@ DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
     "purchase_contact_remind_only": "姐姐，您直接看上面的图片添加就可以，可以详细给您介绍怎么买～💗",
     "purchase_contact_remote_remind_only": "姐姐，您可以往上看图片添加，我让老师一对一跟您远程定制❤️",
     "strong_intent_after_both_first": "姐姐，您可以直接看上面的图片添加，我让老师跟您预约～💗",
-    "contact_followup_1": "姐姐您看下我刚发的联系方式图，按图添加后跟我说一声，我马上接着帮您安排😊",
-    "contact_followup_2": "姐姐刚刚那张联系方式图您点开就能看到，添加后回我一句，我立刻继续帮您跟进😊",
+    "contact_followup_1": "姐姐，您方便的话直接留个☎️给我，我来加您，后面我跟您详细对接😊",
+    "contact_followup_2": "姐姐，您直接发个☎️给我就行，我这边加您后继续跟您详细说😊",
     "llm_fallback": "姐姐因咨询较多，您加我联系方式，我直接跟你电话沟通更快～🌹",
     "general_empty": "姐姐我在呢，您告诉我最关心的是价格、佩戴体验还是门店位置呀🌹",
     "precise_address_closure_pool": [
@@ -887,10 +891,20 @@ class CustomerServiceAgent:
             intent=intent,
             session_state=session_state,
         )
+        contact_followup_decision = None if decision is not None else self._build_contact_followup_decision(
+            latest_user_text=text,
+            intent=intent,
+            session_state=session_state,
+        )
         address_contact_after_text_decision = None if decision is not None else self._build_address_contact_after_text_decision(
             latest_user_text=text,
             route=route,
             intent=intent,
+            session_state=session_state,
+        )
+        travel_schedule_store_followup_decision = None if decision is not None else self._build_travel_schedule_store_followup_decision(
+            latest_user_text=text,
+            route=route,
             session_state=session_state,
         )
         appointment_kb_decision: Optional[AgentDecision] = None
@@ -936,8 +950,12 @@ class CustomerServiceAgent:
             decision = appointment_kb_decision
         elif address_text_after_image_decision is not None:
             decision = address_text_after_image_decision
+        elif contact_followup_decision is not None:
+            decision = contact_followup_decision
         elif address_contact_after_text_decision is not None:
             decision = address_contact_after_text_decision
+        elif travel_schedule_store_followup_decision is not None:
+            decision = travel_schedule_store_followup_decision
         elif (
             self._should_apply_rule_decision(text=text, intent=intent, route=route, session_state=session_state)
             and not (
@@ -1002,6 +1020,33 @@ class CustomerServiceAgent:
                 )
             else:
                 decision = appointment_kb_decision or self._decide_general_reply(
+                    latest_user_text=text,
+                    intent=intent,
+                    route=route,
+                    conversation_history=conversation_history or [],
+                    session_state=session_state,
+                    user_state=user_state,
+                    user_id_hash=user_hash,
+                )
+
+        if (
+            decision is not None
+            and str(decision.rule_id or "") == "ADDR_STORE_RECOMMEND"
+            and self._should_skip_store_recommend_override(route=route, session_state=session_state)
+        ):
+            if self.reply_mode == REPLY_MODE_LLM_DIRECT:
+                decision = self._decide_llm_reply(
+                    latest_user_text=raw_text,
+                    intent=intent,
+                    route_reason=str(route.get("reason", "unknown") or "unknown"),
+                    conversation_history=conversation_history or [],
+                    session_state=session_state,
+                    allow_address_guardrails=True,
+                    allow_precise_address_closure=False,
+                    rule_id="LLM_FOLLOW_UP",
+                )
+            else:
+                decision = self._decide_general_reply(
                     latest_user_text=text,
                     intent=intent,
                     route=route,
@@ -1642,6 +1687,10 @@ class CustomerServiceAgent:
             "联系您",
             "专属客服",
             "预约",
+            "看图片添加",
+            "图片添加",
+            "按图添加",
+            "添加后跟我说",
         )
         if self._looks_like_phone_submission(latest_user_text):
             return True
@@ -1856,6 +1905,22 @@ class CustomerServiceAgent:
     ) -> Optional[AgentDecision]:
         return agent_rule_engine.build_address_contact_after_text_decision(self, latest_user_text, route, intent, session_state)
 
+    def _build_contact_followup_decision(
+        self,
+        latest_user_text: str,
+        intent: str,
+        session_state: Dict[str, Any],
+    ) -> Optional[AgentDecision]:
+        return agent_rule_engine.build_contact_followup_decision(self, latest_user_text, intent, session_state)
+
+    def _build_travel_schedule_store_followup_decision(
+        self,
+        latest_user_text: str,
+        route: Dict[str, Any],
+        session_state: Dict[str, Any],
+    ) -> Optional[AgentDecision]:
+        return agent_rule_engine.build_travel_schedule_store_followup_decision(self, latest_user_text, route, session_state)
+
     def _should_continue_address_followup(self, latest_user_text: str, session_state: Dict[str, Any]) -> bool:
         return agent_rule_engine.should_continue_address_followup(self, latest_user_text, session_state)
 
@@ -1900,6 +1965,8 @@ class CustomerServiceAgent:
     def _has_price_priority(self, text: str) -> bool:
         normalized = re.sub(r"\s+", "", str(text or "")).lower()
         if not normalized:
+            return False
+        if self._is_precise_address_followup(text):
             return False
         if any(keyword in normalized for keyword in ADDRESS_PRIORITY_OVER_PRICE_KEYWORDS):
             return False
@@ -3424,6 +3491,29 @@ class CustomerServiceAgent:
             return "shanghai"
         return ""
 
+    def _has_store_address_image_sent(
+        self,
+        session_state: Dict[str, Any],
+        target_store: str,
+    ) -> bool:
+        normalized_store = str(target_store or "").strip()
+        if not normalized_store or normalized_store == "unknown":
+            return False
+        sent_stores = {
+            str(item).strip()
+            for item in (session_state.get("sent_address_stores", []) or [])
+            if str(item).strip()
+        }
+        return normalized_store in sent_stores
+
+    def _should_skip_store_recommend_override(
+        self,
+        route: Dict[str, Any],
+        session_state: Dict[str, Any],
+    ) -> bool:
+        target_store = str(route.get("target_store", "") or session_state.get("last_target_store", "") or "").strip()
+        return self._has_store_address_image_sent(session_state, target_store)
+
     def _should_block_unresolved_address_media(
         self,
         latest_user_text: str,
@@ -3908,14 +3998,11 @@ class CustomerServiceAgent:
             return "3到5年"
         return ""
 
-    def _is_service_hours_query_like(self, latest_user_text: str, decision: AgentDecision) -> bool:
-        if decision.standard_reply_intent == "service_hours":
-            return True
+    def _looks_like_travel_schedule_statement(self, latest_user_text: str) -> bool:
         normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
-        direct_service_hours_signal = any(token in normalized for token in ("营业时间", "几点", "到几点", "下班"))
-        generic_time_signal = "时间" in normalized
-        has_weekday_signal = any(token in normalized for token in ("周一", "周二", "周三", "周四", "周五", "周几"))
-        travel_time_signal = any(
+        if not normalized:
+            return False
+        return any(
             token in normalized
             for token in (
                 "过段时间",
@@ -3940,12 +4027,25 @@ class CustomerServiceAgent:
                 "8月份",
                 "9月份",
                 "什么时候去",
+                "多久去",
+                "过多久去",
                 "去北京",
                 "去上海",
                 "来北京",
                 "来上海",
             )
         )
+
+    def _is_service_hours_query_like(self, latest_user_text: str, decision: AgentDecision) -> bool:
+        if decision.standard_reply_intent == "service_hours":
+            return True
+        normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
+        direct_service_hours_signal = any(token in normalized for token in ("营业时间", "几点", "到几点", "下班"))
+        generic_time_signal = "时间" in normalized
+        has_weekday_signal = any(token in normalized for token in ("周一", "周二", "周三", "周四", "周五", "周几"))
+        travel_time_signal = self._looks_like_travel_schedule_statement(latest_user_text)
+        if travel_time_signal and not direct_service_hours_signal:
+            return False
         if direct_service_hours_signal or (generic_time_signal and not travel_time_signal) or (
             has_weekday_signal and any(token in normalized for token in ("这个时间", "也是这个时间"))
         ):
@@ -3959,6 +4059,8 @@ class CustomerServiceAgent:
         if decision.standard_reply_intent == "lifespan":
             return True
         normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
+        if self._looks_like_travel_schedule_statement(latest_user_text):
+            return False
         if any(token in normalized for token in ("多久", "几年", "寿命", "能用", "能戴", "都这样")):
             return True
         detail = self.knowledge_service.find_answer_detail(str(latest_user_text or ""), threshold=self.knowledge_threshold)
