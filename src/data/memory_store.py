@@ -136,6 +136,12 @@ class MemoryStore:
         state["updated_at"] = datetime.now().isoformat()
         return state
 
+    def update_session_field(self, session_id: str, user_hash: str, key: str, value: Any) -> Dict[str, Any]:
+        state = self.get_session_state(session_id, user_hash=user_hash)
+        state[key] = value
+        state["updated_at"] = datetime.now().isoformat()
+        return state
+
     def get_user_state(self, user_hash: str) -> Dict[str, Any]:
         users = self._data.setdefault("users", {})
         if user_hash not in users:

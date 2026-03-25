@@ -1,4 +1,4 @@
-# AI微信小店客服系统 - 架构设计文档
+# AI 微信小店客服系统 - 架构设计文档
 
 ## 1. 项目概述
 
@@ -25,7 +25,7 @@
 ├─────────────────────────────────────────────────────────────┤
 │                        服务层 (Services)                      │
 │  ┌──────────────┐ ┌──────────────┐ ┌──────────────────────┐ │
-│  │ LLM服务      │ │ 浏览器服务   │ │ 知识库服务           │ │
+│  │ LLM 服务      │ │ 浏览器服务   │ │ 知识库服务           │ │
 │  │ LLMService   │ │ Browser      │ │ KnowledgeService     │ │
 │  │              │ │ Service      │ │                      │ │
 │  └──────────────┘ └──────────────┘ └──────────────────────┘ │
@@ -56,11 +56,11 @@
 ```
 ┌─────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
 │  定时器  │───>│  扫描未读    │───>│  点击进入    │───>│  抓取消息    │
-│ (4秒)   │    │  消息       │    │  会话       │    │             │
+│ (4 秒)   │    │  消息       │    │  会话       │    │             │
 └─────────┘    └─────────────┘    └─────────────┘    └──────┬──────┘
                                                             │
 ┌─────────┐    ┌─────────────┐    ┌─────────────┐          │
-│  发送   │<───│  注入JS     │<───│  生成回复    │<─────────┘
+│  发送   │<───│  注入 JS     │<───│  生成回复    │<─────────┘
 │  回复   │    │  发送消息   │    │  (LLM/知识库)│
 └─────────┘    └─────────────┘    └─────────────┘
 ```
@@ -70,7 +70,7 @@
 ```
 用户消息 -> 去重检查 -> 知识库匹配 -> [匹配成功] -> 返回知识库回复
                     |
-                    -> [匹配失败] -> LLM生成回复 -> 返回AI回复
+                    -> [匹配失败] -> LLM 生成回复 -> 返回 AI 回复
 ```
 
 ## 4. 目录结构
@@ -104,7 +104,7 @@ wx_store_index/
 │   │
 │   ├── services/                # 服务层
 │   │   ├── __init__.py
-│   │   ├── llm_service.py       # LLM API服务
+│   │   ├── llm_service.py       # LLM API 服务
 │   │   ├── browser_service.py   # 浏览器控制服务
 │   │   └── knowledge_service.py # 知识库服务
 │   │
@@ -121,86 +121,86 @@ wx_store_index/
 │
 └── docs/                        # 文档目录
     ├── architecture.md          # 架构设计文档
-    ├── api.md                   # API接口文档
+    ├── api.md                   # API 接口文档
     └── usage.md                 # 使用说明
 ```
 
 ## 5. 类设计
 
-### 5.1 UI层
+### 5.1 UI 层
 
 ```python
 class MainWindow(QWidget)
-├── 属性: browser_service, message_processor, config_manager
-├── 方法: setup_ui(), start_service(), stop_service()
-├── 信号: log_message, status_changed
+├── 属性：browser_service, message_processor, config_manager
+├── 方法：setup_ui(), start_service(), stop_service()
+├── 信号：log_message, status_changed
 
 class LeftPanel(QFrame)
-├── 属性: control_buttons, status_labels, log_view
-├── 方法: update_status(), append_log()
+├── 属性：control_buttons, status_labels, log_view
+├── 方法：update_status(), append_log()
 
 class BrowserTab(QWidget)
-├── 属性: web_view, url_input
-├── 方法: load_url(), run_js(), refresh()
+├── 属性：web_view, url_input
+├── 方法：load_url(), run_js(), refresh()
 
 class KnowledgeTab(QWidget)
-├── 属性: table_widget, search_input
-├── 方法: add_item(), edit_item(), delete_item(), import_file(), export_file()
+├── 属性：table_widget, search_input
+├── 方法：add_item(), edit_item(), delete_item(), import_file(), export_file()
 
 class ModelConfigTab(QWidget)
-├── 属性: model_forms, api_key_inputs
-├── 方法: load_settings(), save_settings(), test_connection()
+├── 属性：model_forms, api_key_inputs
+├── 方法：load_settings(), save_settings(), test_connection()
 ```
 
-### 5.2 Core层
+### 5.2 Core 层
 
 ```python
 class MessageProcessor(QObject)
-├── 属性: browser_service, llm_service, knowledge_service
-├── 方法: start_polling(), stop_polling(), process_message()
-├── 信号: message_received, reply_sent, error_occurred
+├── 属性：browser_service, llm_service, knowledge_service
+├── 方法：start_polling(), stop_polling(), process_message()
+├── 信号：message_received, reply_sent, error_occurred
 
 class ReplyCoordinator(QObject)
-├── 属性: message_processor, session_manager
-├── 方法: coordinate_reply(), should_reply(), format_reply()
-├── 信号: reply_ready, reply_sent
+├── 属性：message_processor, session_manager
+├── 方法：coordinate_reply(), should_reply(), format_reply()
+├── 信号：reply_ready, reply_sent
 
 class SessionManager(QObject)
-├── 属性: active_sessions, message_history
-├── 方法: get_session(), update_session(), clear_history()
+├── 属性：active_sessions, message_history
+├── 方法：get_session(), update_session(), clear_history()
 ```
 
-### 5.3 Services层
+### 5.3 Services 层
 
 ```python
 class LLMService
-├── 属性: config_manager, current_model
-├── 方法: generate_reply(), set_model(), test_connection()
-├── 支持: ChatGPT, Gemini, 阿里千问, DeepSeek, 豆包, Kimi
+├── 属性：config_manager, current_model
+├── 方法：generate_reply(), set_model(), test_connection()
+├── 支持：ChatGPT, Gemini, 阿里千问，DeepSeek, 豆包，Kimi
 
 class BrowserService(QObject)
-├── 属性: web_view, page_ready
-├── 方法: navigate(), run_javascript(), inject_script()
-├── 方法: find_unread(), enter_session(), send_message()
-├── 信号: page_loaded, js_result, error_occurred
+├── 属性：web_view, page_ready
+├── 方法：navigate(), run_javascript(), inject_script()
+├── 方法：find_unread(), enter_session(), send_message()
+├── 信号：page_loaded, js_result, error_occurred
 
 class KnowledgeService
-├── 属性: repository, cache
-├── 方法: search(), add(), update(), delete(), best_match()
+├── 属性：repository, cache
+├── 方法：search(), add(), update(), delete(), best_match()
 ```
 
-### 5.4 Data层
+### 5.4 Data 层
 
 ```python
 class ConfigManager
-├── 属性: config_file, settings_cache
-├── 方法: load(), save(), get(), set()
-├── 方法: get_model_config(), set_model_config()
+├── 属性：config_file, settings_cache
+├── 方法：load(), save(), get(), set()
+├── 方法：get_model_config(), set_model_config()
 
 class KnowledgeRepository
-├── 属性: data_file, items
-├── 方法: load(), save(), add(), update(), delete()
-├── 方法: search(), export(), import_file()
+├── 属性：data_file, items
+├── 方法：load(), save(), add(), update(), delete()
+├── 方法：search(), export(), import_file()
 ```
 
 ## 6. 关键技术点
@@ -216,7 +216,7 @@ class KnowledgeRepository
 ### 6.2 去重机制
 
 - **消息级去重**: 基于消息内容哈希
-- **会话级去重**: 基于会话ID和时间戳
+- **会话级去重**: 基于会话 ID 和时间戳
 - **本地存储**: 使用 localStorage 持久化已回复记录
 
 ### 6.3 并发控制

@@ -18,7 +18,7 @@
 
 微信网页版的图片发送流程是一个**两步操作**：
 1. 点击图片按钮，选择文件
-2. 弹出确认对话框，需要点击"发送(1)"按钮或按 Enter 键确认
+2. 弹出确认对话框，需要点击"发送 (1)"按钮或按 Enter 键确认
 
 原始代码只完成了第一步，没有处理确认弹窗，导致图片无法实际发送出去。
 
@@ -94,9 +94,9 @@ QCoreApplication.sendEvent(target_widget, press_event)
 
 **失败原因**：
 1. **按钮检测错误**：页面上有多个包含"发送"文字的按钮
-   - 正确按钮：弹窗内的 `发送(1)`
+   - 正确按钮：弹窗内的 `发送 (1)`
    - 错误按钮：页面右侧的 `发送优惠券`
-   
+
 2. **坐标返回 (0,0)**：`getBoundingClientRect()` 返回了无效坐标，可能是因为：
    - 弹窗还未完全渲染
    - 找到的是隐藏的按钮
@@ -110,23 +110,23 @@ QCoreApplication.sendEvent(target_widget, press_event)
 ```python
 def send_image(self, image_path: str, callback: Callable = None):
     """发送图片 - 使用 Qt 原生鼠标点击和键盘事件"""
-    
+
     # Step 1: 用 JavaScript 获取图片按钮位置
     # Step 2: 用 Qt 原生鼠标点击图片按钮
     # Step 3: 等待 500ms 让弹窗出现
     # Step 4: 发送 Qt 原生 Enter 键确认发送
-    
+
     def send_enter_key():
         self.web_view.setFocus()
         target_widget = self.web_view.focusProxy()
-        
+
         key_press = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Return, Qt.NoModifier)
         QCoreApplication.sendEvent(target_widget, key_press)
-        
+
         key_release = QKeyEvent(QKeyEvent.KeyRelease, Qt.Key_Return, Qt.NoModifier)
         QCoreApplication.sendEvent(target_widget, key_release)
-    
-    # 等待 500ms（弹窗只停留约1秒，要快！）
+
+    # 等待 500ms（弹窗只停留约 1 秒，要快！）
     QTimer.singleShot(500, send_enter_key)
 ```
 

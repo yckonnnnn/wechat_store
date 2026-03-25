@@ -146,7 +146,7 @@ def build_address_text_after_image_decision(
     session_state: Dict[str, Any],
 ) -> Optional[AgentDecision]:
     normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
-    explicit_revisit = any(token in normalized for token in ("位置图", "再发", "看图", "位置"))
+    explicit_revisit = any(token in normalized for token in ("位置图", "再发", "看图"))
     if (
         intent != "address"
         and not explicit_revisit
@@ -179,12 +179,22 @@ def build_address_text_after_image_decision(
     if int(text_reply_count_by_store.get(target_store, 0) or 0) >= 1:
         return None
 
+    resend_image = explicit_revisit or (
+        len(normalized) <= 4
+        and any(token in normalized for token in ("在哪", "哪儿", "位置"))
+    )
+    reply_text = (
+        "姐姐，我再给您发一下位置图，您看图里圈圈的位置会更直观哦。🌹"
+        if resend_image
+        else _const(agent, "ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK", "")
+    )
+
     return AgentDecision(
-        reply_text=_const(agent, "ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK", ""),
+        reply_text=reply_text,
         intent="address",
         route_reason=str(route.get("reason", "unknown") or "unknown"),
         reply_goal="解答",
-        media_plan="none",
+        media_plan="address_image" if resend_image else "none",
         reply_source="rule",
         rule_id="ADDR_TEXT_AFTER_IMAGE",
         rule_applied=True,
@@ -199,7 +209,7 @@ def build_address_contact_after_text_decision(
     session_state: Dict[str, Any],
 ) -> Optional[AgentDecision]:
     normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
-    explicit_revisit = any(token in normalized for token in ("位置图", "再发", "看图", "位置"))
+    explicit_revisit = any(token in normalized for token in ("位置图", "再发", "看图"))
     if (
         intent != "address"
         and not explicit_revisit
@@ -397,18 +407,24 @@ def decide_rule_reply(
     user_state: Dict[str, Any],
     is_first_turn_global: bool = False,
 ) -> AgentDecision:
+    # 优先使用统一状态（如果有）
+    if hasattr(agent, '_current_unified_state') and agent._current_unified_state:
+        state = agent._current_unified_state
+    else:
+        state = session_state
+
     reason = route.get("reason", "unknown")
     target_store = route.get("target_store", "unknown")
-    geo_context = resolve_geo_context(agent, route, session_state)
-    both_images_sent = agent._has_both_images_sent(session_state)
+    geo_context = resolve_geo_context(agent, route, state)
+    both_images_sent = agent._has_both_images_sent(state)
     neg_shanghai_hint = agent._has_neg_shanghai_hint(text)
 
     if is_first_turn_global and intent == "purchase" and reason in ("unknown", "need_region"):
-        return agent._build_geo_followup_decision(session_state=session_state, route_reason="need_region", intent="purchase")
+        return agent._build_geo_followup_decision(session_state=state, route_reason="need_region", intent="purchase")
 
     if reason == "shanghai_need_arrival_point":
-        session_state["last_geo_pending"] = True
-        session_state["last_geo_route_reason"] = "need_arrival_point"
+        state["last_geo_pending"] = True
+        state["last_geo_route_reason"] = "need_arrival_point"
         return AgentDecision(
             reply_text=agent._render_template("ask_sh_arrival_point"),
             intent="address",
@@ -422,11 +438,11 @@ def decide_rule_reply(
         )
 
     if reason == "shanghai_need_district":
-        return agent._build_geo_followup_decision(session_state=session_state, route_reason="need_district", intent="address")
+        return agent._build_geo_followup_decision(session_state=state, route_reason="need_district", intent="address")
 
     if reason == "sh_route_need_clarify":
-        session_state["last_geo_pending"] = True
-        session_state["last_geo_route_reason"] = "need_clarify"
+        state["last_geo_pending"] = True
+        state["last_geo_route_reason"] = "need_clarify"
         return AgentDecision(
             reply_text=agent._render_template("ask_sh_route_clarify"),
             intent="address",
@@ -590,15 +606,25 @@ def decide_rule_reply(
         )
         return follow_decision
 
-    if intent == "purchase" and reason != "shanghai_need_district" and geo_context.get("known"):
+    if intent in ("purchase", "appointment") and reason != "shanghai_need_district" and geo_context.get("known"):
         contact_sent = agent._is_contact_image_sent_for_current_geo(session_state)
         session_state["last_geo_pending"] = False
         session_state["geo_followup_round"] = 0
         session_state["geo_choice_offered"] = False
+        appointment_reply = ""
+        if intent == "appointment":
+            appointment_reply = str(
+                agent._build_store_appointment_contact_reply(
+                    text,
+                    route,
+                    session_state=state,
+                    conversation_history=conversation_history,
+                ) or ""
+            ).strip()
         if contact_sent:
             return AgentDecision(
-                reply_text=agent._render_template("purchase_contact_remind_only"),
-                intent="purchase",
+                reply_text=appointment_reply or agent._render_template("purchase_contact_remind_only"),
+                intent="appointment" if appointment_reply else "purchase",
                 route_reason=reason if reason != "unknown" else "known_geo_context",
                 reply_goal="推进购买意图",
                 media_plan="none",
@@ -609,8 +635,8 @@ def decide_rule_reply(
             )
 
         return AgentDecision(
-            reply_text=agent._render_template("purchase_contact_intro"),
-            intent="purchase",
+            reply_text=appointment_reply or agent._render_template("purchase_contact_intro"),
+            intent="appointment" if appointment_reply else "purchase",
             route_reason=reason if reason != "unknown" else "known_geo_context",
             reply_goal="推进购买意图",
             media_plan="contact_image",
@@ -643,15 +669,22 @@ def decide_rule_reply(
 
 
 def build_geo_followup_decision(agent, session_state: Dict[str, Any], route_reason: str, intent: str) -> AgentDecision:
-    round_count = int(session_state.get("geo_followup_round", 0) or 0)
-    choice_offered = bool(session_state.get("geo_choice_offered", False))
+    # 优先使用统一状态（如果有）
+    if hasattr(agent, '_current_unified_state') and agent._current_unified_state:
+        state = agent._current_unified_state
+    else:
+        state = session_state
+
+    round_count = int(state.get("geo_followup_round", 0) or 0)
+    choice_offered = bool(state.get("geo_choice_offered", False))
 
     if round_count < 2:
         next_round = round_count + 1
-        session_state["geo_followup_round"] = next_round
-        session_state["geo_choice_offered"] = False
-        session_state["last_geo_pending"] = True
-        session_state["last_geo_route_reason"] = route_reason
+        state["geo_followup_round"] = next_round
+        state["geo_followup_exhausted"] = False
+        state["geo_choice_offered"] = False
+        state["last_geo_pending"] = True
+        state["last_geo_route_reason"] = route_reason
         if route_reason == "need_district":
             template_key = "ask_sh_district_r1" if next_round == 1 else "ask_sh_district_r2"
             rule_id = f"ADDR_ASK_DISTRICT_R{next_round}"
@@ -659,16 +692,18 @@ def build_geo_followup_decision(agent, session_state: Dict[str, Any], route_reas
             template_key = "ask_region_r1" if next_round == 1 else "ask_region_r2"
             rule_id = f"ADDR_ASK_REGION_R{next_round}"
     elif not choice_offered:
-        session_state["geo_choice_offered"] = True
-        session_state["last_geo_pending"] = True
-        session_state["last_geo_route_reason"] = route_reason
+        state["geo_choice_offered"] = True
+        state["geo_followup_exhausted"] = False
+        state["last_geo_pending"] = True
+        state["last_geo_route_reason"] = route_reason
         template_key = "ask_sh_district_choice" if route_reason == "need_district" else "ask_region_choice"
         rule_id = "ADDR_ASK_DISTRICT_CHOICE" if route_reason == "need_district" else "ADDR_ASK_REGION_CHOICE"
     else:
-        session_state["geo_followup_round"] = 1
-        session_state["geo_choice_offered"] = False
-        session_state["last_geo_pending"] = True
-        session_state["last_geo_route_reason"] = route_reason
+        state["geo_followup_round"] = 1
+        state["geo_followup_exhausted"] = False
+        state["geo_choice_offered"] = False
+        state["last_geo_pending"] = True
+        state["last_geo_route_reason"] = route_reason
         template_key = "ask_sh_district_r1_reset" if route_reason == "need_district" else "ask_region_r1_reset"
         rule_id = "ADDR_ASK_DISTRICT_R1_RESET" if route_reason == "need_district" else "ADDR_ASK_REGION_R1_RESET"
 
@@ -795,8 +830,58 @@ def decide_general_reply(
     user_state: Dict[str, Any],
     user_id_hash: str = "",
 ) -> AgentDecision:
+    # 优先使用统一状态（如果有）
+    if hasattr(agent, '_current_unified_state') and agent._current_unified_state:
+        state = agent._current_unified_state
+    else:
+        state = session_state
+
+    # 只有当前轮仍在处理地区补充时，才允许用追问耗尽兜底强制转联系方式。
+    geo_followup_exhausted = state.get("geo_followup_exhausted", False)
+    geo_followup_round = state.get("geo_followup_round", 0)
     route_reason = route.get("reason", "unknown")
-    contact_sent = int(session_state.get("contact_image_sent_count", 0) or 0) >= 1
+    unresolved_geo_reasons = {
+        "need_region",
+        "need_district",
+        "shanghai_need_district",
+        "sh_route_need_clarify",
+        "shanghai_need_arrival_point",
+    }
+    geo_followup_active = bool(state.get("last_geo_pending", False)) or route_reason in unresolved_geo_reasons
+    has_known_store = str(route.get("target_store", "") or state.get("last_target_store", "") or "").strip() not in {"", "unknown"}
+    current_turn_still_geo_like = looks_like_geo_reply(agent, text=latest_user_text, route=route) or (
+        intent == "address" and str(route.get("target_store", "") or "").strip() in {"", "unknown"}
+    )
+
+    if (
+        (geo_followup_exhausted or geo_followup_round >= 2)
+        and geo_followup_active
+        and current_turn_still_geo_like
+        and not has_known_store
+    ):
+        contact_sent = state.get("contact_image_sent", False) or state.get("contact_image_sent_count", 0) >= 1
+        if contact_sent:
+            return AgentDecision(
+                reply_text="姐姐，请往上滑看图片添加我好友哦～♥️",
+                intent="contact",
+                route_reason="geo_followup_exhausted",
+                reply_goal="推进购买意图",
+                media_plan="none",
+                reply_source="rule",
+                rule_id="GEO_FOLLOWUP_EXHAUSTED_REMIND",
+            )
+        else:
+            return AgentDecision(
+                reply_text="姐姐，您直接留个联系方式，我让客服联系您详细说❤️",
+                intent="contact",
+                route_reason="geo_followup_exhausted",
+                reply_goal="推进购买意图",
+                media_plan="contact_image",
+                reply_source="rule",
+                rule_id="GEO_FOLLOWUP_EXHAUSTED",
+            )
+
+    contact_sent = int(state.get("contact_image_sent_count", 0) or 0) >= 1
     kb_blocked_by_polite_guard = False
     kb_polite_guard_reason = ""
 
@@ -818,10 +903,36 @@ def decide_general_reply(
     if lifespan_priority_decision is not None:
         return lifespan_priority_decision
 
+    # 【新增】处理状态确认意图
+    if intent.startswith("status_confirm_"):
+        confirm_type = intent.replace("status_confirm_", "")
+        if confirm_type == "address":
+            if state.get("address_image_sent") or int(state.get("address_image_sent_count", 0) or 0) > 0:
+                return AgentDecision(
+                    reply_text="姐姐，地址位置图已经发了，您往上滑看一下哦～♥️",
+                    intent="status_confirm",
+                    route_reason="address_already_sent",
+                    reply_goal="确认已发送",
+                    media_plan="none",
+                    reply_source="rule",
+                    rule_id="STATUS_CONFIRM_ADDRESS_SENT",
+                )
+        elif confirm_type == "contact":
+            if state.get("contact_image_sent") or int(state.get("contact_image_sent_count", 0) or 0) > 0:
+                return AgentDecision(
+                    reply_text="姐姐，联系方式已经发了，您往上滑看一下哦～♥️",
+                    intent="status_confirm",
+                    route_reason="contact_already_sent",
+                    reply_goal="确认已发送",
+                    media_plan="none",
+                    reply_source="rule",
+                    rule_id="STATUS_CONFIRM_CONTACT_SENT",
+                )
+
     if intent == "contact":
         if contact_sent:
-            prompt_count = int(session_state.get("contact_followup_prompt_count", 0) or 0)
-            session_state["contact_followup_prompt_count"] = prompt_count + 1
+            prompt_count = int(state.get("contact_followup_prompt_count", 0) or 0)
+            state["contact_followup_prompt_count"] = prompt_count + 1
             template_key = "contact_followup_1" if (prompt_count % 2) == 0 else "contact_followup_2"
             return AgentDecision(
                 reply_text=agent._render_template(template_key),
@@ -856,13 +967,13 @@ def decide_general_reply(
             rule_applied=True,
         )
 
-    if agent._is_follow_up_question(latest_user_text, conversation_history, session_state=session_state):
+    if agent._is_follow_up_question(latest_user_text, conversation_history, session_state=state):
         return agent._decide_llm_reply(
             latest_user_text=latest_user_text,
             intent=intent,
             route_reason=route_reason,
             conversation_history=conversation_history,
-            session_state=session_state,
+            session_state=state,
             rule_id="LLM_FOLLOW_UP",
         )
 

@@ -3,7 +3,56 @@ from __future__ import annotations
 from typing import Any, Dict, List, Tuple
 
 
+STORE_NAME_MAP = {
+    "sh_renmin": "人民广场店",
+    "sh_jingan": "静安店",
+    "sh_hongkou": "虹口店",
+    "sh_wujiaochang": "五角场店",
+    "sh_xuhui": "徐汇店",
+    "beijing_chaoyang": "北京朝阳店",
+}
+
+
 def build_general_llm_prompt(agent: Any, latest_user_text: str) -> Tuple[str, Dict[str, Any]]:
+    # 【新增】获取已确认事实并注入到 prompt 最开头
+    confirmed_facts_block = ""
+    confirmed_facts = {}
+
+    if hasattr(agent, '_current_unified_state') and agent._current_unified_state:
+        state = agent._current_unified_state
+        store_key = str(state.get("last_target_store", "") or "").strip()
+        confirmed_facts = {
+            "store_confirmed": STORE_NAME_MAP.get(store_key, store_key or "未知"),
+            "address_image_sent": bool(
+                state.get("address_image_sent", False)
+                or int(state.get("address_image_sent_count", 0) or 0) > 0
+            ),
+            "contact_image_sent": bool(
+                state.get("contact_image_sent", False)
+                or int(state.get("contact_image_sent_count", 0) or 0) > 0
+            ),
+            "geo_followup_round": state.get("geo_followup_round", 0),
+            "geo_followup_exhausted": state.get("geo_followup_exhausted", False),
+        }
+
+        # 构建已确认事实块（放在 prompt 最前面，作为不可推翻的前提）
+        confirmed_facts_block = (
+            "【已确认事实 - 不可推翻】\n"
+            f"- 已确认门店：{confirmed_facts.get('store_confirmed', '未知')}\n"
+            f"- 地址图已发送：{confirmed_facts.get('address_image_sent', False)}\n"
+            f"- 联系方式已发送：{confirmed_facts.get('contact_image_sent', False)}\n"
+            f"- 地区追问轮数：{confirmed_facts.get('geo_followup_round', 0)}\n"
+            f"- 追问已耗尽：{confirmed_facts.get('geo_followup_exhausted', False)}\n"
+            "\n"
+            "【重要规则】\n"
+            "- 如果已确认门店，不要重新追问城市/区域\n"
+            "- 如果地址图已发送，不要重复发送地址图\n"
+            "- 如果联系方式已发送，不要再让留电话\n"
+            "- 只有当前仍在补充地区且连续追问无果时，才切换到联系方式\n"
+            "- 如果用户已经改问营业时间、价格、预约、护理等新问题，先直接回答新问题\n"
+            "\n"
+        )
+
     normalized_text = agent.knowledge_service.normalize_user_text(latest_user_text)
     faq_detail = agent.knowledge_service.find_answer_detail(normalized_text, threshold=agent.knowledge_threshold)
     faq_examples = agent._top_kb_examples(normalized_text, limit=3)
@@ -52,6 +101,7 @@ def build_general_llm_prompt(agent: Any, latest_user_text: str) -> Tuple[str, Di
         f"- 避免重复：{conversation_state.get('avoid_repeat', '无')}"
     )
     prompt = (
+        confirmed_facts_block +  # 【新增】已确认事实放在最前面
         "你是艾耐儿假发客服助理。\n"
         "语气自然、亲切、有耐心，接地气，拟人化口语，像真人客服。\n"
         "硬规则：结论先行；尽量1句话完成回复，不拖拉，不啰嗦，且必须是完整句；末尾只保留1个emoji表情。\n"
@@ -96,8 +146,13 @@ def summarize_llm_conversation_state(
     standard_reply_intent: str = "",
 ) -> Dict[str, str]:
     history = conversation_history or []
-    session_state = dict(getattr(agent, "_current_prompt_session_state", {}) or {})
-    conversation_facts = dict(session_state.get("conversation_facts", {}) or {})
+    # 优先使用统一状态
+    if hasattr(agent, '_current_unified_state') and agent._current_unified_state:
+        state = agent._current_unified_state
+    else:
+        state = dict(getattr(agent, "_current_prompt_session_state", {}) or {})
+
+    conversation_facts = dict(state.get("conversation_facts", {}) or {})
     latest_norm = agent.knowledge_service.normalize_user_text(latest_user_text)
     combined_text = " ".join(str(item.get("content", "") or "") for item in history)
     current_text = f"{combined_text} {latest_user_text}".strip()
@@ -109,23 +164,23 @@ def summarize_llm_conversation_state(
     if "上海" in latest_norm or any(token in latest_norm for token in ("静安", "人民广场", "人广", "虹口", "五角场", "徐汇")):
         latest_city = "上海"
 
-    city_confirmed = latest_city or str(conversation_facts.get("city", "") or "").strip() or "未知"
+    recommended_store = str(
+        conversation_facts.get("recommended_store", "") or state.get("last_target_store", "") or ""
+    ).strip()
+    city_from_store = ""
+    if recommended_store.startswith("sh_"):
+        city_from_store = "上海"
+    elif recommended_store == "beijing_chaoyang":
+        city_from_store = "北京"
+
+    city_confirmed = latest_city or str(conversation_facts.get("city", "") or "").strip() or city_from_store or "未知"
     if city_confirmed == "未知":
         if "北京" in normalized or "朝阳" in normalized:
             city_confirmed = "北京"
         if "上海" in normalized or any(token in normalized for token in ("静安", "人民广场", "人广", "虹口", "五角场", "徐汇")):
             city_confirmed = "上海"
 
-    recommended_store = str(conversation_facts.get("recommended_store", "") or "").strip()
     store_confirmed = "未知"
-    store_name_map = {
-        "sh_renmin": "人民广场店",
-        "sh_jingan": "静安店",
-        "sh_hongkou": "虹口店",
-        "sh_wujiaochang": "五角场店",
-        "sh_xuhui": "徐汇店",
-        "beijing_chaoyang": "北京朝阳店",
-    }
     if any(token in latest_norm for token in ("人民广场", "人广", "黄埔", "汉口路")):
         store_confirmed = "人民广场店"
     elif any(token in latest_norm for token in ("静安", "愚园路")):
@@ -138,8 +193,8 @@ def summarize_llm_conversation_state(
         store_confirmed = "徐汇店"
     elif any(token in latest_norm for token in ("朝阳", "建外soho")):
         store_confirmed = "北京朝阳店"
-    elif recommended_store and recommended_store in store_name_map:
-        store_confirmed = store_name_map[recommended_store]
+    elif recommended_store and recommended_store in STORE_NAME_MAP:
+        store_confirmed = STORE_NAME_MAP[recommended_store]
     elif any(token in normalized for token in ("人民广场", "人广", "黄埔", "汉口路")):
         store_confirmed = "人民广场店"
     elif any(token in normalized for token in ("静安", "愚园路")):
@@ -158,14 +213,14 @@ def summarize_llm_conversation_state(
         visit_status = "不方便到店"
     elif any(token in normalized for token in ("可以去", "过去", "到店", "去店里", "能过去")):
         visit_status = "可以到店"
-    elif str(session_state.get("conversation_stage", "") or "") in {"store_recommended", "address_image_sent", "appointment_ready"}:
+    elif str(state.get("conversation_stage", "") or "") in {"store_recommended", "address_image_sent", "appointment_ready"}:
         visit_status = "可以到店"
 
     empathy_need = "无"
     if any(token in normalized for token in ("摔了", "摔跤", "受伤", "腿伤", "腿现在", "不方便出门", "生病", "腿脚不方便")):
         empathy_need = "需要先安慰共情"
 
-    last_answer_type = str(session_state.get("last_answer_topic", "") or "").strip() or "未知"
+    last_answer_type = str(state.get("last_answer_topic", "") or "").strip() or "未知"
     if last_answer_type == "store_recommendation":
         last_answer_type = "store_address"
     elif last_answer_type == "service_hours":
@@ -184,9 +239,9 @@ def summarize_llm_conversation_state(
                 break
         last_answer_type = agent._infer_answer_type(last_assistant)
 
-    current_turn_action = str(session_state.get("current_turn_action", "") or "").strip()
-    conversation_stage = str(session_state.get("conversation_stage", "") or "").strip()
-    active_topic = str(session_state.get("active_topic", "") or "").strip()
+    current_turn_action = str(state.get("current_turn_action", "") or "").strip()
+    conversation_stage = str(state.get("conversation_stage", "") or "").strip()
+    active_topic = str(state.get("active_topic", "") or "").strip()
     reply_goal = "自然承接并回答当前问题"
     avoid_repeat = "无"
     if empathy_need != "无":

@@ -235,6 +235,29 @@ def judge_post_reply_media(
         and
         (not remote_flow_active)
         and (not is_appointment_decision)
+        and str(session_state.get("last_target_store", "") or "").strip() not in {"", "unknown"}
+        and int(session_state.get("address_image_sent_count", 0) or 0) > 0
+        and any(token in re.sub(r"\s+", "", str(latest_user_text or "")).lower() for token in ("位置图", "再发", "看图", "在哪", "哪儿"))
+    ):
+        item, reason_hint = queue_address_image(
+            agent,
+            session_id=session_id,
+            session_state=session_state,
+            target_store=str(session_state.get("last_target_store", "") or ""),
+            route_reason="explicit_address_revisit",
+            detected_region=route.get("detected_region", "") or "",
+        )
+        if item:
+            media_items = _upsert_media_item(agent, media_items, item)
+            reasons.append("explicit_address_revisit")
+        elif reason_hint and not skip_reason:
+            skip_reason = reason_hint
+
+    if (
+        not block_unresolved_address_media
+        and
+        (not remote_flow_active)
+        and (not is_appointment_decision)
         and closure_info.get("precise_address_hit")
         and str(closure_info.get("target_store", "") or "")
     ):
@@ -285,10 +308,13 @@ def judge_post_reply_media(
 
     if not media_items and not block_unresolved_address_media:
         normalized_reply = re.sub(r"\s+", "", str(reply_text or "")).lower()
+        normalized_latest = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
         known_store = str(reply_store or route.get("target_store", "") or session_state.get("last_target_store", "") or "")
         current_turn_action = str(session_state.get("current_turn_action", "") or "")
         conversation_stage = str(session_state.get("conversation_stage", "") or "")
-        mentions_position_image = any(token in normalized_reply for token in ("位置图", "按图", "看图", "圈圈位置"))
+        mentions_position_image = any(token in normalized_reply for token in ("位置图", "按图", "看图", "圈圈位置")) or any(
+            token in normalized_latest for token in ("位置图", "再发", "看图", "在哪", "哪儿")
+        )
         if (
             (not remote_flow_active)
             and (not is_appointment_decision)
@@ -346,7 +372,13 @@ def judge_post_reply_media(
         needs_contact_closure_image = True
         reasons.append("appointment_contact_followup")
 
-    if needs_contact_closure_image:
+    allow_contact_with_address = (
+        str(closure_info.get("closure_type", "") or "") == "precise_address"
+        and bool(closure_info.get("contact_closure_hit"))
+    )
+    if needs_contact_closure_image and (
+        allow_contact_with_address or not any(str(x.get("type", "") or "") == "address_image" for x in media_items)
+    ):
         item, reason_hint = queue_contact_image(
             agent,
             session_id=session_id,
@@ -610,9 +642,6 @@ def queue_address_image(
     del session_id
     if target_store == "unknown":
         return None, "address_target_unknown"
-    if target_store in {str(x).strip() for x in (session_state.get("sent_address_stores", []) or []) if str(x).strip()}:
-        return None, "address_image_already_sent"
-
     image_path = pick_address_image(agent, target_store, session_state=session_state)
     if not image_path:
         return None, "address_image_missing"
@@ -1140,11 +1169,15 @@ def populate_first_turn_media_plan(
         return
 
     user_hash = agent._hash_user(user_name or session_id)
+    memory_store = getattr(agent, "memory_store", None)
+    session_state = {}
+    if memory_store is not None and hasattr(memory_store, "get_session_state"):
+        session_state = memory_store.get_session_state(session_id, user_hash=user_hash)
     if callable(getattr(agent, "_should_block_unresolved_address_media", None)) and agent._should_block_unresolved_address_media(
         latest_user_text="",
         decision=decision,
         route={"reason": decision.route_reason},
-        session_state=agent.memory_store.get_session_state(session_id, user_hash=user_hash),
+        session_state=session_state,
     ):
         decision.first_turn_media_guard_applied = True
         decision.first_turn_image_items = []
@@ -1559,7 +1592,7 @@ def pick_address_image(
     if not available and excluded:
         available = [path for path in pool if path not in sent_paths]
     if not available:
-        return None
+        available = list(pool)
     return random.choice(available)
 
 

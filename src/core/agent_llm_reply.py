@@ -284,6 +284,11 @@ def rewrite_if_repeated(
         rewrite_prompt = f"仍重复，请再次改写这句客服回复：{candidate}"
 
     fallback = agent._avoid_repeat(user_state, reply_text)
+    if agent._normalize_for_dedupe(fallback) == normalized:
+        for candidate in list(getattr(agent, "_dedupe_reply_pool", []) or []):
+            if agent._normalize_for_dedupe(candidate) != normalized:
+                fallback = candidate
+                break
     return fallback, agent._normalize_for_dedupe(fallback) != normalized
 
 

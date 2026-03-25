@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -49,6 +50,8 @@ class MessageProcessor(QObject):
         self.sessions = session_manager
         self.agent = agent
         self.conversation_logger = ConversationLogger(Path("data") / "conversations")
+        if hasattr(self.agent, "conversation_logger"):
+            self.agent.conversation_logger = self.conversation_logger
         self._support = MessageProcessorSupport(self.agent.memory_store)
 
         self._running = False
@@ -656,17 +659,20 @@ class MessageProcessor(QObject):
         self._start_decision_worker(decision_payload)
 
     def _start_decision_worker(self, payload: Dict[str, Any]) -> None:
+        if hasattr(self.agent, "conversation_logger"):
+            self.agent.conversation_logger = self.conversation_logger
         if payload.get("use_first_turn_opening", False):
             self._emit_log("🧭 首轮命中固定承接：后台直接生成固定文本和视频")
         if not self._running:
             try:
-                decision = _DecisionWorker.compute_decision(self.agent, payload)
+                worker = _DecisionWorker(self.agent, payload, self.sessions, parent=self)
+                decision = worker.compute_decision(self.agent, payload)
             except Exception as exc:
                 self._on_decision_worker_failed(payload, str(exc))
                 return
             self._on_decision_worker_ready(payload, decision)
             return
-        worker = _DecisionWorker(self.agent, payload, parent=self)
+        worker = _DecisionWorker(self.agent, payload, self.sessions, parent=self)
         worker.decision_ready.connect(self._on_decision_worker_ready)
         worker.decision_failed.connect(self._on_decision_worker_failed)
         worker.finished.connect(self._clear_decision_worker)
@@ -1560,26 +1566,34 @@ class _DecisionWorker(QThread):
         self,
         agent: CustomerServiceAgent,
         payload: Dict[str, Any],
+        session_manager: Optional[SessionManager] = None,
         parent: Optional[QObject] = None,
     ):
         super().__init__(parent)
         self._agent = agent
         self._payload = dict(payload or {})
+        self._session_manager = session_manager
 
-    @staticmethod
-    def compute_decision(agent: CustomerServiceAgent, payload: Dict[str, Any]) -> AgentDecision:
+    def compute_decision(self, agent: CustomerServiceAgent, payload: Dict[str, Any]) -> AgentDecision:
         if payload.get("use_first_turn_opening", False):
             return payload["build_first_turn_opening_decision"](
                 session_id=payload["session_id"],
                 user_name=payload["user_name"],
             )
-        return agent.decide(
-            session_id=payload["session_id"],
-            user_name=payload["user_name"],
-            latest_user_text=payload["latest_user_text"],
-            conversation_history=list(payload.get("conversation_history", []) or []),
-            first_turn_global_override=bool(payload.get("is_first_turn_global", False)),
-        )
+        decide_kwargs = {
+            "session_id": payload["session_id"],
+            "user_name": payload["user_name"],
+            "latest_user_text": payload["latest_user_text"],
+            "conversation_history": list(payload.get("conversation_history", []) or []),
+            "first_turn_global_override": bool(payload.get("is_first_turn_global", False)),
+        }
+        try:
+            signature = inspect.signature(agent.decide)
+        except (TypeError, ValueError):
+            signature = None
+        if signature is None or "session_manager" in signature.parameters:
+            decide_kwargs["session_manager"] = self._session_manager
+        return agent.decide(**decide_kwargs)
 
     def run(self):
         try:

@@ -221,6 +221,7 @@ class MainWindow(QWidget):
             session_manager=self.session_manager,
             agent=self.agent,
         )
+        self.agent.conversation_logger = self.message_processor.conversation_logger
         # 素材页初始化时可能触发配置迁移，启动后立即重载一次媒体索引确保 Agent 与配置一致。
         self.message_processor.reload_media_config()
         self._load_remote_control_settings()

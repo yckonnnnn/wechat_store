@@ -19,6 +19,7 @@ from ..data.memory_store import MemoryStore
 from . import agent_media
 from . import agent_llm_reply
 from . import agent_rule_engine
+from .intent_detector import IntentDetector
 from .agent_guardrails import (
     apply_llm_reply_guardrails,
     build_reply_closure_info,
@@ -29,7 +30,10 @@ from .agent_prompt_builder import build_general_llm_prompt, summarize_llm_conver
 from .agent_types import AgentDecision, MediaJudgeDecision, _SafeDict
 from ..services.knowledge_service import KnowledgeService
 from ..services.llm_service import LLMService
+from ..services.conversation_logger import ConversationLogger
 from ..utils.constants import BRAND_KNOWLEDGE_FILE
+from .session_state_unified import UnifiedSessionState
+from .deduplication import DeduplicationChecker
 
 
 CONTACT_INTENT_KEYWORDS = (
@@ -532,7 +536,7 @@ REPLY_MODE_LLM_DIRECT = "llm_direct"
 
 
 DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
-    "ask_region_r1": "姐姐，您在什么城市/区域呀？方便告诉我吗？我可以帮您针对性推荐门店，我们目前北京朝阳1家、上海5家（静安、人广、虹口、五角场、徐汇）🌹",
+    "ask_region_r1": "姐姐，您在什么城市/区域呀？您在哪个城市呀，哪个区域也可以告诉我，我可以帮您针对性推荐门店，我们目前北京朝阳1家、上海5家（静安、人广、虹口、五角场、徐汇）🌹",
     "ask_region_r2": "姐姐，我再帮您确认一下，您现在在哪个城市或区域呀？我按距离给您匹配最近门店～🌹",
     "ask_region_choice": "姐姐您在上海吗？不确定也没关系，告诉我个地标我也能帮您匹配～🌹",
     "ask_region_r1_reset": "姐姐我再帮您快速确认下，您在什么城市或区域呀？我马上按距离给您匹配最近门店～🌹",
@@ -548,8 +552,8 @@ DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
     "contact_intro": "姐姐您直接看图片添加后跟我说一声，我这边一对一继续跟进您呀😊",
     "purchase_contact_intro": "姐姐您可以直接看图片添加，会有专门的老师给您介绍～❤️",
     "purchase_contact_remind_only": "姐姐，您直接看上面的图片添加就可以，可以详细给您介绍怎么买～💗",
-    "purchase_contact_remote_remind_only": "姐姐，您可以往上看图片添加，我让老师一对一跟您远程定制❤️",
-    "strong_intent_after_both_first": "姐姐，您可以直接看上面的图片添加，我让老师跟您预约～💗",
+    "purchase_contact_remote_remind_only": "姐姐，您可以往上看图片里画圈的位置添加，我让老师一对一跟您远程定制❤️",
+    "strong_intent_after_both_first": "姐姐，您可以直接看上面的图片里画圈圈的位置添加，我让老师跟您预约～💗",
     "contact_followup_1": "姐姐，您方便的话直接留个☎️给我，我来加您，后面我跟您详细对接😊",
     "contact_followup_2": "姐姐，您直接发个☎️给我就行，我这边加您后继续跟您详细说😊",
     "llm_fallback": "姐姐因咨询较多，您加我联系方式，我直接跟你电话沟通更快～🌹",
@@ -591,10 +595,12 @@ class CustomerServiceAgent:
         reply_templates_path: Optional[Path] = None,
         media_whitelist_path: Optional[Path] = None,
         conversation_log_dir: Optional[Path] = None,
+        conversation_logger: Optional[ConversationLogger] = None,
     ):
         self.knowledge_service = knowledge_service
         self.llm_service = llm_service
         self.memory_store = memory_store
+        self.conversation_logger = conversation_logger
 
         self.images_dir = images_dir
         self.image_categories_path = image_categories_path
@@ -651,6 +657,23 @@ class CustomerServiceAgent:
         self.reload_prompt_docs()
         self.reload_media_library()
         self.reload_rule_configs()
+
+        # 初始化统一状态管理
+        if self.conversation_logger:
+            self.unified_state = UnifiedSessionState(
+                self.memory_store,
+                # SessionManager 由外部传入，在 decide() 时动态创建
+                None,  # type: ignore
+                self.conversation_logger,
+            )
+        else:
+            self.unified_state = None  # type: ignore
+
+        # 初始化意图识别器
+        self.intent_detector = IntentDetector()
+
+        # 初始化去重检查器
+        self.dedup_checker = DeduplicationChecker(self.memory_store)
 
     def reload_prompt_docs(self) -> bool:
         """重载 system prompt 与 playbook 文档"""
@@ -768,16 +791,39 @@ class CustomerServiceAgent:
         latest_user_text: str,
         conversation_history: Optional[List[Dict[str, str]]] = None,
         first_turn_global_override: Optional[bool] = None,
+        session_manager: Optional[Any] = None,
     ) -> AgentDecision:
         """主决策入口"""
         self.memory_store.prune_expired(ttl_days=self.memory_ttl_days)
         visible_history = list(conversation_history or [])
 
         user_hash = self._hash_user(user_name or session_id)
-        session_state = self.memory_store.get_session_state(session_id, user_hash=user_hash)
+
+        # 获取统一状态（优先）或回退到旧逻辑
+        if self.conversation_logger:
+            unified_state_manager = UnifiedSessionState(
+                self.memory_store,
+                session_manager,
+                self.conversation_logger,
+            )
+            state = unified_state_manager.get_state(session_id, user_hash)
+            self._current_unified_state = state
+        else:
+            session_state = self.memory_store.get_session_state(session_id, user_hash=user_hash)
+            self._current_unified_state = session_state
+
+        session_state = self._current_unified_state
         user_state = self.memory_store.get_user_state(user_hash)
         if first_turn_global_override is None:
-            is_first_turn_global = not bool(visible_history)
+            if visible_history:
+                is_first_turn_global = False
+            elif self._has_meaningful_session_progress(session_state):
+                is_first_turn_global = False
+            else:
+                try:
+                    is_first_turn_global = bool(self.is_user_first_turn_global(user_hash))
+                except Exception:
+                    is_first_turn_global = True
         else:
             is_first_turn_global = bool(first_turn_global_override)
         self._sync_media_state_from_conversation_log(
@@ -786,6 +832,7 @@ class CustomerServiceAgent:
             session_state=session_state,
         )
         self._reconcile_conversation_context_with_visible_history(
+            session_id=session_id,
             latest_user_text=latest_user_text,
             conversation_history=visible_history,
             session_state=session_state,
@@ -843,7 +890,11 @@ class CustomerServiceAgent:
                 "store_address": None,
                 "detected_region": "外地",
             }
-        intent = self._detect_intent(text)
+        intent = self.intent_detector.detect(
+            text=text,
+            conversation_history=visible_history or [],
+            state=self._current_unified_state,
+        )
         forced_first_turn_address_decision: Optional[AgentDecision] = None
         if (
             is_first_turn_global
@@ -865,6 +916,7 @@ class CustomerServiceAgent:
             text=raw_text,
             route=route,
             session_state=session_state,
+            conversation_history=visible_history or [],
         )
         if decision is None and self.reply_mode == REPLY_MODE_LLM_DIRECT:
             decision = self._decide_llm_direct_seed_reply(
@@ -915,6 +967,7 @@ class CustomerServiceAgent:
                 latest_user_text=text,
                 route=route,
                 session_state=session_state,
+                conversation_history=conversation_history or [],
                 user_state=user_state,
                 user_id_hash=user_hash,
             )
@@ -935,6 +988,22 @@ class CustomerServiceAgent:
                 user_state=user_state,
                 user_id_hash=user_hash,
             )
+
+        effective_rule_intent = intent
+        if (
+            effective_rule_intent == "appointment"
+            and appointment_kb_decision is None
+            and self._looks_like_appointment_query(text)
+            and self._has_both_images_sent(session_state)
+        ):
+            effective_rule_intent = "purchase"
+
+        if (
+            effective_rule_intent in {"followup", "general"}
+            and self._looks_like_appointment_query(text)
+            and str(session_state.get("last_target_store", "") or "").strip() not in {"", "unknown"}
+        ):
+            effective_rule_intent = "appointment"
 
         if remote_flow_decision is not None:
             decision = remote_flow_decision
@@ -957,16 +1026,16 @@ class CustomerServiceAgent:
         elif travel_schedule_store_followup_decision is not None:
             decision = travel_schedule_store_followup_decision
         elif (
-            self._should_apply_rule_decision(text=text, intent=intent, route=route, session_state=session_state)
+            self._should_apply_rule_decision(text=text, intent=effective_rule_intent, route=route, session_state=session_state)
             and not (
                 self.reply_mode == REPLY_MODE_LLM_DIRECT
                 and self._should_keep_llm_direct_address_guardrails(text, session_state=session_state)
             )
         ):
-            print(f"[DEBUG] 走规则决策: intent={intent}, route_reason={route.get('reason', 'unknown')}, target_store={route.get('target_store', 'unknown')}")
+            print(f"[DEBUG] 走规则决策: intent={effective_rule_intent}, route_reason={route.get('reason', 'unknown')}, target_store={route.get('target_store', 'unknown')}")
             decision = self._decide_rule_reply(
                 text=text,
-                intent=intent,
+                intent=effective_rule_intent,
                 route=route,
                 session_state=session_state,
                 conversation_history=conversation_history or [],
@@ -1032,6 +1101,7 @@ class CustomerServiceAgent:
         if (
             decision is not None
             and str(decision.rule_id or "") == "ADDR_STORE_RECOMMEND"
+            and visible_history
             and self._should_skip_store_recommend_override(route=route, session_state=session_state)
         ):
             if self.reply_mode == REPLY_MODE_LLM_DIRECT:
@@ -1098,6 +1168,18 @@ class CustomerServiceAgent:
         decision.video_trigger_user_count = int(session_state.get("session_user_message_count_after_contact", 0) or 0)
 
         original_media_plan = decision.media_plan
+        planning_route = dict(route or {})
+        if (
+            str(decision.rule_id or "") == "ADDR_STORE_RECOMMEND"
+            and str(planning_route.get("target_store", "") or "").strip() in {"", "unknown"}
+        ):
+            inferred_store = str(
+                self._infer_store_from_context_text(decision.reply_text)
+                or session_state.get("last_target_store", "")
+                or ""
+            ).strip()
+            if inferred_store and inferred_store != "unknown":
+                planning_route["target_store"] = inferred_store
         if self.reply_mode == REPLY_MODE_LLM_DIRECT:
             media_items, media_skip_reason = [], "reply_mode_llm_direct"
         else:
@@ -1105,7 +1187,7 @@ class CustomerServiceAgent:
                 session_id=session_id,
                 text=text,
                 intent=decision.intent,
-                route=route,
+                route=planning_route,
                 route_reason=decision.route_reason,
                 media_plan=original_media_plan,
                 session_state=session_state,
@@ -1215,12 +1297,31 @@ class CustomerServiceAgent:
                 "last_answer_facts": current_answer_facts,
                 "last_answer_mode": current_answer_mode,
                 "last_answer_text_normalized": self._normalize_for_dedupe(decision.reply_text),
+                "session_runtime_turn_count": int(session_state.get("session_runtime_turn_count", 0) or 0) + 1,
                 **conversation_state_updates,
             },
             user_hash=user_hash,
         )
         self.memory_store.save()
         return decision
+
+    def _has_meaningful_session_progress(self, session_state: Optional[Dict[str, Any]] = None) -> bool:
+        state = dict(session_state or {})
+        if str(state.get("last_route_reason", "") or "").strip() not in {"", "unknown"}:
+            return True
+        if str(state.get("last_answer_topic", "") or "").strip():
+            return True
+        if str(state.get("last_target_store", "") or "").strip() not in {"", "unknown"}:
+            return True
+        if int(state.get("address_image_sent_count", 0) or 0) > 0:
+            return True
+        if int(state.get("contact_image_sent_count", 0) or 0) > 0:
+            return True
+        if int(state.get("geo_followup_round", 0) or 0) > 0:
+            return True
+        if bool(state.get("remote_flow_active", False)):
+            return True
+        return False
 
     def mark_reply_sent(
         self,
@@ -1405,6 +1506,7 @@ class CustomerServiceAgent:
         text: str,
         route: Dict[str, Any],
         session_state: Dict[str, Any],
+        conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> Optional[AgentDecision]:
         normalized = self._normalize_flow_text(text)
         if not normalized:
@@ -1412,15 +1514,47 @@ class CustomerServiceAgent:
 
         route_reason = str(route.get("reason", "") or "unknown")
         remote_active = self._is_remote_flow_active(session_state)
-        explicit_remote = (
-            route_reason in {"out_of_coverage", "not_in_shanghai_remote"}
-            or self._looks_like_remote_region_query(text)
-            or self._looks_like_remote_visit_block(text)
+        purchase_like_remote = (
+            self._looks_like_remote_purchase_progress(text)
+            or self._looks_like_appointment_query(text)
+            or self.knowledge_service.is_address_query(text)
+            or self.knowledge_service.is_purchase_intent(text)
+        )
+        strong_remote_statement = (
+            self._looks_like_remote_visit_block(text)
             or self._looks_like_remote_shipping_query(text)
+            or (
+                self._looks_like_remote_region_query(text)
+                and not purchase_like_remote
+                and "我在" in normalized
+                and not any(token in normalized for token in ("怎么", "如何", "地址", "位置", "预约", "买"))
+            )
+        )
+        explicit_remote_entry = (
+            route_reason in {"out_of_coverage", "not_in_shanghai_remote"}
+            and not bool(session_state.get("last_geo_pending", False))
+            and (
+                strong_remote_statement
+                or purchase_like_remote
+                or self._looks_like_remote_region_query(text)
+                or "我在" in normalized
+            )
+        )
+        if not remote_active and not explicit_remote_entry:
+            return None
+        explicit_remote = explicit_remote_entry or (remote_active and strong_remote_statement)
+        history = list(conversation_history or [])
+        visible_remote_history = any(
+            str(item.get("role", "") or "") == "assistant"
+            and any(token in str(item.get("content", "") or "") for token in ("远程定制", "外地也可以"))
+            for item in history
         )
         remote_followup = remote_active and (
             self._looks_like_remote_shipping_query(text)
-            or self._looks_like_remote_purchase_progress(text)
+            or (
+                self._looks_like_remote_purchase_progress(text)
+                and visible_remote_history
+            )
             or self._looks_like_remote_urgent_query(text)
             or self._looks_like_remote_contact_followup(text)
         )
@@ -1664,6 +1798,7 @@ class CustomerServiceAgent:
             session_state["conversation_stage"] = ""
         if clear_geo_prompt:
             session_state["geo_followup_round"] = 0
+            session_state["geo_followup_exhausted"] = False
             session_state["geo_choice_offered"] = False
             session_state["last_geo_pending"] = False
             session_state["last_detected_region"] = ""
@@ -1750,10 +1885,12 @@ class CustomerServiceAgent:
         session_state["session_post_contact_reply_count"] = 0
         session_state["session_user_message_count_after_contact"] = 0
         session_state["purchase_both_first_hint_sent"] = False
+        session_state["session_runtime_turn_count"] = 0
         self._clear_transient_user_context(user_state)
 
     def _reconcile_conversation_context_with_visible_history(
         self,
+        session_id: str,
         latest_user_text: str,
         conversation_history: List[Dict[str, str]],
         session_state: Dict[str, Any],
@@ -1761,7 +1898,22 @@ class CustomerServiceAgent:
     ) -> None:
         visible_history = list(conversation_history or [])
         if not visible_history:
-            self._clear_conversation_state_for_fresh_start(session_state, user_state)
+            has_runtime_progress = int(session_state.get("session_runtime_turn_count", 0) or 0) > 0
+            has_session_log_context = bool(self._read_session_log_records(session_id))
+            normalized_latest = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
+            explicit_address_revisit = (
+                str(session_state.get("last_target_store", "") or "").strip() not in {"", "unknown"}
+                and int(session_state.get("address_image_sent_count", 0) or 0) > 0
+                and any(token in normalized_latest for token in ("位置图", "再发", "看图", "在哪", "哪儿"))
+            )
+            if not has_runtime_progress and not has_session_log_context:
+                if explicit_address_revisit:
+                    return
+                preserve_recent_hashes = not self._has_meaningful_session_progress(session_state)
+                recent_hashes = list(user_state.get("recent_reply_hashes", []) or [])
+                self._clear_conversation_state_for_fresh_start(session_state, user_state)
+                if preserve_recent_hashes:
+                    user_state["recent_reply_hashes"] = recent_hashes
             return
 
         visible_store = self._infer_store_from_context_text(latest_user_text)
@@ -1802,6 +1954,7 @@ class CustomerServiceAgent:
             session_state["last_geo_pending"] = False
             session_state["last_geo_route_reason"] = "unknown"
             session_state["geo_followup_round"] = 0
+            session_state["geo_followup_exhausted"] = False
             session_state["geo_choice_offered"] = False
             if not visible_store:
                 session_state["last_detected_region"] = ""
@@ -2426,13 +2579,13 @@ class CustomerServiceAgent:
         route: Dict[str, Any],
         user_state: Dict[str, Any],
         session_state: Optional[Dict[str, Any]] = None,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
         user_id_hash: str = "",
     ) -> Optional[AgentDecision]:
         state = dict(session_state or {})
-        store_specific_reply = self._build_store_appointment_contact_reply(
-            latest_user_text,
-            route,
-            session_state=state,
+        has_both_images_sent = (
+            int(state.get("address_image_sent_count", 0) or 0) > 0
+            and int(state.get("contact_image_sent_count", 0) or 0) > 0
         )
         kb_detail = self.knowledge_service.find_answer_detail(
             latest_user_text,
@@ -2440,20 +2593,26 @@ class CustomerServiceAgent:
         )
         kb_intent = str(kb_detail.get("intent", "") or "").strip().lower()
         tags = {str(tag).strip() for tag in (kb_detail.get("tags", []) or []) if str(tag).strip()}
+        if has_both_images_sent and not (kb_detail.get("matched") and (kb_intent == "appointment" or "预约" in tags)):
+            return None
+        store_specific_reply = self._build_store_appointment_contact_reply(
+            latest_user_text,
+            route,
+            session_state=state,
+            conversation_history=conversation_history or [],
+        )
         if store_specific_reply:
-            has_sent_address = int(state.get("address_image_sent_count", 0) or 0) > 0
             route_target_store = str(route.get("target_store", "") or "").strip()
             if not route_target_store or route_target_store == "unknown":
                 route_target_store = str(state.get("last_target_store", "") or "").strip()
-            explicit_location = str(route.get("reason", "") or "").strip() not in {"", "unknown"}
-            if (explicit_location or has_sent_address) and route_target_store and route_target_store != "unknown":
-                should_force_contact_image = int(state.get("contact_image_sent_count", 0) or 0) <= 0
+            if route_target_store and route_target_store != "unknown":
+                should_send_contact_image = int(state.get("contact_image_sent_count", 0) or 0) <= 0
                 return AgentDecision(
                     reply_text=store_specific_reply,
                     intent="appointment",
                     route_reason=str(route.get("reason", "unknown") or "unknown"),
-                    reply_goal="承接联系方式" if should_force_contact_image else "解答",
-                    media_plan="contact_image" if should_force_contact_image else "none",
+                    reply_goal="承接联系方式" if should_send_contact_image else "解答",
+                    media_plan="contact_image" if should_send_contact_image else "none",
                     reply_source="knowledge",
                     rule_id="KB_MATCH_CONTACT_IMAGE",
                     rule_applied=False,
@@ -2465,15 +2624,9 @@ class CustomerServiceAgent:
                     kb_variant_selected_index=-1,
                     kb_variant_fallback_llm=False,
                     kb_confident=True,
-                    force_contact_image=should_force_contact_image,
+                    force_contact_image=should_send_contact_image,
                     kb_contact_trigger_type="appointment",
                 )
-        has_both_images_sent = (
-            int(state.get("address_image_sent_count", 0) or 0) > 0
-            and int(state.get("contact_image_sent_count", 0) or 0) > 0
-        )
-        if has_both_images_sent and kb_detail.get("matched") and kb_intent == "appointment":
-            return None
         if not (kb_detail.get("matched") and (kb_intent == "appointment" or "预约" in tags)):
             if has_both_images_sent:
                 return None
@@ -2499,12 +2652,13 @@ class CustomerServiceAgent:
         if store_specific_reply:
             answer = store_specific_reply
 
+        should_send_contact_image = int(state.get("contact_image_sent_count", 0) or 0) <= 0
         return AgentDecision(
             reply_text=answer,
             intent="appointment",
             route_reason=str(route.get("reason", "unknown") or "unknown"),
-            reply_goal="承接联系方式" if int(state.get("contact_image_sent_count", 0) or 0) <= 0 else "解答",
-            media_plan="contact_image" if int(state.get("contact_image_sent_count", 0) or 0) <= 0 else "none",
+            reply_goal="承接联系方式" if should_send_contact_image else "解答",
+            media_plan="contact_image" if should_send_contact_image else "none",
             reply_source="knowledge",
             rule_id="KB_MATCH_CONTACT_IMAGE",
             rule_applied=False,
@@ -2516,7 +2670,7 @@ class CustomerServiceAgent:
             kb_variant_selected_index=selected_index if selected_answer else (-1 if exhausted else 0),
             kb_variant_fallback_llm=False,
             kb_confident=True,
-            force_contact_image=int(state.get("contact_image_sent_count", 0) or 0) <= 0,
+            force_contact_image=should_send_contact_image,
             kb_contact_trigger_type="appointment",
         )
 
@@ -2525,6 +2679,7 @@ class CustomerServiceAgent:
         latest_user_text: str,
         route: Dict[str, Any],
         session_state: Optional[Dict[str, Any]] = None,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> str:
         text = str(latest_user_text or "").strip()
         if not text:
@@ -2537,18 +2692,26 @@ class CustomerServiceAgent:
         has_store_context = bool(target_store and target_store != "unknown")
         if route_type != "coverage" and not has_store_context:
             return ""
+        visible_history = list(conversation_history or [])
         if not (
             self._looks_like_appointment_query(text)
             or self.knowledge_service.is_address_query(text)
             or self._has_precise_geo_context_for_current_query(route)
         ):
             return ""
+        allow_store_specific_context = (
+            bool(visible_history)
+            or int(state.get("address_image_sent_count", 0) or 0) > 0
+            or str(route.get("reason", "") or "").strip() not in {"", "unknown"}
+        )
+        if not allow_store_specific_context:
+            return ""
         store = self.knowledge_service.get_store_display(target_store)
         store_name = str(store.get("store_name", "") or self._store_recommend_display_name(target_store, "门店"))
         if target_store == "beijing_chaoyang" and store_name.endswith("门店"):
             store_name = f"{store_name[:-2]}店"
         if int(state.get("contact_image_sent_count", 0) or 0) <= 0:
-            return "姐姐，预约需要加专属客服帮您预约到店，好有老师接待您！❤️"
+            return f"姐姐，{store_name}这边您看下面的圈圈+我好友（专属客服），我帮您预约到店，好让老师提前安排接待您！❤️"
         return f"姐姐，您加上专属客服后，把方便的时间发我，我这边就帮您安排{store_name}的预约到店，好有老师接待您！❤️"
 
     def _looks_like_process_query(self, text: str) -> bool:
@@ -3523,6 +3686,11 @@ class CustomerServiceAgent:
     ) -> bool:
         if str(decision.intent or "") != "address":
             return False
+        closure_info = dict(getattr(decision, "reply_closure_info", {}) or {})
+        if str(closure_info.get("target_store", "") or "").strip():
+            return False
+        if str(closure_info.get("closure_type", "") or "") in {"precise_address", "address_image_promise", "store_recommendation"}:
+            return False
 
         route_reason = str(
             decision.route_reason or route.get("reason", "") or session_state.get("last_geo_route_reason", "")
@@ -3936,6 +4104,11 @@ class CustomerServiceAgent:
         if current_topic == "appointment" and bool(getattr(decision, "force_contact_image", False)):
             return False
         if current_topic == "appointment" and str(getattr(decision, "rule_id", "") or "") == "KB_MATCH_CONTACT_IMAGE":
+            return False
+        if current_topic == "appointment" and str(getattr(decision, "rule_id", "") or "") in {
+            "PURCHASE_CONTACT_REMIND_ONLY",
+            "PURCHASE_CONTACT_FROM_KNOWN_GEO",
+        }:
             return False
 
         if decision.reply_source not in {"knowledge", "rule", "llm"} and decision.rule_id != "LLM_KB_VARIANT_FALLBACK":
