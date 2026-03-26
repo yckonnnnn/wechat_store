@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import agent_contact_flow
 from .agent_types import AgentDecision, MediaJudgeDecision
 
 
@@ -483,6 +484,9 @@ def mark_media_sent(agent, session_id: str, user_name: str, media_item: Dict[str
     elif media_type == "contact_image":
         sent_count = int(session_state.get("contact_image_sent_count", 0) or 0)
         session_state["contact_image_sent_count"] = sent_count + 1
+        if sent_count >= 1:
+            resend_count = int(session_state.get("contact_image_resend_count", 0) or 0)
+            session_state["contact_image_resend_count"] = resend_count + 1
         session_state["contact_image_last_sent_at"] = now
         if bool(session_state.get("remote_flow_active", False)):
             session_state["remote_contact_image_sent"] = True
@@ -672,11 +676,16 @@ def queue_contact_image(
     session_state: Dict[str, Any],
     force_contact_image: bool = False,
 ) -> Tuple[Optional[Dict[str, Any]], str]:
-    if (
-        not is_media_whitelist_session(agent, session_id)
-        and int(session_state.get("contact_image_sent_count", 0) or 0) >= 3
-    ):
-        return None, "contact_image_already_sent"
+    sent_count = int(session_state.get("contact_image_sent_count", 0) or 0)
+    explicit_resend = bool(
+        agent_contact_flow.looks_like_explicit_contact_image_resend_request(text)
+        or getattr(agent, "_looks_like_missing_media_request", lambda _text: False)(text)
+    )
+    if not is_media_whitelist_session(agent, session_id):
+        if sent_count >= 3:
+            return None, "contact_image_already_sent"
+        if sent_count >= 2 and not explicit_resend:
+            return None, "contact_image_limit_without_explicit_resend"
     if not agent._contact_images:
         return None, "contact_image_missing"
 

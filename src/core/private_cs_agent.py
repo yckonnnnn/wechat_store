@@ -19,6 +19,7 @@ from ..data.memory_store import MemoryStore
 from . import agent_media
 from . import agent_llm_reply
 from . import agent_rule_engine
+from . import agent_contact_flow
 from .intent_detector import IntentDetector
 from .agent_guardrails import (
     apply_llm_reply_guardrails,
@@ -856,7 +857,7 @@ class CustomerServiceAgent:
         raw_text = (latest_user_text or "").strip()
         text = self.knowledge_service.normalize_user_text(raw_text).strip()
         if self._looks_like_phone_submission(text):
-            return AgentDecision(
+            decision = AgentDecision(
                 reply_text=USER_PHONE_SUBMITTED_REPLY,
                 intent="contact",
                 route_reason="user_phone_submitted",
@@ -867,12 +868,18 @@ class CustomerServiceAgent:
                 rule_applied=True,
                 reply_mode=self.reply_mode,
             )
-        contact_progress_ack_decision = self._build_contact_progress_ack_decision(
+            agent_contact_flow.persist_contact_capture_state(self, session_id, user_hash, session_state, decision)
+            return decision
+        contact_progress_ack_decision = agent_contact_flow.build_contact_progress_ack_decision(
+            self,
             text=text,
             session_state=session_state,
             conversation_history=conversation_history,
         )
         if contact_progress_ack_decision is not None:
+            agent_contact_flow.persist_contact_capture_state(
+                self, session_id, user_hash, session_state, contact_progress_ack_decision
+            )
             return contact_progress_ack_decision
         weekend_closed_decision = self._build_weekend_closed_decision(
             text=text,
@@ -909,6 +916,7 @@ class CustomerServiceAgent:
             conversation_history=visible_history or [],
             state=self._current_unified_state,
         )
+        decision: Optional[AgentDecision] = None
         forced_first_turn_address_decision: Optional[AgentDecision] = None
         if (
             is_first_turn_global
@@ -925,7 +933,8 @@ class CustomerServiceAgent:
                 user_state=user_state,
                 is_first_turn_global=is_first_turn_global,
             )
-        decision: Optional[AgentDecision] = forced_first_turn_address_decision
+        if decision is None:
+            decision = forced_first_turn_address_decision
         remote_flow_decision = self._build_remote_flow_decision(
             text=raw_text,
             route=route,
@@ -1150,6 +1159,26 @@ class CustomerServiceAgent:
                     user_state=user_state,
                     user_id_hash=user_hash,
                 )
+
+        if (
+            decision is not None
+            and bool(session_state.get("contact_captured", False))
+            and str(decision.rule_id or "") not in {
+                "CONTACT_PHONE_SUBMITTED",
+                "CONTACT_ALREADY_ADDED",
+                "CONTACT_ALREADY_CAPTURED",
+                "LLM_CONTACT_CAPTURED",
+            }
+            and self._is_contact_fact_risk(raw_text, decision.reply_text)
+        ):
+            decision = self._decide_llm_reply(
+                latest_user_text=raw_text,
+                intent=intent,
+                route_reason=str(route.get("reason", "unknown") or "unknown"),
+                conversation_history=conversation_history or [],
+                session_state=session_state,
+                rule_id="LLM_CONTACT_CAPTURED",
+            )
 
         copy_lock_rule_ids = {
             "PURCHASE_CONTACT_FROM_KNOWN_GEO",
@@ -1584,6 +1613,8 @@ class CustomerServiceAgent:
         normalized = self._normalize_flow_text(text)
         if not normalized:
             return None
+        if bool(session_state.get("contact_captured", False)):
+            return None
 
         route_reason = str(route.get("reason", "") or "unknown")
         remote_active = self._is_remote_flow_active(session_state)
@@ -1665,77 +1696,6 @@ class CustomerServiceAgent:
             reply_mode=self.reply_mode,
         )
 
-    def _looks_like_contact_added_confirmation(self, text: str) -> bool:
-        normalized = re.sub(r"\s+", "", str(text or "")).lower()
-        if not normalized:
-            return False
-        patterns = (
-            "刚才加你了",
-            "刚刚加你了",
-            "已经加你了",
-            "加你了",
-            "加你微信了",
-            "加你好友了",
-            "加上你了",
-            "加上了",
-        )
-        return any(pattern in normalized for pattern in patterns)
-
-    def _looks_like_contact_already_captured(self, text: str) -> bool:
-        normalized = re.sub(r"\s+", "", str(text or "")).lower()
-        if not normalized:
-            return False
-        patterns = (
-            "留了两次电话",
-            "留过电话了",
-            "留过两次电话",
-            "已经留过电话了",
-            "已经留电话了",
-            "留了电话了",
-            "刚才留过电话",
-            "我都留两次电话了",
-            "我都留电话了",
-        )
-        return any(pattern in normalized for pattern in patterns)
-
-    def _build_contact_progress_ack_decision(
-        self,
-        text: str,
-        session_state: Dict[str, Any],
-        conversation_history: Optional[List[Dict[str, str]]] = None,
-    ) -> Optional[AgentDecision]:
-        history = conversation_history or []
-        has_contact_context = (
-            int(session_state.get("contact_image_sent_count", 0) or 0) > 0
-            or int(session_state.get("session_post_contact_reply_count", 0) or 0) > 0
-            or any(self._looks_like_phone_submission(str(item.get("content", "") or "")) for item in history if item.get("role") == "user")
-            or any("稍后加您好友" in str(item.get("content", "") or "") for item in history if item.get("role") == "assistant")
-        )
-        if self._looks_like_contact_added_confirmation(text) and has_contact_context:
-            return AgentDecision(
-                reply_text=CONTACT_ALREADY_ADDED_REPLY,
-                intent="contact",
-                route_reason="contact_already_added",
-                reply_goal="承接联系方式",
-                media_plan="none",
-                reply_source="rule",
-                rule_id="CONTACT_ALREADY_ADDED",
-                rule_applied=True,
-                reply_mode=self.reply_mode,
-            )
-        if self._looks_like_contact_already_captured(text) and has_contact_context:
-            return AgentDecision(
-                reply_text=CONTACT_ALREADY_CAPTURED_REPLY,
-                intent="contact",
-                route_reason="contact_already_captured",
-                reply_goal="承接联系方式",
-                media_plan="none",
-                reply_source="rule",
-                rule_id="CONTACT_ALREADY_CAPTURED",
-                rule_applied=True,
-                reply_mode=self.reply_mode,
-            )
-        return None
 
     def _looks_like_weekend_closed_query(self, text: str, session_state: Optional[Dict[str, Any]] = None) -> bool:
         normalized = re.sub(r"\s+", "", str(text or "")).lower()
@@ -1763,7 +1723,7 @@ class CustomerServiceAgent:
         if not self._looks_like_weekend_closed_query(text, session_state=session_state):
             return None
         return AgentDecision(
-            reply_text=VISIT_TIME_CONFIRM_REPLY,
+            reply_text=WEEKEND_CLOSED_REPLY,
             intent="general",
             route_reason="weekend_closed",
             reply_goal="解答",
@@ -1926,13 +1886,15 @@ class CustomerServiceAgent:
                 return True
         return False
 
-    def _clear_contact_session_context(self, session_state: Dict[str, Any]) -> None:
+    def _clear_contact_session_context(self, session_state: Dict[str, Any], preserve_contact_captured: bool = False) -> None:
+        preserved_contact_captured = bool(session_state.get("contact_captured", False)) if preserve_contact_captured else False
         session_state["contact_image_sent_count"] = 0
         session_state["contact_image_last_sent_at"] = ""
         session_state["contact_image_sent_paths"] = []
         session_state["contact_warmup"] = False
+        session_state["contact_captured"] = preserved_contact_captured
         session_state["remote_contact_image_sent"] = False
-        session_state["remote_contact_captured"] = False
+        session_state["remote_contact_captured"] = preserved_contact_captured
         if str(session_state.get("active_topic", "") or "") == "appointment":
             session_state["active_topic"] = ""
         if str(session_state.get("conversation_stage", "") or "") == "appointment_ready":
@@ -1984,22 +1946,20 @@ class CustomerServiceAgent:
     ) -> None:
         visible_history = list(conversation_history or [])
         if not visible_history:
-            has_runtime_progress = int(session_state.get("session_runtime_turn_count", 0) or 0) > 0
-            has_session_log_context = bool(self._read_session_log_records(session_id))
             normalized_latest = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
             explicit_address_revisit = (
                 str(session_state.get("last_target_store", "") or "").strip() not in {"", "unknown"}
                 and int(session_state.get("address_image_sent_count", 0) or 0) > 0
                 and any(token in normalized_latest for token in ("位置图", "再发", "看图", "在哪", "哪儿"))
             )
-            if not has_runtime_progress and not has_session_log_context:
-                if explicit_address_revisit:
-                    return
-                preserve_recent_hashes = not self._has_meaningful_session_progress(session_state)
-                recent_hashes = list(user_state.get("recent_reply_hashes", []) or [])
-                self._clear_conversation_state_for_fresh_start(session_state, user_state)
-                if preserve_recent_hashes:
-                    user_state["recent_reply_hashes"] = recent_hashes
+            preserve_hidden_context = bool(session_state.get("remote_flow_active", False))
+            if explicit_address_revisit or preserve_hidden_context:
+                return
+            preserve_recent_hashes = not self._has_meaningful_session_progress(session_state)
+            recent_hashes = list(user_state.get("recent_reply_hashes", []) or [])
+            self._clear_conversation_state_for_fresh_start(session_state, user_state)
+            if preserve_recent_hashes:
+                user_state["recent_reply_hashes"] = recent_hashes
             return
 
         visible_store = self._infer_store_from_context_text(latest_user_text)
@@ -2013,7 +1973,6 @@ class CustomerServiceAgent:
         address_info_shared = self._history_has_address_info_shared(visible_history)
         geo_prompt_visible = self._history_has_geo_followup_prompt(visible_history)
         contact_context_visible = self._history_has_contact_context(latest_user_text, visible_history)
-
         if not visible_store and not address_info_shared and not geo_prompt_visible:
             self._clear_address_session_context(session_state, clear_geo_prompt=True)
         if not contact_context_visible:
@@ -3824,6 +3783,15 @@ class CustomerServiceAgent:
     def _is_contact_fact_risk(self, text: str, reply_text: str) -> bool:
         normalized_text = re.sub(r"\s+", "", str(text or "")).lower()
         normalized_reply = re.sub(r"\s+", "", str(reply_text or "")).lower()
+        risky_reply_tokens = (
+            "加您",
+            "加你",
+            "加好友",
+            "留个方式",
+            "具体沟通",
+            "主动跟您介绍",
+            "我来加您",
+        )
         if self._looks_like_direct_contact_request(text):
             return True
         if re.search(r"1[3-9]\d{9}", normalized_text):
@@ -3831,6 +3799,8 @@ class CustomerServiceAgent:
         if any(k.lower() in normalized_text for k in CONTACT_INTENT_KEYWORDS):
             return True
         if any(k.lower() in normalized_reply for k in CONTACT_COMPLIANCE_BLOCK_KEYWORDS):
+            return True
+        if any(token in normalized_reply for token in risky_reply_tokens):
             return True
         return bool(re.search(r"1[3-9]\d{9}", normalized_reply))
 
@@ -4213,6 +4183,7 @@ class CustomerServiceAgent:
             "remote_contact_image_sent": bool(session_state.get("remote_contact_image_sent", False)),
             "remote_flow_reason": str(session_state.get("remote_flow_reason", "") or ""),
             "remote_contact_captured": bool(session_state.get("remote_contact_captured", False)),
+            "contact_captured": bool(session_state.get("contact_captured", False)),
         }
         route_reason = str(getattr(decision, "route_reason", "") or "")
         if route_reason in {"remote_flow_entry", "remote_flow_followup", "out_of_coverage", "not_in_shanghai_remote"}:
@@ -4224,6 +4195,7 @@ class CustomerServiceAgent:
             "CONTACT_ALREADY_CAPTURED",
         }:
             updates["remote_contact_captured"] = True
+            updates["contact_captured"] = True
 
         normalized = self._normalize_flow_text(latest_user_text)
         if route.get("target_store") and str(route.get("target_store") or "") != "unknown" and not (

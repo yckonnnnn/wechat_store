@@ -7,6 +7,102 @@ from src.core.agent_types import AgentDecision
 
 
 class FollowupRegressionTestCase(unittest.TestCase):
+    def test_phone_submission_marks_contact_captured_for_session(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = helper._build_agent(temp_dir)
+
+            session_id = "phone_capture_state"
+            user_name = "留电话用户"
+            decision = agent.decide(session_id, user_name, "13812345678", [])
+            session_state = agent.memory_store.get_session_state(session_id, user_hash=agent._hash_user(user_name))
+
+            self.assertEqual(decision.rule_id, "CONTACT_PHONE_SUBMITTED")
+            self.assertTrue(session_state.get("contact_captured", False))
+
+    def test_contact_followup_switches_to_llm_after_phone_capture_but_still_allows_contact_image(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, llm = helper._build_agent(temp_dir)
+
+            session_id = "contact_followup_after_phone"
+            user_name = "怎么加用户"
+            first = agent.decide(session_id, user_name, "13812345678", [])
+            self.assertEqual(first.rule_id, "CONTACT_PHONE_SUBMITTED")
+
+            llm.reply_text = "姐姐电话我这边已经收到了，不用重复发，您看图就能继续联系到我们，我也接着回答您这边的问题🌹"
+            history = [
+                {"role": "user", "content": "13812345678"},
+                {"role": "assistant", "content": first.reply_text},
+            ]
+
+            second = agent.decide(session_id, user_name, "怎么加", history)
+            media_decision = agent.judge_post_reply_media(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text="怎么加",
+                reply_text=second.reply_text,
+                conversation_history=history,
+                decision=second,
+            )
+
+            self.assertEqual(second.reply_source, "llm")
+            self.assertEqual(second.rule_id, "LLM_CONTACT_CAPTURED")
+            self.assertNotIn("留个方式", second.reply_text)
+            self.assertNotIn("留个☎️", second.reply_text)
+            self.assertTrue(any(item.get("type") == "contact_image" for item in (media_decision.media_items or [])))
+
+    def test_contact_capture_prompt_fact_is_visible_to_llm(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, llm = helper._build_agent(temp_dir)
+
+            session_id = "contact_prompt_fact"
+            user_name = "提示词用户"
+            first = agent.decide(session_id, user_name, "13812345678", [])
+            self.assertEqual(first.rule_id, "CONTACT_PHONE_SUBMITTED")
+
+            llm.reply_text = "姐姐打车的话直接到门店附近更方便，我也会继续帮您安排🌹"
+            agent.decide(
+                session_id,
+                user_name,
+                "需要打车吗",
+                [
+                    {"role": "user", "content": "13812345678"},
+                    {"role": "assistant", "content": first.reply_text},
+                ],
+            )
+
+            self.assertIn("电话已收到：True", llm.prompt)
+            self.assertIn("如果电话已收到，不要再让用户留电话、留方式、加好友", llm.prompt)
+
+    def test_contact_already_captured_ack_handles_phone_complaint_phrases(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = helper._build_agent(temp_dir)
+
+            session_id = "contact_ack_phrase"
+            user_name = "抱怨用户"
+            user_hash = agent._hash_user(user_name)
+            session_state = agent.memory_store.get_session_state(session_id, user_hash=user_hash)
+            session_state.update({"contact_image_sent_count": 1})
+            agent.memory_store.update_session_state(session_id, session_state, user_hash=user_hash)
+            agent.memory_store.save()
+
+            decision = agent.decide(
+                session_id,
+                user_name,
+                "你究竟是要微信还是电话",
+                [{"role": "assistant", "content": "收到啦姐姐，我稍后加您好友，具体跟你详细介绍❤️"}],
+            )
+
+            self.assertEqual(decision.rule_id, "CONTACT_ALREADY_CAPTURED")
+            self.assertIn("不用重复发", decision.reply_text)
+
     def test_first_turn_generic_address_request_does_not_send_store_media_before_city_is_confirmed(self):
         helper = rule_engine_tests.RuleEngineTestCase()
         with tempfile.TemporaryDirectory() as td:
@@ -162,6 +258,85 @@ class FollowupRegressionTestCase(unittest.TestCase):
             self.assertNotIn("看图片", second.reply_text)
             self.assertNotIn("位置直接看图片", second.reply_text)
 
+    def test_contact_image_third_send_requires_explicit_resend_request(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = helper._build_agent(temp_dir)
+
+            session_id = "contact_resend_limit"
+            user_name = "联系方式补图用户"
+            user_hash = agent._hash_user(user_name)
+            session_state = agent.memory_store.get_session_state(session_id, user_hash=user_hash)
+            session_state.update(
+                {
+                    "contact_image_sent_count": 2,
+                    "contact_image_sent_paths": ["contact1.jpg", "contact2.jpg"],
+                }
+            )
+            agent.memory_store.update_session_state(session_id, session_state, user_hash=user_hash)
+            agent.memory_store.save()
+
+            blocked_media = agent.judge_post_reply_media(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text="那怎么预约",
+                reply_text="姐姐，是需要提前预约的。",
+                conversation_history=[],
+                decision=AgentDecision(
+                    reply_text="姐姐，是需要提前预约的。",
+                    intent="appointment",
+                    route_reason="test",
+                    reply_goal="解答",
+                    media_plan="none",
+                ),
+            )
+            self.assertFalse(any(item.get("type") == "contact_image" for item in (blocked_media.media_items or [])))
+
+            allowed_media = agent.judge_post_reply_media(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text="怎么加",
+                reply_text="姐姐，联系方式图我再给您发一次。🌹",
+                conversation_history=[],
+                decision=AgentDecision(
+                    reply_text="姐姐，联系方式图我再给您发一次。🌹",
+                    intent="contact",
+                    route_reason="test",
+                    reply_goal="解答",
+                    media_plan="contact_image",
+                ),
+            )
+            self.assertTrue(any(item.get("type") == "contact_image" for item in (allowed_media.media_items or [])))
+
+    def test_contact_captured_disables_remote_contact_push_rules(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, llm = helper._build_agent(temp_dir)
+            agent.set_options(use_knowledge_first=True, knowledge_threshold=0.6, reply_mode="llm_direct")
+
+            session_id = "contact_captured_remote_flow"
+            user_name = "外地留电用户"
+            user_hash = agent._hash_user(user_name)
+            session_state = agent.memory_store.get_session_state(session_id, user_hash=user_hash)
+            session_state.update(
+                {
+                    "contact_captured": True,
+                    "remote_flow_active": True,
+                    "remote_contact_captured": True,
+                }
+            )
+            agent.memory_store.update_session_state(session_id, session_state, user_hash=user_hash)
+            agent.memory_store.save()
+
+            llm.reply_text = "姐姐电话我这边已经收到了，您现在直接把想问的发我，我继续跟您说清楚。🌹"
+            decision = agent.decide(session_id, user_name, "怎么联系", [])
+
+            self.assertEqual(decision.rule_id, "LLM_CONTACT_CAPTURED")
+            self.assertNotIn("加您", decision.reply_text)
+            self.assertNotIn("留个☎️", decision.reply_text)
+
     def test_empty_visible_history_clears_stale_address_and_contact_context(self):
         helper = rule_engine_tests.RuleEngineTestCase()
         with tempfile.TemporaryDirectory() as td:
@@ -253,6 +428,31 @@ class FollowupRegressionTestCase(unittest.TestCase):
 
             self.assertEqual(decision.rule_id, "CONTACT_PHONE_SUBMITTED")
             self.assertNotIn("之前留的方式", decision.reply_text)
+
+    def test_empty_visible_history_after_phone_submission_allows_contact_image_again(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = helper._build_agent(temp_dir)
+
+            session_id = "fresh_contact_after_phone_submission"
+            user_name = "留电后重开用户"
+
+            first = agent.decide(session_id, user_name, "13562120968", [])
+            self.assertEqual(first.rule_id, "CONTACT_PHONE_SUBMITTED")
+
+            second = agent.decide(session_id, user_name, "怎么联系你", [])
+            second_media = agent.judge_post_reply_media(
+                session_id=session_id,
+                user_name=user_name,
+                latest_user_text="怎么联系你",
+                reply_text=second.reply_text,
+                conversation_history=[],
+                decision=second,
+            )
+
+            self.assertEqual(second.rule_id, "CONTACT_SEND_IMAGE")
+            self.assertTrue(any(item.get("type") == "contact_image" for item in (second_media.media_items or [])))
 
     def test_travel_plan_to_beijing_does_not_misfire_to_service_hours(self):
         helper = rule_engine_tests.RuleEngineTestCase()

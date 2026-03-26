@@ -420,6 +420,8 @@ class MemoryStore:
         state.setdefault("contact_image_last_sent_at", "")
         state.setdefault("contact_image_sent_paths", [])
         state.setdefault("contact_warmup", False)
+        state.setdefault("contact_captured", False)
+        state.setdefault("contact_image_resend_count", 0)
         state.setdefault("geo_followup_round", 0)
         state.setdefault("geo_choice_offered", False)
         state.setdefault("last_geo_pending", False)

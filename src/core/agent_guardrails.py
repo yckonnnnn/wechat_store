@@ -4,6 +4,7 @@ import random
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import agent_contact_flow
 from .business_hours import STANDARD_BUSINESS_HOURS_REPLY
 
 PRECISE_ADDRESS_TO_STORE: Dict[str, str] = {
@@ -115,6 +116,8 @@ def normalize_reply_text(agent: Any, text: str) -> str:
         return agent._render_template("general_empty")
 
     force_default_emoji = False
+    current_state = getattr(agent, "_current_unified_state", None) or getattr(agent, "_current_prompt_session_state", {}) or {}
+    contact_captured = bool(current_state.get("contact_captured", False))
     value = re.sub(r"(?:\s+|^)(\d{1,2}:\d{2})(?:已读|未读|送达)?$", "", value).strip()
     value = " ".join(value.split())
     value = agent._strip_inline_emoji_symbols(value)
@@ -122,7 +125,7 @@ def normalize_reply_text(agent: Any, text: str) -> str:
     value = re.sub(r"吧到(?=[。！？!?，,；;]|$)", "吧", value)
     value = re.sub(r"呢到(?=[。！？!?，,；;]|$)", "呢", value)
 
-    if any(k in value for k in agent._contact_compliance_block_keywords):
+    if (not contact_captured) and any(k in value for k in agent._contact_compliance_block_keywords):
         value = "姐姐，您留个☎️方式，我来加您好友"
     elif any(k in value for k in agent._shipping_block_keywords):
         value = agent._shipping_block_replacement
@@ -373,6 +376,7 @@ def apply_llm_reply_guardrails(
     state = session_state or {}
     history = conversation_history or []
     closure_info = empty_reply_closure_info(reply_text=reply)
+    contact_captured = bool(state.get("contact_captured", False))
 
     def finalize(final_reply: str, base_info: Optional[Dict[str, Any]] = None) -> Tuple[str, Dict[str, Any]]:
         return final_reply, build_reply_closure_info(agent, final_reply, base_info or closure_info)
@@ -406,6 +410,11 @@ def apply_llm_reply_guardrails(
                 )
 
     if agent._contains_explicit_phone_number(reply):
+        if contact_captured:
+            return finalize(
+                agent._normalize_reply_text("姐姐电话我这边已经收到了，不用重复发，我继续帮您安排"),
+                {"contact_closure_hit": False, "closure_type": ""},
+            )
         if agent._has_price_priority(text):
             return finalize(agent._render_guardrail_reply(agent._price_guardrail_safe_reply))
         if agent._needs_empathy_remote_support(text):
@@ -423,6 +432,17 @@ def apply_llm_reply_guardrails(
         return finalize(agent._ma_teacher_role_fallback)
 
     if agent._is_contact_fact_risk(text, reply):
+        if contact_captured:
+            sanitized_reply = agent_contact_flow.sanitize_contact_push_reply(
+                agent,
+                latest_user_text=text,
+                reply_text=reply,
+                session_state=state,
+            )
+            return finalize(
+                agent._normalize_reply_text(sanitized_reply),
+                {"contact_closure_hit": False, "closure_type": ""},
+            )
         if agent._has_price_priority(text):
             return finalize(agent._render_guardrail_reply(agent._price_guardrail_safe_reply))
         if agent._needs_empathy_remote_support(text):

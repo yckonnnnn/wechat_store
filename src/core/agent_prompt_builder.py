@@ -31,6 +31,7 @@ def build_general_llm_prompt(agent: Any, latest_user_text: str) -> Tuple[str, Di
                 state.get("contact_image_sent", False)
                 or int(state.get("contact_image_sent_count", 0) or 0) > 0
             ),
+            "contact_captured": bool(state.get("contact_captured", False)),
             "geo_followup_round": state.get("geo_followup_round", 0),
             "geo_followup_exhausted": state.get("geo_followup_exhausted", False),
         }
@@ -41,6 +42,7 @@ def build_general_llm_prompt(agent: Any, latest_user_text: str) -> Tuple[str, Di
             f"- 已确认门店：{confirmed_facts.get('store_confirmed', '未知')}\n"
             f"- 地址图已发送：{confirmed_facts.get('address_image_sent', False)}\n"
             f"- 联系方式已发送：{confirmed_facts.get('contact_image_sent', False)}\n"
+            f"- 电话已收到：{confirmed_facts.get('contact_captured', False)}\n"
             f"- 地区追问轮数：{confirmed_facts.get('geo_followup_round', 0)}\n"
             f"- 追问已耗尽：{confirmed_facts.get('geo_followup_exhausted', False)}\n"
             "\n"
@@ -48,6 +50,9 @@ def build_general_llm_prompt(agent: Any, latest_user_text: str) -> Tuple[str, Di
             "- 如果已确认门店，不要重新追问城市/区域\n"
             "- 如果地址图已发送，不要重复发送地址图\n"
             "- 如果联系方式已发送，不要再让留电话\n"
+            "- 如果电话已收到，不要再让用户留电话、留方式、加好友\n"
+            "- 如果电话已收到且用户在问业务问题，直接回答业务问题\n"
+            "- 如果电话已收到且用户在问怎么联系、怎么加，可以承认已收到电话，再自然承接，不要重复索要电话\n"
             "- 只有当前仍在补充地区且连续追问无果时，才切换到联系方式\n"
             "- 如果用户已经改问营业时间、价格、预约、护理等新问题，先直接回答新问题\n"
             "\n"

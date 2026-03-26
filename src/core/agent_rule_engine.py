@@ -270,6 +270,8 @@ def build_contact_followup_decision(
     intent: str,
     session_state: Dict[str, Any],
 ) -> Optional[AgentDecision]:
+    if bool(session_state.get("contact_captured", False)):
+        return None
     explicit_missing_media = bool(getattr(agent, "_looks_like_missing_media_request", lambda _text: False)(latest_user_text))
     if intent != "contact" and not explicit_missing_media:
         return None
@@ -976,6 +978,15 @@ def decide_general_reply(
                 )
 
     if intent == "contact":
+        if bool(state.get("contact_captured", False)):
+            return agent._decide_llm_reply(
+                latest_user_text=latest_user_text,
+                intent=intent,
+                route_reason=route_reason,
+                conversation_history=conversation_history,
+                session_state=state,
+                rule_id="LLM_CONTACT_CAPTURED",
+            )
         if callable(getattr(agent, "_looks_like_missing_media_request", None)) and agent._looks_like_missing_media_request(latest_user_text):
             return AgentDecision(
                 reply_text=_const(agent, "MEDIA_DELIVERY_RETRY_FALLBACK", ""),

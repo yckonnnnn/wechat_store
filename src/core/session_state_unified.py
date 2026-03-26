@@ -118,6 +118,8 @@ class UnifiedSessionState:
             state["contact_image_sent"] = True
         else:
             state.setdefault("contact_image_sent", False)
+        state.setdefault("contact_captured", False)
+        state.setdefault("contact_image_resend_count", 0)
 
     def get_confirmed_facts(self, session_id: str, user_hash: str) -> Dict[str, Any]:
         """
@@ -143,6 +145,8 @@ class UnifiedSessionState:
                 state.get("contact_image_sent", False)
                 or int(state.get("contact_image_sent_count", 0) or 0) > 0
             ),
+            "contact_captured": bool(state.get("contact_captured", False)),
+            "contact_image_resend_count": int(state.get("contact_image_resend_count", 0) or 0),
             "geo_followup_round": state.get("geo_followup_round", 0),
             "geo_followup_exhausted": state.get("geo_followup_exhausted", False),
         }
