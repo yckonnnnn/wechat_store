@@ -210,9 +210,9 @@ def judge_post_reply_media(
         base_info=dict(getattr(decision, "reply_closure_info", {}) or {}) if decision is not None else None,
     )
     reply_store = str(closure_info.get("target_store", "") or agent._infer_store_from_context_text(reply_text) or "").strip()
-    media_items: List[Dict[str, Any]] = []
-    reasons: List[str] = []
-    skip_reason = ""
+    media_items: List[Dict[str, Any]] = list(getattr(decision, "media_items", []) or []) if decision is not None else []
+    reasons: List[str] = ["planned_media"] if media_items else []
+    skip_reason = str(getattr(decision, "media_skip_reason", "") or "") if decision is not None else ""
     block_unresolved_address_media = bool(
         decision is not None
         and callable(getattr(agent, "_should_block_unresolved_address_media", None))
@@ -233,8 +233,7 @@ def judge_post_reply_media(
 
     if (
         not block_unresolved_address_media
-        and
-        (not remote_flow_active)
+        and (not remote_flow_active)
         and (not is_appointment_decision)
         and str(session_state.get("last_target_store", "") or "").strip() not in {"", "unknown"}
         and int(session_state.get("address_image_sent_count", 0) or 0) > 0
@@ -256,8 +255,7 @@ def judge_post_reply_media(
 
     if (
         not block_unresolved_address_media
-        and
-        (not remote_flow_active)
+        and (not remote_flow_active)
         and (not is_appointment_decision)
         and closure_info.get("precise_address_hit")
         and str(closure_info.get("target_store", "") or "")
@@ -273,41 +271,57 @@ def judge_post_reply_media(
         if item:
             media_items = _upsert_media_item(agent, media_items, item)
             reasons.append("precise_address_closure")
-        elif reason_hint:
+        elif reason_hint and not skip_reason:
             skip_reason = reason_hint
 
     if (
         not block_unresolved_address_media
-        and
-        (not remote_flow_active)
+        and (not remote_flow_active)
         and (not is_appointment_decision)
-        and not media_items
+        and not any(str(x.get("type", "") or "") == "address_image" for x in media_items)
         and str(closure_info.get("closure_type", "") or "") in {"store_recommendation", "address_image_promise"}
     ):
-        closure_target_store = str(reply_store or route.get("target_store", "") or session_state.get("last_target_store", "") or "")
-        item, reason_hint = queue_address_image(
-            agent,
-            session_id=session_id,
-            session_state=session_state,
-            target_store=closure_target_store,
-            route_reason=(
-                "address_image_promise_closure"
-                if str(closure_info.get("closure_type", "") or "") == "address_image_promise"
-                else "store_recommendation_closure"
-            ),
-            detected_region=route.get("detected_region", "") or "",
+        if (
+            str(closure_info.get("closure_type", "") or "") == "store_recommendation"
+            and int(session_state.get("address_image_sent_count", 0) or 0) > 0
+        ):
+            closure_target_store = ""
+        else:
+            closure_target_store = str(reply_store or route.get("target_store", "") or session_state.get("last_target_store", "") or "")
+        already_sent_for_store = (
+            closure_target_store
+            and closure_target_store in {
+                str(store).strip()
+                for store in (session_state.get("sent_address_stores", []) or [])
+                if str(store).strip()
+            }
         )
-        if item:
-            media_items = _upsert_media_item(agent, media_items, item)
-            reasons.append(
-                "address_image_promise_closure"
-                if str(closure_info.get("closure_type", "") or "") == "address_image_promise"
-                else "store_recommendation_closure"
+        if already_sent_for_store:
+            closure_target_store = ""
+        if closure_target_store:
+            item, reason_hint = queue_address_image(
+                agent,
+                session_id=session_id,
+                session_state=session_state,
+                target_store=closure_target_store,
+                route_reason=(
+                    "address_image_promise_closure"
+                    if str(closure_info.get("closure_type", "") or "") == "address_image_promise"
+                    else "store_recommendation_closure"
+                ),
+                detected_region=route.get("detected_region", "") or "",
             )
-        elif reason_hint and not skip_reason:
-            skip_reason = reason_hint
+            if item:
+                media_items = _upsert_media_item(agent, media_items, item)
+                reasons.append(
+                    "address_image_promise_closure"
+                    if str(closure_info.get("closure_type", "") or "") == "address_image_promise"
+                    else "store_recommendation_closure"
+                )
+            elif reason_hint and not skip_reason:
+                skip_reason = reason_hint
 
-    if not media_items and not block_unresolved_address_media:
+    if not block_unresolved_address_media:
         normalized_reply = re.sub(r"\s+", "", str(reply_text or "")).lower()
         normalized_latest = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
         known_store = str(reply_store or route.get("target_store", "") or session_state.get("last_target_store", "") or "")
@@ -436,7 +450,7 @@ def judge_post_reply_media(
             media_items=media_items,
         )
 
-    return MediaJudgeDecision(skip_reason="no_media_rule_matched")
+    return MediaJudgeDecision(skip_reason=str(skip_reason or "no_media_rule_matched"))
 
 
 def mark_media_sent(agent, session_id: str, user_name: str, media_item: Dict[str, Any], success: bool) -> None:
@@ -455,9 +469,18 @@ def mark_media_sent(agent, session_id: str, user_name: str, media_item: Dict[str
         session_state["address_image_sent_count"] = sent_count + 1
         stores = set(session_state.get("sent_address_stores", []) or [])
         target_store = media_item.get("target_store", "")
+        sent_count_by_store = dict(session_state.get("address_image_sent_count_by_store", {}) or {})
+        resend_count_by_store = dict(session_state.get("address_image_resend_count_by_store", {}) or {})
+        stage_by_store = dict(session_state.get("address_delivery_stage_by_store", {}) or {})
         sent_paths_by_store = dict(session_state.get("address_image_sent_paths_by_store", {}) or {})
         if target_store:
             stores.add(target_store)
+            previous_count = int(sent_count_by_store.get(target_store, 0) or 0)
+            current_count = previous_count + 1
+            sent_count_by_store[target_store] = current_count
+            if previous_count >= 1:
+                resend_count_by_store[target_store] = int(resend_count_by_store.get(target_store, 0) or 0) + 1
+            stage_by_store[target_store] = "delivered_closed" if current_count >= 2 else "delivered_once"
             sent_map = session_state.get("address_image_last_sent_at_by_store", {}) or {}
             if not isinstance(sent_map, dict):
                 sent_map = {}
@@ -474,12 +497,18 @@ def mark_media_sent(agent, session_id: str, user_name: str, media_item: Dict[str
             sent_paths_by_store[target_store] = sent_paths
             session_state["address_image_sent_paths_by_store"] = sent_paths_by_store
             session_state["last_target_store"] = target_store
+            session_state["current_store_context"] = target_store
+            session_state["store_delivery_authority"] = target_store
             facts = dict(session_state.get("conversation_facts", {}) or {})
             facts["recommended_store"] = target_store
             session_state["conversation_facts"] = facts
             session_state["active_topic"] = "store_recommendation"
             session_state["conversation_stage"] = "address_image_sent"
         session_state["sent_address_stores"] = list(stores)
+        session_state["address_image_sent_count_by_store"] = sent_count_by_store
+        session_state["address_image_resend_count_by_store"] = resend_count_by_store
+        session_state["address_delivery_stage_by_store"] = stage_by_store
+        session_state["current_mainline"] = "business_answer"
 
     elif media_type == "contact_image":
         sent_count = int(session_state.get("contact_image_sent_count", 0) or 0)
@@ -487,6 +516,7 @@ def mark_media_sent(agent, session_id: str, user_name: str, media_item: Dict[str
         if sent_count >= 1:
             resend_count = int(session_state.get("contact_image_resend_count", 0) or 0)
             session_state["contact_image_resend_count"] = resend_count + 1
+        session_state["contact_delivery_stage"] = "delivered_closed" if (sent_count + 1) >= 3 else "delivered_once"
         session_state["contact_image_last_sent_at"] = now
         if bool(session_state.get("remote_flow_active", False)):
             session_state["remote_contact_image_sent"] = True
@@ -503,6 +533,7 @@ def mark_media_sent(agent, session_id: str, user_name: str, media_item: Dict[str
         session_state["last_geo_pending"] = False
         if str(session_state.get("conversation_stage", "") or "") == "appointment_ready":
             session_state["active_topic"] = "appointment"
+        session_state["current_mainline"] = "business_answer"
 
     if media_type in REQUIRED_MEDIA_TYPES:
         agent._remove_pending_required_media(session_state, media_item)
@@ -646,6 +677,12 @@ def queue_address_image(
     del session_id
     if target_store == "unknown":
         return None, "address_target_unknown"
+    stage_by_store = dict(session_state.get("address_delivery_stage_by_store", {}) or {})
+    sent_count_by_store = dict(session_state.get("address_image_sent_count_by_store", {}) or {})
+    if str(stage_by_store.get(target_store, "not_delivered") or "not_delivered") == "delivered_closed":
+        return None, "address_image_closed"
+    if int(sent_count_by_store.get(target_store, 0) or 0) >= 2:
+        return None, "address_image_closed"
     image_path = pick_address_image(agent, target_store, session_state=session_state)
     if not image_path:
         return None, "address_image_missing"
@@ -676,20 +713,22 @@ def queue_contact_image(
     session_state: Dict[str, Any],
     force_contact_image: bool = False,
 ) -> Tuple[Optional[Dict[str, Any]], str]:
+    if bool(session_state.get("contact_captured", False)):
+        return None, "contact_already_captured"
     sent_count = int(session_state.get("contact_image_sent_count", 0) or 0)
+    delivery_stage = str(session_state.get("contact_delivery_stage", "not_delivered") or "not_delivered")
     explicit_resend = bool(
         agent_contact_flow.looks_like_explicit_contact_image_resend_request(text)
         or getattr(agent, "_looks_like_missing_media_request", lambda _text: False)(text)
     )
-    if not is_media_whitelist_session(agent, session_id):
-        if sent_count >= 3:
-            return None, "contact_image_already_sent"
-        if sent_count >= 2 and not explicit_resend:
-            return None, "contact_image_limit_without_explicit_resend"
+    if delivery_stage == "delivered_closed" or sent_count >= 3:
+        return None, "contact_image_already_sent"
+    if sent_count >= 1 and not explicit_resend and not force_contact_image:
+        return None, "contact_image_resend_requires_explicit_request"
     if not agent._contact_images:
         return None, "contact_image_missing"
 
-    if force_contact_image or reason == "out_of_coverage" or intent in ("contact", "purchase"):
+    if force_contact_image or intent == "contact":
         image_path = pick_contact_image_for_session(agent, session_state)
         if not image_path:
             return None, "contact_image_unique_exhausted"
@@ -825,6 +864,18 @@ def sync_media_state_from_conversation_log(
     merged_sent_address_stores.update(user_summary.get("sent_address_stores", []) or [])
     merged_sent_address_stores.update(session_summary.get("sent_address_stores", []) or [])
     session_state["sent_address_stores"] = list(merged_sent_address_stores)
+    session_state["address_image_sent_count_by_store"] = {
+        store: len([str(path).strip() for path in (paths or []) if str(path).strip()])
+        for store, paths in merged_paths_by_store.items()
+    }
+    session_state["address_image_resend_count_by_store"] = {
+        store: max(int(count or 0) - 1, 0)
+        for store, count in dict(session_state.get("address_image_sent_count_by_store", {}) or {}).items()
+    }
+    session_state["address_delivery_stage_by_store"] = {
+        store: ("delivered_closed" if int(count or 0) >= 2 else "delivered_once" if int(count or 0) >= 1 else "not_delivered")
+        for store, count in dict(session_state.get("address_image_sent_count_by_store", {}) or {}).items()
+    }
 
     contact_last_sent = str(user_summary.get("contact_image_last_sent_at", "") or "")
     session_contact_last_sent = str(session_summary.get("contact_image_last_sent_at", "") or "")
@@ -852,6 +903,13 @@ def sync_media_state_from_conversation_log(
                 ],
             ]
         )
+    )
+    session_state["contact_delivery_stage"] = (
+        "delivered_closed"
+        if int(session_state.get("contact_image_sent_count", 0) or 0) >= 3
+        else "delivered_once"
+        if int(session_state.get("contact_image_sent_count", 0) or 0) >= 1
+        else "not_delivered"
     )
 
     latest_store = str(session_summary.get("last_target_store", "") or user_summary.get("last_target_store", "") or "").strip()

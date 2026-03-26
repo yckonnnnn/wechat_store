@@ -119,7 +119,15 @@ class UnifiedSessionState:
         else:
             state.setdefault("contact_image_sent", False)
         state.setdefault("contact_captured", False)
+        state.setdefault("contact_delivery_stage", "not_delivered")
         state.setdefault("contact_image_resend_count", 0)
+        state.setdefault("current_mainline", "business_answer")
+        state.setdefault("current_store_context", "")
+        state.setdefault("store_delivery_authority", "")
+        state.setdefault("store_candidates", [])
+        state.setdefault("address_image_sent_count_by_store", {})
+        state.setdefault("address_image_resend_count_by_store", {})
+        state.setdefault("address_delivery_stage_by_store", {})
 
     def get_confirmed_facts(self, session_id: str, user_hash: str) -> Dict[str, Any]:
         """
@@ -134,9 +142,15 @@ class UnifiedSessionState:
         """
         state = self.get_state(session_id, user_hash)
 
+        confirmed_store = (
+            state.get("current_store_context")
+            or state.get("store_delivery_authority")
+            or ""
+        )
         return {
             "city_confirmed": state.get("conversation_facts", {}).get("city", "未知"),
-            "store_confirmed": state.get("last_target_store", "未知"),
+            "store_confirmed": confirmed_store or "未知",
+            "store_candidate": (state.get("store_candidates", []) or ["未知"])[0],
             "address_image_sent": bool(
                 state.get("address_image_sent", False)
                 or int(state.get("address_image_sent_count", 0) or 0) > 0

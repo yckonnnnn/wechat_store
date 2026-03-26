@@ -13,6 +13,65 @@ STORE_NAME_MAP = {
 }
 
 
+def _build_confirmed_facts_block(confirmed_facts: Dict[str, Any]) -> str:
+    return (
+        "【现场信息】\n"
+        f"- 门店：{confirmed_facts.get('store_confirmed', '未知')}；候选：{confirmed_facts.get('store_candidates', '无')}；地址权限：{confirmed_facts.get('store_delivery_authority', '无')}\n"
+        f"- 主线：{confirmed_facts.get('current_mainline', 'business_answer')}；地址：{confirmed_facts.get('address_stage', 'not_delivered')}；联系方式：{confirmed_facts.get('contact_stage', 'not_delivered')}\n"
+        f"- 电话已收到：{confirmed_facts.get('contact_captured', False)}；地区追问：{confirmed_facts.get('geo_followup_round', 0)}轮；耗尽：{confirmed_facts.get('geo_followup_exhausted', False)}\n"
+        "【红线】\n"
+        "- 不该回地址时别回地址，不该推联系方式时别推联系方式。\n"
+        "- 电话已收到后别再要联系方式；用户改问别的问题，就直接答新问题。\n"
+        "- 如果电话已收到，不要再让用户留电话、留方式、加好友。\n\n"
+    )
+
+
+def _build_enterprise_guard_summary(enterprise_guard_text: str) -> str:
+    if not enterprise_guard_text.strip():
+        return "（企业知识约束文档缺失，请按已有品牌口径稳妥回复）"
+    return (
+        "- 只能按企业已知信息回复，不能编地址、路线、价格、活动和定位。\n"
+        "- 门店只有北京朝阳1家、上海5家；价格只在3000到6000区间内表达。\n"
+        "- 导航、地铁口、停车等未知细节先承认不确定，不要乱答；不要要求用户发图，也不要乱承诺。"
+    )
+
+
+def _build_faq_priority_block(
+    standard_reply_question: str,
+    standard_reply_answer: str,
+    standard_reply_confidence: str,
+) -> str:
+    if not standard_reply_answer:
+        return "（当前无高置信标准话术命中）"
+    return (
+        f"- {standard_reply_question or '未知'}\n"
+        f"- {standard_reply_answer}\n"
+        f"- 置信度：{standard_reply_confidence or 'unknown'}，当前问题高度一致时优先沿用。"
+    )
+
+
+def _build_faq_block(faq_examples: List[Tuple[str, str]]) -> str:
+    if not faq_examples:
+        return "（当前无高相关标准话术）"
+    question, answer = faq_examples[0]
+    return f"- {question} -> {answer}"
+
+
+def _build_brand_block(brand_snippets: List[str]) -> str:
+    if not brand_snippets:
+        return "（当前无高相关品牌知识片段）"
+    compact = " ".join(str(brand_snippets[0]).split())
+    return f"- {compact[:220]}"
+
+
+def _build_conversation_state_block(conversation_state: Dict[str, str]) -> str:
+    return (
+        "【最近对话状态】\n"
+        f"- 城市：{conversation_state.get('city_confirmed', '未知')}；门店：{conversation_state.get('store_confirmed', '未知')}；到店：{conversation_state.get('visit_status', '未说明')}\n"
+        f"- 上轮：{conversation_state.get('last_answer_type', '未知')}；本轮目标：{conversation_state.get('reply_goal', '自然承接并回答当前问题')}；别重复：{conversation_state.get('avoid_repeat', '无')}"
+    )
+
+
 def build_general_llm_prompt(agent: Any, latest_user_text: str) -> Tuple[str, Dict[str, Any]]:
     # 【新增】获取已确认事实并注入到 prompt 最开头
     confirmed_facts_block = ""
@@ -20,56 +79,44 @@ def build_general_llm_prompt(agent: Any, latest_user_text: str) -> Tuple[str, Di
 
     if hasattr(agent, '_current_unified_state') and agent._current_unified_state:
         state = agent._current_unified_state
-        store_key = str(state.get("last_target_store", "") or "").strip()
+        store_key = str(
+            state.get("current_store_context", "")
+            or state.get("store_delivery_authority", "")
+            or ""
+        ).strip()
+        store_candidates = [
+            STORE_NAME_MAP.get(str(item).strip(), str(item).strip())
+            for item in (state.get("store_candidates", []) or [])
+            if str(item).strip()
+        ]
+        address_stages = []
+        for raw_store, raw_stage in sorted((state.get("address_delivery_stage_by_store", {}) or {}).items()):
+            stage_store = STORE_NAME_MAP.get(str(raw_store).strip(), str(raw_store).strip())
+            address_stages.append(f"{stage_store}:{raw_stage}")
         confirmed_facts = {
             "store_confirmed": STORE_NAME_MAP.get(store_key, store_key or "未知"),
-            "address_image_sent": bool(
-                state.get("address_image_sent", False)
-                or int(state.get("address_image_sent_count", 0) or 0) > 0
-            ),
-            "contact_image_sent": bool(
-                state.get("contact_image_sent", False)
-                or int(state.get("contact_image_sent_count", 0) or 0) > 0
-            ),
+            "address_stage": str((dict(state.get("address_delivery_stage_by_store", {}) or {})).get(store_key, "not_delivered") or "not_delivered"),
+            "contact_stage": str(state.get("contact_delivery_stage", "not_delivered") or "not_delivered"),
+            "current_mainline": str(state.get("current_mainline", "business_answer") or "business_answer"),
             "contact_captured": bool(state.get("contact_captured", False)),
             "geo_followup_round": state.get("geo_followup_round", 0),
             "geo_followup_exhausted": state.get("geo_followup_exhausted", False),
+            "store_delivery_authority": STORE_NAME_MAP.get(
+                str(state.get("store_delivery_authority", "") or "").strip(),
+                str(state.get("store_delivery_authority", "") or "无").strip() or "无",
+            ),
+            "store_candidates": "、".join(store_candidates[:3]) if store_candidates else "无",
+            "address_stages": "；".join(address_stages) if address_stages else "无",
         }
 
-        # 构建已确认事实块（放在 prompt 最前面，作为不可推翻的前提）
-        confirmed_facts_block = (
-            "【已确认事实 - 不可推翻】\n"
-            f"- 已确认门店：{confirmed_facts.get('store_confirmed', '未知')}\n"
-            f"- 地址图已发送：{confirmed_facts.get('address_image_sent', False)}\n"
-            f"- 联系方式已发送：{confirmed_facts.get('contact_image_sent', False)}\n"
-            f"- 电话已收到：{confirmed_facts.get('contact_captured', False)}\n"
-            f"- 地区追问轮数：{confirmed_facts.get('geo_followup_round', 0)}\n"
-            f"- 追问已耗尽：{confirmed_facts.get('geo_followup_exhausted', False)}\n"
-            "\n"
-            "【重要规则】\n"
-            "- 如果已确认门店，不要重新追问城市/区域\n"
-            "- 如果地址图已发送，不要重复发送地址图\n"
-            "- 如果联系方式已发送，不要再让留电话\n"
-            "- 如果电话已收到，不要再让用户留电话、留方式、加好友\n"
-            "- 如果电话已收到且用户在问业务问题，直接回答业务问题\n"
-            "- 如果电话已收到且用户在问怎么联系、怎么加，可以承认已收到电话，再自然承接，不要重复索要电话\n"
-            "- 只有当前仍在补充地区且连续追问无果时，才切换到联系方式\n"
-            "- 如果用户已经改问营业时间、价格、预约、护理等新问题，先直接回答新问题\n"
-            "\n"
-        )
+        confirmed_facts_block = _build_confirmed_facts_block(confirmed_facts)
 
     normalized_text = agent.knowledge_service.normalize_user_text(latest_user_text)
     faq_detail = agent.knowledge_service.find_answer_detail(normalized_text, threshold=agent.knowledge_threshold)
     faq_examples = agent._top_kb_examples(normalized_text, limit=3)
-    faq_block = "\n".join([f"- 问：{q}\n  答：{a}" for q, a in faq_examples]) or "（当前无高相关标准话术）"
-    enterprise_guard = agent._enterprise_guard_doc_text or "（企业知识约束文档缺失，请按已有品牌口径稳妥回复）"
-    store_fact_block = (
-        "【门店事实】\n"
-        "- 北京只有 1 家门店，位于朝阳区。\n"
-        "- 上海共有 5 家门店：静安、人民广场、虹口、五角场、徐汇。\n"
-        "- 如果用户没有明确所在城市或区域，请自然追问，不要生硬套模板。\n"
-        "- 不要编造路线、出口、导航、楼层、停车等不确定细节。"
-    )
+    faq_block = _build_faq_block(faq_examples)
+    enterprise_guard = _build_enterprise_guard_summary(agent._enterprise_guard_doc_text or "")
+    store_fact_block = "【门店范围】\n- 只推荐北京朝阳1家和上海5家；用户没说清城市或区域，就自然追问。"
     faq_priority_block = "（当前无高置信标准话术命中）"
     standard_reply_hit = False
     standard_reply_question = ""
@@ -82,55 +129,41 @@ def build_general_llm_prompt(agent: Any, latest_user_text: str) -> Tuple[str, Di
         standard_reply_confidence = str(faq_detail.get("confidence", "") or "")
         standard_reply_answer = str(faq_detail.get("answer", "") or "").strip()
         standard_reply_intent = str(faq_detail.get("intent", "") or "").strip().lower()
-        faq_priority_block = (
-            f"问题：{standard_reply_question or '未知'}\n"
-            f"建议答案：{standard_reply_answer}\n"
-            f"置信度：{standard_reply_confidence or 'unknown'}\n"
-            "要求：如果用户问题与这条标准话术高度一致，优先遵循核心结论，再自然润色。"
+        faq_priority_block = _build_faq_priority_block(
+            standard_reply_question=standard_reply_question,
+            standard_reply_answer=standard_reply_answer,
+            standard_reply_confidence=standard_reply_confidence,
         )
     brand_snippets = agent._top_brand_knowledge_snippets(normalized_text, limit=3)
-    brand_block = "\n\n".join(brand_snippets) if brand_snippets else "（当前无高相关品牌知识片段）"
+    brand_block = _build_brand_block(brand_snippets)
     conversation_state = agent._summarize_llm_conversation_state(
         latest_user_text=latest_user_text,
         conversation_history=getattr(agent, "_current_prompt_conversation_history", []) or [],
         standard_reply_intent=standard_reply_intent,
     )
-    conversation_state_block = (
-        "【最近对话状态】\n"
-        f"- 已确认城市：{conversation_state.get('city_confirmed', '未知')}\n"
-        f"- 已确认门店：{conversation_state.get('store_confirmed', '未知')}\n"
-        f"- 到店条件：{conversation_state.get('visit_status', '未说明')}\n"
-        f"- 上一轮已回答：{conversation_state.get('last_answer_type', '未知')}\n"
-        f"- 当前阶段：{conversation_state.get('current_stage', '信息确认')}\n"
-        f"- 本轮回复目标：{conversation_state.get('reply_goal', '自然承接并回答当前问题')}\n"
-        f"- 避免重复：{conversation_state.get('avoid_repeat', '无')}"
-    )
+    conversation_state_block = _build_conversation_state_block(conversation_state)
     prompt = (
-        confirmed_facts_block +  # 【新增】已确认事实放在最前面
+        confirmed_facts_block +
         "你是艾耐儿假发客服助理。\n"
-        "语气自然、亲切、有耐心，接地气，拟人化口语，像真人客服。\n"
-        "硬规则：结论先行；尽量1句话完成回复，不拖拉，不啰嗦，且必须是完整句；末尾只保留1个emoji表情。\n"
-        "用户有时会出现错别字、近音字、少字、口语缩写，你要优先结合上下文理解真实问题，不要因为一两个错字就答非所问。\n"
-        "如果用户是在追问同一个问题，请直接承接这次新增问题回答，不要把上一轮整段结论原样重复。\n"
-        "只在用户明确问怎么联系、怎么加、联系方式时，才可以转到联系引导；否则不要动不动就让用户留电话。\n"
-        "禁止主动索要电话、微信或其他联系方式，除非用户明确在问怎么联系；即使如此也不要输出具体联系方式。\n"
-        "涉及价格区间、营业时间、使用年限、预约、远程定制等明确事实时，优先保留标准话术和品牌知识库里的核心数字与结论，不要省略或改写错。\n"
-        "人物事实硬规则：马老师只负责短视频拍摄，不做假发、不做头发、不剪头、不加好友、不负责修剪造型，禁止把这些服务归给马老师。\n"
-        "超出标准话术和品牌知识库可常规发挥，但必须围绕企业知识口径；禁止编造活动承诺、禁止要求对方发图、联系方式或超出事实的信息。\n"
-        "若信息不确定，给稳妥结论并自然引导用户补充。\n\n"
-        "多轮对话时，优先判断用户是在确认已有信息、推进下一步还是提出新问题。\n"
-        "如果上一轮已经明确回答过地址、本店信息或预约信息，本轮不要原样重复；除非用户明确要求再说一遍。\n"
-        "如果用户表达“知道了”“可以去”“那就这个店”“那我过去”等，视为已经确认门店，应推进到预约、营业时间、到店安排等下一步。\n"
-        "如果用户只是简短承接，不要把整段标准话术或整段地址重新说一遍，优先接着往下聊。\n"
-        "如果上一轮已经说过价格区间，这一轮再问是不是一样、差不多、贵不贵，请直接回答差异、确认或异议，不要再把整段价格模板复读一遍。\n\n"
-        "如果用户提到受伤、生病、不方便出门、摔跤、腿脚不方便等情况，先简短安慰或共情，再继续给方案。\n"
-        "如果用户上一轮已经知道需要预约，这一轮再问“怎么预约”，应直接说明预约操作或下一步，不要重复“我们是预约制的呢”。\n\n"
+        "像真人客服一样自然、利落地回话；结论先行，尽量1句话说完整，末尾只保留1个emoji表情。\n"
+        "【你要做的事】\n"
+        "- 帮用户推荐合适门店，但只能推荐上海5家和北京朝阳1家。\n"
+        "- 江浙沪优先人民广场店，内蒙优先北京朝阳店；上海本地按区域、便利度和需求推荐；外地不方便到店可承接远程定制。\n"
+        "- 推荐是帮用户判断，不是硬推；用户质疑你为什么这么推荐时，先把原因解释清楚。\n"
+        "- 需要承接联系方式时要委婉，优先引导用户发电话，不主动索要微信号；平时提渠道可以说微信，但别踩平台红线。\n"
+        "\n"
+        "先听懂用户这轮真正想问什么，容错错别字和口语；追问同一件事时，只回答新增部分，不要整段复读。\n"
+        "多轮里优先判断用户是在确认、继续推进，还是换了新问题；已经讲过的地址、本店、预约、价格，除非用户明确要求重说，否则别原样重复。\n"
+        "用户说“知道了”“可以去”“那就这个店”“那我过去”等，视为确认门店，往预约、营业时间、到店安排继续接；再问怎么预约，就直接说怎么约。\n"
+        "联系方式只在用户明确问怎么联系、怎么加，或确实需要推进下一步时再委婉承接；不要频繁索要联系方式，也不要输出具体联系方式。\n"
+        "价格、营业时间、使用年限、预约、远程定制这些明确事实，优先沿用标准结论；不确定就稳妥收口并自然补问，不要编造。\n"
+        "用户提到受伤、生病、不方便出门、摔跤、腿脚不方便，先简短安慰再给方案。马老师只负责短视频拍摄，不做假发、不做头发、不剪头、不加好友、不负责修剪造型。\n\n"
         f"{store_fact_block}\n\n"
         f"{conversation_state_block}\n\n"
         f"【高置信标准话术命中】\n{faq_priority_block}\n\n"
-        f"【企业知识约束】\n{enterprise_guard}\n\n"
-        f"【相关标准话术参考】\n{faq_block}\n\n"
-        f"【品牌知识库参考】\n{brand_block}\n\n"
+        f"【企业口径】\n{enterprise_guard}\n\n"
+        f"【相关话术】\n{faq_block}\n\n"
+        f"【品牌补充】\n{brand_block}\n\n"
         "仅输出最终客服话术纯文本，不要输出JSON、代码块或解释。"
     )
     return prompt, {
@@ -170,7 +203,11 @@ def summarize_llm_conversation_state(
         latest_city = "上海"
 
     recommended_store = str(
-        conversation_facts.get("recommended_store", "") or state.get("last_target_store", "") or ""
+        state.get("current_store_context", "")
+        or conversation_facts.get("recommended_store", "")
+        or state.get("store_delivery_authority", "")
+        or state.get("last_target_store", "")
+        or ""
     ).strip()
     city_from_store = ""
     if recommended_store.startswith("sh_"):
@@ -198,6 +235,8 @@ def summarize_llm_conversation_state(
         store_confirmed = "徐汇店"
     elif any(token in latest_norm for token in ("朝阳", "建外soho")):
         store_confirmed = "北京朝阳店"
+    elif str(state.get("current_store_context", "") or "").strip() in STORE_NAME_MAP:
+        store_confirmed = STORE_NAME_MAP[str(state.get("current_store_context", "") or "").strip()]
     elif recommended_store and recommended_store in STORE_NAME_MAP:
         store_confirmed = STORE_NAME_MAP[recommended_store]
     elif any(token in normalized for token in ("人民广场", "人广", "黄埔", "汉口路")):

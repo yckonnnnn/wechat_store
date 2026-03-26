@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from .agent_types import AgentDecision
 from . import agent_media
+from . import agent_contact_flow
 
 
 def _const(agent, name: str, default: Any = None) -> Any:
@@ -69,6 +70,11 @@ def should_apply_rule_decision(
     route: Dict[str, Any],
     session_state: Dict[str, Any],
 ) -> bool:
+    if (
+        agent_contact_flow.looks_like_store_recommendation_challenge(text)
+        or agent_contact_flow.looks_like_store_preference_statement(text)
+    ):
+        return False
     aftercare_keywords = ("清洗", "售后", "保养", "打理", "维护", "怎么洗", "如何洗", "自己洗", "不会洗", "洗发", "护理")
     if any(k in (text or "") for k in aftercare_keywords):
         return False
@@ -94,6 +100,13 @@ def should_apply_rule_decision(
     if route_type in ("coverage", "non_coverage", "need_district", "need_clarify"):
         return True
     if intent in ("address", "purchase"):
+        return True
+    if intent == "appointment" and (
+        str(route.get("target_store", "") or "").strip() not in {"", "unknown"}
+        or str(session_state.get("last_target_store", "") or "").strip() not in {"", "unknown"}
+        or int(session_state.get("address_image_sent_count", 0) or 0) > 0
+        or int(session_state.get("contact_image_sent_count", 0) or 0) > 0
+    ):
         return True
     if bool(session_state.get("last_geo_pending", False)) and looks_like_geo_reply(agent, text=text, route=route):
         return True
@@ -290,7 +303,6 @@ def build_contact_followup_decision(
             rule_id="CONTACT_FOLLOWUP_MISSING_MEDIA",
             rule_applied=True,
         )
-
     prompt_count = int(session_state.get("contact_followup_prompt_count", 0) or 0)
     session_state["contact_followup_prompt_count"] = prompt_count + 1
     template_key = "contact_followup_1" if (prompt_count % 2) == 0 else "contact_followup_2"
@@ -433,6 +445,255 @@ def resolve_geo_context(agent, route: Dict[str, Any], session_state: Dict[str, A
     return {"known": False, "source": "", "target_store": "", "region": ""}
 
 
+def get_address_delivery_stage(state: Dict[str, Any], store_key: str) -> str:
+    if not store_key or store_key == "unknown":
+        return "not_delivered"
+    stages = dict(state.get("address_delivery_stage_by_store", {}) or {})
+    return str(stages.get(store_key, "not_delivered") or "not_delivered")
+
+
+def get_address_sent_count(state: Dict[str, Any], store_key: str) -> int:
+    counts = dict(state.get("address_image_sent_count_by_store", {}) or {})
+    return max(0, int(counts.get(store_key, 0) or 0))
+
+
+def infer_address_resend_target(agent, text: str, route: Dict[str, Any], state: Dict[str, Any]) -> str:
+    explicit_store = str(agent._infer_store_from_context_text(text) or "").strip()
+    route_store = str(route.get("target_store", "") or "").strip()
+    sent_stores = [
+        str(store).strip()
+        for store in (state.get("sent_address_stores", []) or [])
+        if str(store).strip()
+    ]
+    unique_sent = list(dict.fromkeys(sent_stores))
+    if explicit_store and explicit_store != "unknown":
+        return explicit_store
+    if looks_like_explicit_address_resend_request(agent, text) and len(unique_sent) > 1:
+        return ""
+    if route_store and route_store != "unknown":
+        return route_store
+    last_store = str(state.get("last_target_store", "") or "").strip()
+    if len(unique_sent) == 1:
+        return unique_sent[0]
+    if last_store and last_store != "unknown" and len(unique_sent) <= 1:
+        return last_store
+    return ""
+
+
+def looks_like_explicit_address_resend_request(agent, text: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(text or "")).lower()
+    if not normalized:
+        return False
+    if getattr(agent, "_looks_like_missing_media_request", lambda _text: False)(text):
+        return any(token in normalized for token in ("地址", "位置", "位置图", "图"))
+    return (
+        any(token in normalized for token in ("再发", "重发", "重新发", "没看到", "没收到", "第二张"))
+        and any(token in normalized for token in ("地址", "位置", "位置图", "地址图", "图"))
+    )
+
+
+def looks_like_explicit_address_delivery_request(agent, text: str, route: Dict[str, Any]) -> bool:
+    normalized = re.sub(r"\s+", "", str(text or "")).lower()
+    if not normalized:
+        return False
+
+    if looks_like_explicit_address_resend_request(agent, text):
+        return True
+    if (
+        agent_contact_flow.looks_like_store_recommendation_challenge(text)
+        or agent_contact_flow.looks_like_store_preference_statement(text)
+    ):
+        return False
+
+    route_target_store = str(route.get("target_store", "") or "").strip()
+    has_store_context = bool(route_target_store and route_target_store != "unknown")
+
+    explicit_address_tokens = (
+        "地址",
+        "店在哪",
+        "店在哪里",
+        "怎么去",
+        "怎么走",
+        "路线",
+        "导航",
+        "定位",
+        "发位置",
+        "位置发我",
+        "位置图",
+        "地址图",
+        "在哪儿",
+        "在哪里",
+    )
+    if any(token in normalized for token in explicit_address_tokens):
+        return True
+
+    # “位置”是高噪音词，只在明显是问位置、且已经有明确门店时才算地址交付。
+    if "位置" not in normalized or not has_store_context:
+        return False
+
+    negative_context_tokens = (
+        "位置远",
+        "位置有点远",
+        "远点儿",
+        "远一点",
+        "远也行",
+        "克服困难",
+        "要求",
+        "选一个",
+        "好的门店",
+        "推荐",
+        "哪家",
+        "是不是",
+        "对不对",
+        "还是让我去",
+        "还是你确定",
+        "直接让我去",
+        "主要想找",
+        "设计师",
+    )
+    if any(token in normalized for token in negative_context_tokens):
+        return False
+
+    location_question_tokens = ("在哪", "哪儿", "哪里", "怎么走", "怎么去", "发我", "给我")
+    return any(token in normalized for token in location_question_tokens)
+
+
+def has_any_address_delivery_history(state: Dict[str, Any]) -> bool:
+    stage_by_store = dict(state.get("address_delivery_stage_by_store", {}) or {})
+    if any(str(stage or "") in {"delivered_once", "delivered_closed"} for stage in stage_by_store.values()):
+        return True
+    sent_count_by_store = dict(state.get("address_image_sent_count_by_store", {}) or {})
+    if any(int(count or 0) > 0 for count in sent_count_by_store.values()):
+        return True
+    if any(str(store or "").strip() for store in (state.get("sent_address_stores", []) or [])):
+        return True
+    return int(state.get("address_image_sent_count", 0) or 0) > 0
+
+
+def looks_like_explicit_store_recommendation_request(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(text or "")).lower()
+    if not normalized:
+        return False
+
+    positive_tokens = (
+        "推荐哪家",
+        "推荐哪个店",
+        "推荐哪个门店",
+        "哪家更适合",
+        "哪个门店更适合",
+        "哪家更方便",
+        "哪家最近",
+        "哪个店最近",
+        "帮我选",
+        "选哪个店",
+        "选哪家店",
+        "选一家",
+        "安排哪家",
+        "去哪家",
+        "哪家比较好",
+        "哪个店比较好",
+    )
+    if any(token in normalized for token in positive_tokens):
+        return True
+
+    negative_tokens = (
+        "是不是",
+        "对不对",
+        "还是",
+        "什么意思",
+        "没听懂",
+        "总重复",
+        "位置远",
+        "远点儿",
+        "远一点",
+        "位置图",
+        "地址图",
+        "怎么走",
+        "怎么去",
+        "路线",
+        "导航",
+        "在哪",
+        "哪儿",
+        "哪里",
+        "发位置",
+        "发地址",
+        "我主要想问",
+        "要求已经告诉",
+        "按我的要求",
+        "硬推",
+        "直接让我去",
+        "还是让我去",
+        "还是你确定",
+    )
+    if any(token in normalized for token in negative_tokens):
+        return False
+
+    weak_positive_tokens = ("推荐", "哪家", "门店", "店")
+    return any(token in normalized for token in weak_positive_tokens) and any(
+        token in normalized for token in ("适合", "方便", "最近", "好", "选")
+    )
+
+
+def determine_current_mainline(
+    agent,
+    text: str,
+    intent: str,
+    route: Dict[str, Any],
+    state: Dict[str, Any],
+) -> str:
+    normalized = re.sub(r"\s+", "", str(text or "")).lower()
+    if agent_contact_flow.looks_like_human_check(text) or agent_contact_flow.looks_like_repetition_frustration(text):
+        return "conversation_repair"
+    if (
+        intent in {"recommendation_clarify", "store_preference"}
+        or agent_contact_flow.looks_like_store_recommendation_challenge(text)
+        or agent_contact_flow.looks_like_store_preference_statement(text)
+    ):
+        return "business_answer"
+
+    address_resend_target = infer_address_resend_target(agent, text, route, state)
+    if looks_like_explicit_address_resend_request(agent, text) and list(state.get("sent_address_stores", []) or []):
+        return "address_delivery"
+    if (
+        looks_like_explicit_address_resend_request(agent, text)
+        and address_resend_target
+        and get_address_delivery_stage(state, address_resend_target) == "delivered_once"
+    ):
+        return "address_delivery"
+
+    if (
+        agent_contact_flow.looks_like_explicit_contact_image_resend_request(text)
+        and not bool(state.get("contact_captured", False))
+        and str(state.get("contact_delivery_stage", "not_delivered") or "not_delivered") == "delivered_once"
+    ):
+        return "contact_delivery"
+
+    route_target_store = str(route.get("target_store", "") or "").strip()
+    if (
+        intent == "address"
+        and looks_like_explicit_address_delivery_request(agent, text, route)
+        and route_target_store
+        and route_target_store != "unknown"
+        and get_address_delivery_stage(state, route_target_store) == "not_delivered"
+    ):
+        return "address_delivery"
+
+    if (
+        not has_any_address_delivery_history(state)
+        and route_target_store
+        and route_target_store != "unknown"
+        and looks_like_explicit_store_recommendation_request(text)
+    ):
+        return "store_recommendation"
+    if (
+        not has_any_address_delivery_history(state)
+        and str(state.get("last_target_store", "") or "").strip() not in {"", "unknown"}
+        and looks_like_explicit_store_recommendation_request(text)
+    ):
+        return "store_recommendation"
+    return "business_answer"
+
+
 def decide_rule_reply(
     agent,
     text: str,
@@ -443,265 +704,215 @@ def decide_rule_reply(
     user_state: Dict[str, Any],
     is_first_turn_global: bool = False,
 ) -> AgentDecision:
-    # 优先使用统一状态（如果有）
-    if hasattr(agent, '_current_unified_state') and agent._current_unified_state:
-        state = agent._current_unified_state
-    else:
-        state = session_state
-
-    reason = route.get("reason", "unknown")
-    target_store = route.get("target_store", "unknown")
+    state = agent._current_unified_state if hasattr(agent, "_current_unified_state") and agent._current_unified_state else session_state
+    reason = str(route.get("reason", "unknown") or "unknown")
+    target_store = str(route.get("target_store", "unknown") or "unknown")
     geo_context = resolve_geo_context(agent, route, state)
-    both_images_sent = agent._has_both_images_sent(state)
-    neg_shanghai_hint = agent._has_neg_shanghai_hint(text)
+    current_mainline = determine_current_mainline(agent, text, intent, route, state)
+    state["current_mainline"] = current_mainline
+
+    if current_mainline == "conversation_repair":
+        repair_decision = agent._decide_llm_reply(
+            latest_user_text=text,
+            intent="general",
+            route_reason="conversation_repair",
+            conversation_history=conversation_history,
+            session_state=state,
+            rule_id="LLM_CONVERSATION_REPAIR",
+            allow_address_guardrails=False,
+            allow_precise_address_closure=False,
+        )
+        repair_decision.media_plan = "none"
+        repair_decision.reply_goal = "修复沟通"
+        return repair_decision
+
+    if current_mainline == "address_delivery":
+        resend_target = infer_address_resend_target(agent, text, route, state)
+        if not resend_target:
+            return AgentDecision(
+                reply_text="姐姐，您是想看哪家门店的位置图，我给您对应发哦。",
+                intent="address",
+                route_reason="address_resend_need_store",
+                reply_goal="确认门店",
+                media_plan="none",
+                reply_source="rule",
+                rule_id="ADDRESS_RESEND_NEED_STORE",
+                rule_applied=True,
+            )
+        stage = get_address_delivery_stage(state, resend_target)
+        if stage == "delivered_once" and looks_like_explicit_address_resend_request(agent, text):
+            store = agent.knowledge_service.get_store_display(resend_target)
+            store_name = agent._store_recommend_display_name(resend_target, str(store.get("store_name", "") or "门店"))
+            return AgentDecision(
+                reply_text=agent._normalize_reply_text(f"姐姐，{store_name}的位置图我再给您发一次，您直接看图就行"),
+                intent="address",
+                route_reason="address_resend",
+                reply_goal="地址补发",
+                media_plan="address_image",
+                reply_source="rule",
+                rule_id="ADDRESS_DELIVERY_RESEND",
+                rule_applied=True,
+            )
+        if stage == "not_delivered":
+            store = agent.knowledge_service.get_store_display(resend_target)
+            store_name = agent._store_recommend_display_name(resend_target, str(store.get("store_name", "") or "门店"))
+            return AgentDecision(
+                reply_text=agent._normalize_reply_text(f"姐姐，{store_name}的位置我给您放图片里，您直接按图看会更方便"),
+                intent="address",
+                route_reason="address_delivery_first",
+                reply_goal="地址交付",
+                media_plan="address_image",
+                reply_source="rule",
+                rule_id="ADDRESS_DELIVERY_FIRST",
+                rule_applied=True,
+            )
+
+    if current_mainline == "contact_delivery":
+        contact_stage = str(state.get("contact_delivery_stage", "not_delivered") or "not_delivered")
+        if bool(state.get("contact_captured", False)):
+            return agent._decide_llm_reply(
+                latest_user_text=text,
+                intent="general",
+                route_reason="contact_already_captured",
+                conversation_history=conversation_history,
+                session_state=state,
+                rule_id="LLM_CONTACT_CAPTURED",
+                allow_address_guardrails=False,
+                allow_precise_address_closure=False,
+            )
+        if contact_stage == "delivered_once" and agent_contact_flow.looks_like_explicit_contact_image_resend_request(text):
+            return AgentDecision(
+                reply_text=agent._normalize_reply_text("姐姐，联系方式图我再给您发一次，您按图联系就可以"),
+                intent="contact",
+                route_reason="contact_resend",
+                reply_goal="联系方式补发",
+                media_plan="contact_image",
+                reply_source="rule",
+                rule_id="CONTACT_DELIVERY_RESEND",
+                rule_applied=True,
+            )
+        if contact_stage == "not_delivered":
+            return AgentDecision(
+                reply_text=agent._normalize_reply_text("姐姐，联系方式我给您放图片里，您直接按图联系就可以"),
+                intent="contact",
+                route_reason="contact_delivery_first",
+                reply_goal="联系方式交付",
+                media_plan="contact_image",
+                reply_source="rule",
+                rule_id="CONTACT_DELIVERY_FIRST",
+                rule_applied=True,
+            )
+
+    if current_mainline == "store_recommendation":
+        if target_store != "unknown":
+            store = agent.knowledge_service.get_store_display(target_store)
+            store_name = agent._store_recommend_display_name(target_store, store.get("store_name", "门店"))
+            state["last_geo_pending"] = False
+            state["geo_followup_round"] = 0
+            state["geo_choice_offered"] = False
+            state["last_geo_route_reason"] = ""
+            return AgentDecision(
+                reply_text=agent._render_template("store_recommend", store_name=store_name),
+                intent="address",
+                route_reason=reason,
+                reply_goal="解答",
+                media_plan="address_image",
+                reply_source="rule",
+                rule_id="STORE_RECOMMENDATION",
+                rule_applied=True,
+                geo_context_source=geo_context.get("source", ""),
+            )
+        route_reason = "need_region" if reason in {"unknown", "need_clarify"} else reason
+        return agent._build_geo_followup_decision(session_state=state, route_reason=route_reason, intent="address")
+
+    if intent in {"recommendation_clarify", "store_preference"}:
+        return agent._decide_llm_reply(
+            latest_user_text=text,
+            intent="general",
+            route_reason="recommendation_clarify",
+            conversation_history=conversation_history,
+            session_state=state,
+            rule_id="LLM_RECOMMENDATION_CLARIFY",
+            allow_address_guardrails=False,
+            allow_precise_address_closure=False,
+        )
+
+    normalized_text = re.sub(r"\s+", "", str(text or "")).lower()
+    first_turn_geo_arrival = (
+        is_first_turn_global
+        and any(token in normalized_text for token in ("我在", "在北京", "在上海", "北京", "上海", "徐汇", "静安", "虹口", "人民广场", "人广", "五角场"))
+        and not any(token in normalized_text for token in ("还是", "对不对", "是不是", "硬推", "按我要求"))
+    )
+    if (
+        target_store != "unknown"
+        and intent in {"general", "address"}
+        and not has_any_address_delivery_history(state)
+        and (
+            intent == "address"
+            or looks_like_explicit_store_recommendation_request(text)
+            or first_turn_geo_arrival
+        )
+        and not agent_contact_flow.looks_like_store_recommendation_challenge(text)
+        and not agent_contact_flow.looks_like_store_preference_statement(text)
+    ):
+        store = agent.knowledge_service.get_store_display(target_store)
+        store_name = agent._store_recommend_display_name(target_store, store.get("store_name", "门店"))
+        state["last_geo_pending"] = False
+        state["geo_followup_round"] = 0
+        state["geo_choice_offered"] = False
+        state["last_geo_route_reason"] = ""
+        return AgentDecision(
+            reply_text=agent._render_template("store_recommend", store_name=store_name),
+            intent="address",
+            route_reason=reason,
+            reply_goal="解答",
+            media_plan="address_image",
+            reply_source="rule",
+            rule_id="ADDR_STORE_RECOMMEND",
+            rule_applied=True,
+            geo_context_source=geo_context.get("source", ""),
+        )
+
+    unresolved_geo_reasons = {
+        "unknown",
+        "need_region",
+        "need_district",
+        "need_clarify",
+        "sh_route_need_clarify",
+        "shanghai_need_arrival_point",
+        "shanghai_need_district",
+    }
+    if (
+        intent == "address"
+        and str(route.get("target_store", "") or "").strip() in {"", "unknown"}
+        and reason in unresolved_geo_reasons
+    ):
+        route_reason = "need_region" if reason in {"unknown", "need_clarify"} else reason
+        return agent._build_geo_followup_decision(session_state=state, route_reason=route_reason, intent="address")
 
     if is_first_turn_global and intent == "purchase" and reason in ("unknown", "need_region"):
         return agent._build_geo_followup_decision(session_state=state, route_reason="need_region", intent="purchase")
 
-    if reason == "shanghai_need_arrival_point":
-        state["last_geo_pending"] = True
-        state["last_geo_route_reason"] = "need_arrival_point"
-        return AgentDecision(
-            reply_text=agent._render_template("ask_sh_arrival_point"),
-            intent="address",
-            route_reason="need_arrival_point",
-            reply_goal="追问地区",
-            media_plan="none",
-            reply_source="rule",
-            rule_id="ADDR_ASK_ARRIVAL_POINT",
-            rule_applied=True,
-            geo_context_source=geo_context.get("source", ""),
-        )
-
-    if reason == "shanghai_need_district":
-        return agent._build_geo_followup_decision(session_state=state, route_reason="need_district", intent="address")
-
-    if reason == "sh_route_need_clarify":
-        state["last_geo_pending"] = True
-        state["last_geo_route_reason"] = "need_clarify"
-        return AgentDecision(
-            reply_text=agent._render_template("ask_sh_route_clarify"),
-            intent="address",
-            route_reason="need_clarify",
-            reply_goal="追问地区",
-            media_plan="none",
-            reply_source="rule",
-            rule_id="ADDR_SH_ROUTE_NEED_CLARIFY",
-            rule_applied=True,
-            geo_context_source=geo_context.get("source", ""),
-        )
-
-    if (
-        intent == "purchase"
-        and neg_shanghai_hint
-        and geo_context.get("known")
-    ):
-        session_state["last_geo_pending"] = False
-        session_state["geo_followup_round"] = 0
-        session_state["geo_choice_offered"] = False
-        if agent._is_contact_image_sent_for_current_geo(session_state):
-            return AgentDecision(
-                reply_text=agent._render_template("purchase_contact_remote_remind_only"),
-                intent="purchase",
-                route_reason="not_in_shanghai_remote",
-                reply_goal="推进购买意图",
-                media_plan="none",
-                reply_source="rule",
-                rule_id="PURCHASE_REMOTE_CONTACT_REMIND_ONLY",
-                rule_applied=True,
-                geo_context_source=geo_context.get("source", ""),
-            )
-        return AgentDecision(
-            reply_text=agent._render_template("purchase_contact_intro"),
-            intent="purchase",
-            route_reason="not_in_shanghai_remote",
-            reply_goal="推进购买意图",
-            media_plan="contact_image",
-            reply_source="rule",
-            rule_id="PURCHASE_REMOTE_CONTACT_IMAGE",
-            rule_applied=True,
-            geo_context_source=geo_context.get("source", ""),
-        )
-
-    if reason == "out_of_coverage":
-        if agent._should_recover_to_shanghai_arrival_help(text, session_state):
-            session_state["last_geo_pending"] = True
-            session_state["last_geo_route_reason"] = "need_arrival_point"
-            return AgentDecision(
-                reply_text=agent._render_template("ask_sh_arrival_point"),
-                intent="address",
-                route_reason="need_arrival_point",
-                reply_goal="追问地区",
-                media_plan="none",
-                reply_source="rule",
-                rule_id="ADDR_ASK_ARRIVAL_POINT",
-                rule_applied=True,
-                geo_context_source=geo_context.get("source", ""),
-            )
-        region = route.get("detected_region") or agent_media.route_region(reason, text) or session_state.get("last_detected_region", "") or "您所在地区"
-        session_state["last_geo_pending"] = False
-        session_state["geo_followup_round"] = 0
-        session_state["geo_choice_offered"] = False
-        session_state["last_geo_route_reason"] = ""
-
-        if (
-            not agent_media.is_media_whitelist_session(agent, str(session_state.get("session_id", "") or ""))
-            and int(session_state.get("contact_image_sent_count", 0) or 0) >= 3
-        ):
-            return AgentDecision(
-                reply_text="姐姐，请往上滑看图片添加我哦～♥️",
-                intent="purchase" if intent == "purchase" else "address",
-                route_reason="out_of_coverage",
-                reply_goal="推进购买意图",
-                media_plan="none",
-                reply_source="rule",
-                rule_id="ADDR_OUT_OF_COVERAGE_REMIND_ONLY",
-                rule_applied=True,
-                geo_context_source=geo_context.get("source", ""),
-            )
-
-        return AgentDecision(
-            reply_text=agent._render_template("non_coverage_contact", region=region),
-            intent="purchase" if intent == "purchase" else "address",
-            route_reason="out_of_coverage",
-            reply_goal="推进购买意图",
-            media_plan="contact_image",
-            reply_source="rule",
-            rule_id="ADDR_OUT_OF_COVERAGE",
-            rule_applied=True,
-            geo_context_source=geo_context.get("source", ""),
-        )
-
-    if reason == "north_fallback_beijing" and intent in ("purchase", "address"):
-        session_state["last_geo_pending"] = False
-        session_state["geo_followup_round"] = 0
-        session_state["geo_choice_offered"] = False
-        if agent._is_contact_image_sent_for_current_geo(session_state):
-            return AgentDecision(
-                reply_text=agent._render_template("purchase_contact_remote_remind_only"),
-                intent="purchase",
-                route_reason=reason,
-                reply_goal="推进购买意图",
-                media_plan="none",
-                reply_source="rule",
-                rule_id="PURCHASE_REMOTE_CONTACT_REMIND_ONLY",
-                rule_applied=True,
-                geo_context_source=geo_context.get("source", ""),
-            )
-
-        store = agent.knowledge_service.get_store_display("beijing_chaoyang")
-        store_name = agent._store_recommend_display_name(
-            "beijing_chaoyang",
-            store.get("store_name", "北京朝阳门店"),
-        )
-        return AgentDecision(
-            reply_text=agent._render_template("store_recommend", store_name=store_name),
-            intent="address",
-            route_reason=reason,
-            reply_goal="解答",
-            media_plan="address_image",
-            reply_source="rule",
-            rule_id="ADDR_STORE_RECOMMEND",
-            rule_applied=True,
-            geo_context_source=geo_context.get("source", ""),
-        )
-
-    if intent == "purchase" and reason != "shanghai_need_district" and geo_context.get("known") and both_images_sent:
-        strong_count = int(session_state.get("strong_intent_after_both_count", 0) or 0)
-        session_state["strong_intent_after_both_count"] = strong_count + 1
-        hint_sent = bool(session_state.get("purchase_both_first_hint_sent", False))
-        if not hint_sent:
-            session_state["purchase_both_first_hint_sent"] = True
-            return AgentDecision(
-                reply_text=agent._render_template("strong_intent_after_both_first"),
-                intent="purchase",
-                route_reason=reason if reason != "unknown" else "both_images_lock",
-                reply_goal="推进购买意图",
-                media_plan="none",
-                reply_source="rule",
-                rule_id="PURCHASE_AFTER_BOTH_FIRST_HINT",
-                rule_applied=True,
-                geo_context_source=geo_context.get("source", ""),
-                both_images_sent_state=True,
-                purchase_both_first_hint_sent=True,
-            )
-
-        follow_decision = agent._decide_general_reply(
+    if intent == "contact" and bool(state.get("contact_captured", False)):
+        return agent._decide_llm_reply(
             latest_user_text=text,
-            intent=intent,
-            route=route,
+            intent="general",
+            route_reason="contact_already_captured",
             conversation_history=conversation_history,
-            session_state=session_state,
-            user_state=user_state,
-        )
-        follow_decision.media_plan = "none"
-        follow_decision.geo_context_source = geo_context.get("source", "")
-        follow_decision.both_images_sent_state = True
-        follow_decision.purchase_both_first_hint_sent = bool(
-            session_state.get("purchase_both_first_hint_sent", False)
-        )
-        return follow_decision
-
-    if intent in ("purchase", "appointment") and reason != "shanghai_need_district" and geo_context.get("known"):
-        contact_sent = agent._is_contact_image_sent_for_current_geo(session_state)
-        session_state["last_geo_pending"] = False
-        session_state["geo_followup_round"] = 0
-        session_state["geo_choice_offered"] = False
-        appointment_reply = ""
-        if intent == "appointment":
-            appointment_reply = str(
-                agent._build_store_appointment_contact_reply(
-                    text,
-                    route,
-                    session_state=state,
-                    conversation_history=conversation_history,
-                ) or ""
-            ).strip()
-        if contact_sent:
-            return AgentDecision(
-                reply_text=appointment_reply or agent._render_template("purchase_contact_remind_only"),
-                intent="appointment" if appointment_reply else "purchase",
-                route_reason=reason if reason != "unknown" else "known_geo_context",
-                reply_goal="推进购买意图",
-                media_plan="none",
-                reply_source="rule",
-                rule_id="PURCHASE_CONTACT_REMIND_ONLY",
-                rule_applied=True,
-                geo_context_source=geo_context.get("source", ""),
-            )
-
-        return AgentDecision(
-            reply_text=appointment_reply or agent._render_template("purchase_contact_intro"),
-            intent="appointment" if appointment_reply else "purchase",
-            route_reason=reason if reason != "unknown" else "known_geo_context",
-            reply_goal="推进购买意图",
-            media_plan="contact_image",
-            reply_source="rule",
-            rule_id="PURCHASE_CONTACT_FROM_KNOWN_GEO",
-            rule_applied=True,
-            geo_context_source=geo_context.get("source", ""),
+            session_state=state,
+            rule_id="LLM_CONTACT_CAPTURED",
+            allow_precise_address_closure=False,
         )
 
-    if target_store != "unknown":
-        store = agent.knowledge_service.get_store_display(target_store)
-        store_name = agent._store_recommend_display_name(target_store, store.get("store_name", "门店"))
-        session_state["last_geo_pending"] = False
-        session_state["geo_followup_round"] = 0
-        session_state["geo_choice_offered"] = False
-        session_state["last_geo_route_reason"] = ""
-        return AgentDecision(
-            reply_text=agent._render_template("store_recommend", store_name=store_name),
-            intent="address",
-            route_reason=reason,
-            reply_goal="解答",
-            media_plan="address_image",
-            reply_source="rule",
-            rule_id="ADDR_STORE_RECOMMEND",
-            rule_applied=True,
-            geo_context_source=geo_context.get("source", ""),
-        )
-
-    return agent._build_geo_followup_decision(session_state=session_state, route_reason="need_region", intent=intent)
+    return decide_general_reply(
+        agent,
+        latest_user_text=text,
+        intent=intent,
+        route=route,
+        conversation_history=conversation_history,
+        session_state=state,
+        user_state=user_state,
+    )
 
 
 def build_geo_followup_decision(agent, session_state: Dict[str, Any], route_reason: str, intent: str) -> AgentDecision:
@@ -999,17 +1210,14 @@ def decide_general_reply(
                 rule_applied=True,
             )
         if contact_sent:
-            prompt_count = int(state.get("contact_followup_prompt_count", 0) or 0)
-            state["contact_followup_prompt_count"] = prompt_count + 1
-            template_key = "contact_followup_1" if (prompt_count % 2) == 0 else "contact_followup_2"
             return AgentDecision(
-                reply_text=agent._render_template(template_key),
+                reply_text=agent._normalize_reply_text("姐姐，联系方式图刚才已经发过了，您按图联系就可以"),
                 intent="contact",
                 route_reason=route_reason,
-                reply_goal="推进购买意图",
+                reply_goal="承接联系方式",
                 media_plan="none",
                 reply_source="rule",
-                rule_id="CONTACT_FOLLOWUP",
+                rule_id="CONTACT_ALREADY_SENT_ACK",
                 rule_applied=True,
             )
         return AgentDecision(
@@ -1020,6 +1228,40 @@ def decide_general_reply(
             media_plan="contact_image",
             reply_source="rule",
             rule_id="CONTACT_SEND_IMAGE",
+            rule_applied=True,
+        )
+
+    geo_context = resolve_geo_context(agent, route, state)
+    if intent in ("purchase", "appointment") and route_reason != "shanghai_need_district" and geo_context.get("known"):
+        appointment_reply = ""
+        if intent == "appointment":
+            appointment_reply = str(
+                agent._build_store_appointment_contact_reply(
+                    latest_user_text,
+                    route,
+                    session_state=state,
+                    conversation_history=conversation_history,
+                ) or ""
+            ).strip()
+        if contact_sent:
+            return AgentDecision(
+                reply_text=appointment_reply or "姐姐，您直接看上面的图片加专属客服就可以，把您方便的时间跟老师说一下就行。🌹",
+                intent="appointment" if appointment_reply else "purchase",
+                route_reason=route_reason if route_reason != "unknown" else "known_geo_context",
+                reply_goal="推进购买意图",
+                media_plan="none",
+                reply_source="rule",
+                rule_id="PURCHASE_CONTACT_REMIND_ONLY",
+                rule_applied=True,
+            )
+        return AgentDecision(
+            reply_text=appointment_reply or agent._render_template("purchase_contact_intro"),
+            intent="appointment" if appointment_reply else "purchase",
+            route_reason=route_reason if route_reason != "unknown" else "known_geo_context",
+            reply_goal="推进购买意图",
+            media_plan="contact_image",
+            reply_source="rule",
+            rule_id="PURCHASE_CONTACT_FROM_KNOWN_GEO",
             rule_applied=True,
         )
 
