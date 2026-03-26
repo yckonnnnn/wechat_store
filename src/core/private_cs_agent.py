@@ -119,6 +119,18 @@ REMOTE_PURCHASE_PROGRESS_KEYWORDS = (
     "怎么购买",
     "怎么买呢",
 )
+REMOTE_DIRECT_QUERY_KEYWORDS = (
+    "远程定制",
+    "远程做",
+    "远程弄",
+    "远程可以吗",
+    "能不能远程",
+    "可以远程吗",
+    "外地怎么弄",
+    "外地怎么办",
+    "不方便到店怎么办",
+    "不到店可以吗",
+)
 REMOTE_URGENT_KEYWORDS = (
     "快点回我",
     "别绕了",
@@ -980,9 +992,18 @@ class CustomerServiceAgent:
                 user_state=user_state,
                 user_id_hash=user_hash,
             )
+        suitable_audience_priority_decision: Optional[AgentDecision] = None
+        if price_priority_decision is None and process_priority_decision is None:
+            suitable_audience_priority_decision = self._decide_suitable_audience_priority_reply(
+                latest_user_text=text,
+                route=route,
+                user_state=user_state,
+                user_id_hash=user_hash,
+            )
         if (
             price_priority_decision is None
             and process_priority_decision is None
+            and suitable_audience_priority_decision is None
         ):
             business_block_priority_decision = self._decide_business_block_priority_reply(
                 latest_user_text=text,
@@ -1017,6 +1038,8 @@ class CustomerServiceAgent:
             decision = business_block_priority_decision
         elif process_priority_decision is not None:
             decision = process_priority_decision
+        elif suitable_audience_priority_decision is not None:
+            decision = suitable_audience_priority_decision
         elif appointment_kb_decision is not None:
             decision = appointment_kb_decision
         elif address_text_after_image_decision is not None:
@@ -1528,6 +1551,10 @@ class CustomerServiceAgent:
         normalized = self._normalize_flow_text(text)
         return bool(normalized) and any(token in normalized for token in REMOTE_PURCHASE_PROGRESS_KEYWORDS)
 
+    def _looks_like_remote_direct_query(self, text: str) -> bool:
+        normalized = self._normalize_flow_text(text)
+        return bool(normalized) and any(token in normalized for token in REMOTE_DIRECT_QUERY_KEYWORDS)
+
     def _looks_like_remote_urgent_query(self, text: str) -> bool:
         normalized = self._normalize_flow_text(text)
         return bool(normalized) and any(token in normalized for token in REMOTE_URGENT_KEYWORDS)
@@ -1562,6 +1589,7 @@ class CustomerServiceAgent:
         remote_active = self._is_remote_flow_active(session_state)
         purchase_like_remote = (
             self._looks_like_remote_purchase_progress(text)
+            or self._looks_like_remote_direct_query(text)
             or self._looks_like_appointment_query(text)
             or self.knowledge_service.is_address_query(text)
             or self.knowledge_service.is_purchase_intent(text)
@@ -1577,13 +1605,18 @@ class CustomerServiceAgent:
             )
         )
         explicit_remote_entry = (
-            route_reason in {"out_of_coverage", "not_in_shanghai_remote"}
-            and not bool(session_state.get("last_geo_pending", False))
-            and (
-                strong_remote_statement
-                or purchase_like_remote
-                or self._looks_like_remote_region_query(text)
-                or "我在" in normalized
+            (
+                self._looks_like_remote_direct_query(text)
+                or (
+                    route_reason in {"out_of_coverage", "not_in_shanghai_remote"}
+                    and not bool(session_state.get("last_geo_pending", False))
+                    and (
+                        strong_remote_statement
+                        or purchase_like_remote
+                        or self._looks_like_remote_region_query(text)
+                        or "我在" in normalized
+                    )
+                )
             )
         )
         if not remote_active and not explicit_remote_entry:
@@ -2991,6 +3024,69 @@ class CustomerServiceAgent:
             kb_confident=True,
         )
 
+    def _decide_suitable_audience_priority_reply(
+        self,
+        latest_user_text: str,
+        route: Dict[str, Any],
+        user_state: Dict[str, Any],
+        user_id_hash: str = "",
+    ) -> Optional[AgentDecision]:
+        del route
+        text = str(latest_user_text or "").strip()
+        if not text:
+            return None
+
+        kb_detail = self.knowledge_service.find_answer_detail(
+            latest_user_text,
+            threshold=min(self.knowledge_threshold, 0.1),
+        )
+        kb_intent = str(kb_detail.get("intent", "") or "").strip().lower()
+        tags = {str(tag).strip() for tag in (kb_detail.get("tags", []) or []) if str(tag).strip()}
+        if not (kb_detail.get("matched") and (kb_intent == "suitable_audience_chat" or "适用人群" in tags)):
+            return None
+
+        kb_answer = str(kb_detail.get("answer", "") or "").strip()
+        kb_answers = [
+            str(x).strip()
+            for x in (kb_detail.get("answers", []) or [])
+            if str(x).strip()
+        ]
+        if kb_answer and kb_answer not in kb_answers:
+            kb_answers.append(kb_answer)
+        answer = kb_answers[0] if kb_answers else kb_answer
+        if not answer:
+            return None
+
+        selected_answer, selected_index, exhausted = self._select_kb_variant_answer(
+            answers=kb_answers,
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+        )
+        answer = selected_answer or answer
+        self._remember_selected_kb_answer(
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+            answer_text=answer,
+        )
+        return AgentDecision(
+            reply_text=answer,
+            intent="general",
+            route_reason="suitable_audience_priority",
+            reply_goal="解答",
+            media_plan="none",
+            reply_source="knowledge",
+            rule_id="SUITABLE_AUDIENCE_PRIORITY",
+            rule_applied=True,
+            kb_match_score=float(kb_detail.get("score", 0.0) or 0.0),
+            kb_match_question=str(kb_detail.get("question", "") or ""),
+            kb_match_mode=f"suitable_audience_priority_{str(kb_detail.get('mode', '') or 'match')}",
+            kb_item_id=str(kb_detail.get("item_id", "") or ""),
+            kb_variant_total=len(kb_answers),
+            kb_variant_selected_index=selected_index if selected_answer else (-1 if exhausted else 0),
+            kb_variant_fallback_llm=False,
+            kb_confident=True,
+        )
+
     def _looks_like_business_block_query(self, text: str) -> bool:
         normalized = re.sub(r"\s+", "", str(text or "")).lower()
         if not normalized:
@@ -3132,6 +3228,15 @@ class CustomerServiceAgent:
         )
         if lifespan_priority_decision is not None:
             return lifespan_priority_decision
+
+        suitable_audience_priority_decision = self._decide_suitable_audience_priority_reply(
+            latest_user_text=text,
+            route=route,
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+        )
+        if suitable_audience_priority_decision is not None:
+            return suitable_audience_priority_decision
 
         service_hours_priority_decision = self._decide_service_hours_priority_reply(
             latest_user_text=text,

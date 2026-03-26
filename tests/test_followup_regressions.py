@@ -434,6 +434,30 @@ class FollowupRegressionTestCase(unittest.TestCase):
             self.assertIn("当天", decision.reply_text)
             self.assertNotIn("营业时间", decision.reply_text)
 
+    def test_suitable_audience_question_prefers_knowledge_answer(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, _ = helper._build_agent(temp_dir)
+            agent.set_options(use_knowledge_first=True, knowledge_threshold=0.6, reply_mode="llm_direct")
+            repository.add(
+                "哪些人更适合定制假发？",
+                "发量稀少、头型特殊，或者对舒适度要求更高的人，更适合做定制假发哦～",
+                intent="suitable_audience_chat",
+                tags=["适用人群", "定制", "舒适度"],
+            )
+
+            decision = agent.decide(
+                "suitable_audience_priority",
+                "适用人群用户",
+                "哪些人更适合定制假发",
+                [],
+            )
+
+            self.assertEqual(decision.rule_id, "SUITABLE_AUDIENCE_PRIORITY")
+            self.assertNotIn("哪个城市", decision.reply_text)
+            self.assertNotIn("门店", decision.reply_text)
+
     def test_price_fallback_third_turn_still_guides_to_private_contact(self):
         helper = rule_engine_tests.RuleEngineTestCase()
         with tempfile.TemporaryDirectory() as td:
@@ -728,6 +752,27 @@ class FollowupRegressionTestCase(unittest.TestCase):
                 session_id="remote_first_turn",
                 user_name="异地用户",
                 latest_user_text="我不在上海 我在哈尔滨",
+                reply_text=decision.reply_text,
+                conversation_history=[],
+                decision=decision,
+            )
+
+            self.assertEqual(decision.rule_id, "REMOTE_FLOW_ENTRY")
+            self.assertIn("远程定制", decision.reply_text)
+            self.assertTrue(any(item.get("type") == "contact_image" for item in (media_decision.media_items or [])))
+            self.assertFalse(any(item.get("type") == "address_image" for item in (media_decision.media_items or [])))
+
+    def test_remote_direct_query_first_turn_enters_remote_flow(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = helper._build_agent(temp_dir)
+
+            decision = agent.decide("remote_direct_first_turn", "远程用户", "能不能远程定制", [])
+            media_decision = agent.judge_post_reply_media(
+                session_id="remote_direct_first_turn",
+                user_name="远程用户",
+                latest_user_text="能不能远程定制",
                 reply_text=decision.reply_text,
                 conversation_history=[],
                 decision=decision,
