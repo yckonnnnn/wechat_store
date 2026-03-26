@@ -228,15 +228,23 @@ class MemoryStore:
             "address_image_sent_count": 0,
             "address_image_last_sent_at_by_store": {},
             "address_image_sent_paths_by_store": {},
+            "address_image_sent_count_by_store": {},
+            "address_image_resend_count_by_store": {},
+            "address_delivery_stage_by_store": {},
             "contact_image_sent_count": 0,
+            "contact_image_resend_count": 0,
             "contact_image_last_sent_at": "",
             "contact_image_sent_paths": [],
-            "contact_warmup": False,
+            "contact_delivery_stage": "not_delivered",
+            "contact_captured": False,
             "geo_followup_round": 0,
             "geo_choice_offered": False,
             "last_geo_pending": False,
             "last_detected_region": "",
             "last_target_store": "",
+            "current_store_context": "",
+            "store_delivery_authority": "",
+            "store_candidates": [],
             "last_geo_route_reason": "unknown",
             "last_geo_updated_at": "",
             "strong_intent_after_both_count": 0,
@@ -254,6 +262,7 @@ class MemoryStore:
             "last_route_reason": "unknown",
             "last_intent": "general",
             "last_reply_goal": "解答",
+            "current_mainline": "business_answer",
         }
 
     def _default_user_state(self, user_hash: str) -> Dict[str, Any]:
@@ -416,17 +425,23 @@ class MemoryStore:
         state.setdefault("address_image_sent_count", 0)
         state.setdefault("address_image_last_sent_at_by_store", {})
         state.setdefault("address_image_sent_paths_by_store", {})
+        state.setdefault("address_image_sent_count_by_store", {})
+        state.setdefault("address_image_resend_count_by_store", {})
+        state.setdefault("address_delivery_stage_by_store", {})
         state.setdefault("contact_image_sent_count", 0)
+        state.setdefault("contact_image_resend_count", 0)
         state.setdefault("contact_image_last_sent_at", "")
         state.setdefault("contact_image_sent_paths", [])
-        state.setdefault("contact_warmup", False)
+        state.setdefault("contact_delivery_stage", "not_delivered")
         state.setdefault("contact_captured", False)
-        state.setdefault("contact_image_resend_count", 0)
         state.setdefault("geo_followup_round", 0)
         state.setdefault("geo_choice_offered", False)
         state.setdefault("last_geo_pending", False)
         state.setdefault("last_detected_region", "")
         state.setdefault("last_target_store", "")
+        state.setdefault("current_store_context", "")
+        state.setdefault("store_delivery_authority", "")
+        state.setdefault("store_candidates", [])
         state.setdefault("last_geo_route_reason", "unknown")
         state.setdefault("last_geo_updated_at", "")
         state.setdefault("strong_intent_after_both_count", 0)
@@ -444,12 +459,19 @@ class MemoryStore:
         state.setdefault("last_route_reason", "unknown")
         state.setdefault("last_intent", "general")
         state.setdefault("last_reply_goal", "解答")
+        state.setdefault("current_mainline", "business_answer")
         if not isinstance(state.get("sent_address_stores"), list):
             state["sent_address_stores"] = []
         if not isinstance(state.get("address_image_last_sent_at_by_store"), dict):
             state["address_image_last_sent_at_by_store"] = {}
         if not isinstance(state.get("address_image_sent_paths_by_store"), dict):
             state["address_image_sent_paths_by_store"] = {}
+        if not isinstance(state.get("address_image_sent_count_by_store"), dict):
+            state["address_image_sent_count_by_store"] = {}
+        if not isinstance(state.get("address_image_resend_count_by_store"), dict):
+            state["address_image_resend_count_by_store"] = {}
+        if not isinstance(state.get("address_delivery_stage_by_store"), dict):
+            state["address_delivery_stage_by_store"] = {}
         if not isinstance(state.get("contact_image_sent_paths"), list):
             state["contact_image_sent_paths"] = []
         if not isinstance(state.get("pending_required_media"), list):
@@ -458,6 +480,70 @@ class MemoryStore:
             state["planned_required_media"] = []
         if not isinstance(state.get("required_media_retry_budget"), dict):
             state["required_media_retry_budget"] = {}
+        if not isinstance(state.get("store_candidates"), list):
+            state["store_candidates"] = []
+        self._migrate_delivery_state(state)
+
+    def _migrate_delivery_state(self, state: Dict[str, Any]) -> None:
+        contact_sent_count = max(0, int(state.get("contact_image_sent_count", 0) or 0))
+        state["contact_image_sent_count"] = contact_sent_count
+        contact_resend_count = max(0, int(state.get("contact_image_resend_count", 0) or 0))
+        state["contact_image_resend_count"] = min(contact_resend_count, max(contact_sent_count - 1, 0))
+        contact_stage = str(state.get("contact_delivery_stage", "") or "").strip()
+        inferred_contact_stage = (
+            "delivered_closed"
+            if contact_sent_count >= 3
+            else "delivered_once"
+            if contact_sent_count >= 1
+            else "not_delivered"
+        )
+        if contact_stage not in {"not_delivered", "delivered_once", "delivered_closed"}:
+            contact_stage = inferred_contact_stage
+        elif inferred_contact_stage == "delivered_closed":
+            contact_stage = "delivered_closed"
+        elif inferred_contact_stage == "delivered_once" and contact_stage == "not_delivered":
+            contact_stage = "delivered_once"
+        state["contact_delivery_stage"] = contact_stage
+
+        sent_paths_by_store = dict(state.get("address_image_sent_paths_by_store", {}) or {})
+        sent_count_by_store = dict(state.get("address_image_sent_count_by_store", {}) or {})
+        resend_count_by_store = dict(state.get("address_image_resend_count_by_store", {}) or {})
+        delivery_stage_by_store = dict(state.get("address_delivery_stage_by_store", {}) or {})
+        sent_stores = {
+            str(store).strip()
+            for store in (state.get("sent_address_stores", []) or [])
+            if str(store).strip()
+        }
+        sent_stores.update(str(store).strip() for store in sent_paths_by_store.keys() if str(store).strip())
+        sent_stores.update(str(store).strip() for store in sent_count_by_store.keys() if str(store).strip())
+
+        total_address_count = 0
+        for store in sorted(sent_stores):
+            path_count = len([str(path).strip() for path in (sent_paths_by_store.get(store, []) or []) if str(path).strip()])
+            count = max(path_count, int(sent_count_by_store.get(store, 0) or 0))
+            if count < 0:
+                count = 0
+            sent_count_by_store[store] = count
+            resend_count = int(resend_count_by_store.get(store, 0) or 0)
+            resend_count_by_store[store] = min(max(resend_count, 0), max(count - 1, 0))
+            stage = str(delivery_stage_by_store.get(store, "") or "").strip()
+            inferred_stage = "delivered_closed" if count >= 2 else "delivered_once" if count >= 1 else "not_delivered"
+            if stage not in {"not_delivered", "delivered_once", "delivered_closed"}:
+                stage = inferred_stage
+            elif inferred_stage == "delivered_closed":
+                stage = "delivered_closed"
+            elif inferred_stage == "delivered_once" and stage == "not_delivered":
+                stage = "delivered_once"
+            delivery_stage_by_store[store] = stage
+            if count > 0:
+                total_address_count += count
+
+        state["sent_address_stores"] = sorted(sent_stores)
+        state["address_image_sent_count_by_store"] = sent_count_by_store
+        state["address_image_resend_count_by_store"] = resend_count_by_store
+        state["address_delivery_stage_by_store"] = delivery_stage_by_store
+        if total_address_count > int(state.get("address_image_sent_count", 0) or 0):
+            state["address_image_sent_count"] = total_address_count
 
     def _fill_user_defaults(self, state: Dict[str, Any], user_hash: str) -> None:
         now = datetime.now().isoformat()
