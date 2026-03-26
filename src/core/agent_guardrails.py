@@ -15,6 +15,7 @@ PRECISE_ADDRESS_TO_STORE: Dict[str, str] = {
     "漕溪北路45号中航德必大厦": "sh_xuhui",
     "建外SOHO东区": "beijing_chaoyang",
 }
+PRECISE_ADDRESS_MASK_REPLACEMENT = "由于具体地址敏感平台限制我发不出去，姐姐您留个☎️就行"
 
 STORE_RECOMMENDATION_ALIASES: Dict[str, Tuple[str, ...]] = {
     "beijing_chaoyang": ("北京朝阳店", "北京朝阳门店", "朝阳店", "朝阳门店", "朝阳区", "建外soho", "建外soho东区", "东三环中路"),
@@ -108,6 +109,19 @@ _PRECISE_ADDRESS_LOOKUP = {
     }
     for address, target_store in PRECISE_ADDRESS_TO_STORE.items()
 }
+_PRECISE_ADDRESS_MASK_PATTERNS: List[str] = [
+    r"(?:朝阳区)?建外\s*soho东区",
+    r"(?:静安区)?愚园路\s*172号(?:环球世界大厦a座)?",
+    r"(?:黄浦区|黄埔区)?汉口路\s*650号(?:亚洲大厦)?",
+    r"(?:虹口区)?花园路\s*16号(?:嘉和国际大厦东楼)?",
+    r"(?:徐汇区)?漕溪北路\s*45号(?:中航德必大厦)?",
+    r"(?:杨浦区)?政通路\s*177号[，,]?\s*(?:万达广场e栋c座)?",
+    r"(?:[\u4e00-\u9fa5]{2,6}区)?[\u4e00-\u9fa5A-Za-z]{2,20}(?:路|街|道|巷|弄)\s*\d{1,4}号(?:[\u4e00-\u9fa5A-Za-z0-9座栋楼层室\-]{0,30})",
+]
+_PRECISE_ADDRESS_MASK_REGEX = re.compile(
+    "|".join(f"(?:{pattern})" for pattern in _PRECISE_ADDRESS_MASK_PATTERNS),
+    re.IGNORECASE,
+)
 
 
 def normalize_reply_text(agent: Any, text: str) -> str:
@@ -126,7 +140,7 @@ def normalize_reply_text(agent: Any, text: str) -> str:
     value = re.sub(r"呢到(?=[。！？!?，,；;]|$)", "呢", value)
 
     if (not contact_captured) and any(k in value for k in agent._contact_compliance_block_keywords):
-        value = "姐姐，您留个☎️方式，我来加您好友"
+        value = "姐姐，我把您这轮想确认的重点继续说清楚"
     elif any(k in value for k in agent._shipping_block_keywords):
         value = agent._shipping_block_replacement
         force_default_emoji = True
@@ -178,6 +192,24 @@ def detect_precise_address_in_reply(reply_text: str) -> Dict[str, Any]:
         if normalized_address in normalized_reply:
             return dict(payload)
     return {}
+
+
+def mask_precise_address_for_output(reply_text: str) -> str:
+    text = str(reply_text or "")
+    if not text:
+        return text
+
+    def _replace(match: re.Match[str]) -> str:
+        del match
+        return PRECISE_ADDRESS_MASK_REPLACEMENT
+
+    masked = _PRECISE_ADDRESS_MASK_REGEX.sub(_replace, text)
+    masked = re.sub(
+        rf"(?:{re.escape(PRECISE_ADDRESS_MASK_REPLACEMENT)})(?:[，,、；;]\s*)+(?:{re.escape(PRECISE_ADDRESS_MASK_REPLACEMENT)})",
+        PRECISE_ADDRESS_MASK_REPLACEMENT,
+        masked,
+    )
+    return masked
 
 
 def normalize_service_hours_check_text(text: str) -> str:
@@ -377,37 +409,14 @@ def apply_llm_reply_guardrails(
     history = conversation_history or []
     closure_info = empty_reply_closure_info(reply_text=reply)
     contact_captured = bool(state.get("contact_captured", False))
+    current_mainline = str(state.get("current_mainline", "business_answer") or "business_answer")
+    contact_delivery_stage = str(state.get("contact_delivery_stage", "not_delivered") or "not_delivered")
 
     def finalize(final_reply: str, base_info: Optional[Dict[str, Any]] = None) -> Tuple[str, Dict[str, Any]]:
         return final_reply, build_reply_closure_info(agent, final_reply, base_info or closure_info)
 
     if is_service_hours_query(text) and not reply_has_correct_service_hours(reply):
         return finalize(agent._render_guardrail_reply(SERVICE_HOURS_SAFE_REPLY))
-
-    if (
-        allow_address_guardrails
-        and
-        int(state.get("address_image_sent_count", 0) or 0) > 0
-        and str((state.get("conversation_facts", {}) or {}).get("recommended_store", "") or state.get("last_target_store", "") or "")
-        and (
-            agent.knowledge_service.is_address_query(text)
-            or any(token in normalize_service_hours_check_text(text) for token in ("位置图", "再发", "看图", "位置"))
-        )
-    ):
-        normalized_reply = normalize_service_hours_check_text(reply)
-        if any(token in normalized_reply for token in ("留个", "加您", "加你", "加好友", "联系方式", "具体沟通", "主动跟您介绍")):
-            store_key = str((state.get("conversation_facts", {}) or {}).get("recommended_store", "") or state.get("last_target_store", "") or "")
-            if store_key and store_key != "unknown":
-                store = agent.knowledge_service.get_store_display(store_key)
-                store_name = str(store.get("store_name", "") or "门店")
-                return finalize(
-                    agent._normalize_reply_text(f"姐姐，{store_name}位置直接看图片就可以哦"),
-                    {
-                        "closure_type": "address_image_promise",
-                        "target_store": store_key,
-                        "contact_closure_hit": False,
-                    },
-                )
 
     if agent._contains_explicit_phone_number(reply):
         if contact_captured:
@@ -432,7 +441,7 @@ def apply_llm_reply_guardrails(
         return finalize(agent._ma_teacher_role_fallback)
 
     if agent._is_contact_fact_risk(text, reply):
-        if contact_captured:
+        if contact_captured or contact_delivery_stage in {"delivered_once", "delivered_closed"} or current_mainline != "contact_delivery":
             sanitized_reply = agent_contact_flow.sanitize_contact_push_reply(
                 agent,
                 latest_user_text=text,
@@ -449,56 +458,35 @@ def apply_llm_reply_guardrails(
             return finalize(agent._render_guardrail_reply(agent._empathy_remote_support_fallback))
         if any(token in text for token in ("外地", "不在上海", "不在北京", "不方便到店", "远程定制", "不能去上海", "不能来上海")):
             return finalize(agent._render_guardrail_reply(agent._remote_support_fact_fallback))
-        return finalize(
-            agent._render_guardrail_reply(agent._contact_fact_fallback),
-            {"contact_closure_hit": True, "closure_type": "contact"},
-        )
+        return finalize(agent._render_guardrail_reply(agent._contact_fact_fallback), {"contact_closure_hit": False, "closure_type": ""})
 
     if agent._has_price_priority(text):
         if agent._contains_low_price_quote(reply) or agent._contains_invalid_price_channel(reply):
             return finalize(agent._render_guardrail_reply(agent._price_guardrail_safe_reply))
 
-    if allow_precise_address_closure:
-        precise_hit = detect_precise_address_in_reply(reply)
-        if precise_hit:
-            closure_text = select_precise_address_closure_text(agent, session_state=state)
-            return finalize(
-                agent._normalize_reply_text(closure_text),
-                {
-                    "closure_type": "precise_address",
-                    "precise_address_hit": True,
-                    "target_store": str(precise_hit.get("target_store", "") or ""),
-                    "matched_address": str(precise_hit.get("address", "") or ""),
-                },
-            )
+    explicit_address_delivery_turn = current_mainline == "address_delivery"
 
-    if allow_address_guardrails and reply_has_non_whitelist_detailed_address(reply):
+    if allow_address_guardrails and explicit_address_delivery_turn and reply_has_non_whitelist_detailed_address(reply):
         store_key = agent._resolve_guardrail_store_key(text, reply, state, history)
         if store_key:
             store = agent.knowledge_service.get_store_display(store_key)
-            store_name = str(store.get("store_name", "") or "门店")
             return finalize(
-                agent._normalize_reply_text(f"姐姐，{store_name}的位置直接看图里标注的位置就可以哦"),
-                {
-                    "closure_type": "store_recommendation",
-                    "target_store": store_key,
-                },
+                agent._normalize_reply_text("姐姐，这家门店的位置我给您发图片会更稳妥，您按图看就行"),
+                {"closure_type": "", "target_store": store_key},
             )
         return finalize(agent._render_guardrail_reply(agent._address_fact_fallback))
 
-    if allow_address_guardrails and agent._is_address_fact_risk(text, reply, state, history):
+    if allow_address_guardrails and explicit_address_delivery_turn and agent._is_address_fact_risk(text, reply, state, history):
         if agent._is_address_unsupported_query(text):
             return finalize(agent._render_guardrail_reply(agent._address_fact_fallback))
         store_key = agent._resolve_guardrail_store_key(text, reply, state, history)
         if store_key:
-            store = agent.knowledge_service.get_store_display(store_key)
-            store_name = str(store.get("store_name", "") or "门店")
-            return finalize(agent._normalize_reply_text(f"姐姐，{store_name}的位置直接看图里标注的位置就可以哦"))
+            return finalize(agent._normalize_reply_text("姐姐，这家门店的位置我给您发图片会更稳妥，您按图看就行"))
         if agent._reply_contains_unsupported_address_detail(reply):
             return finalize(agent._render_guardrail_reply(agent._address_fact_fallback))
         return finalize(agent._render_guardrail_reply(agent._address_fact_fallback))
 
-    if allow_address_guardrails and agent._is_address_unsupported_query(text):
+    if allow_address_guardrails and explicit_address_delivery_turn and agent._is_address_unsupported_query(text):
         return finalize(agent._normalize_reply_text(agent._address_unsupported_fallback))
     if agent._needs_empathy_remote_support(text) and not agent._reply_has_empathy(reply):
         return finalize(agent._normalize_reply_text(f"姐姐那您先注意休息，身体要紧，{reply.lstrip('姐姐，').lstrip('姐姐').strip()}"))

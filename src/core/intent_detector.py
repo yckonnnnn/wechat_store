@@ -6,6 +6,8 @@
 
 from typing import Any, Dict, List, Optional
 
+from . import agent_contact_flow
+
 
 class IntentDetector:
     """增强意图识别器"""
@@ -53,6 +55,14 @@ class IntentDetector:
         Returns:
             意图字符串
         """
+        if agent_contact_flow.looks_like_human_check(text) or agent_contact_flow.looks_like_repetition_frustration(text):
+            return "conversation_repair"
+
+        if agent_contact_flow.looks_like_store_recommendation_challenge(text):
+            return "recommendation_clarify"
+        if agent_contact_flow.looks_like_store_preference_statement(text):
+            return "store_preference"
+
         # 1. 检查是否是状态确认
         intent = self._detect_status_confirm(text)
         if intent:
@@ -130,7 +140,7 @@ class IntentDetector:
     ) -> bool:
         """检测是否是追问承接"""
         # 有已确认的门店，且用户提到"这/那"
-        if state.get("last_target_store") and state.get("last_target_store") != "unknown":
+        if state.get("current_store_context") and state.get("current_store_context") != "unknown":
             if any(k in text for k in self.FOLLOWUP_KEYWORDS):
                 return True
 

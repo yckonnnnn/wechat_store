@@ -87,6 +87,46 @@ def looks_like_repetition_frustration(text: str) -> bool:
     )
 
 
+def looks_like_store_recommendation_challenge(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    patterns = (
+        "你是不是让我去",
+        "你是不是非让我去",
+        "是不是让我去",
+        "按我要求选",
+        "按照我的要求选",
+        "还是直接让我去",
+        "还是你确定让我",
+        "你到底是在按我要求选还是硬推",
+        "你是给我选一个好的分店还是直接让我去",
+        "硬推",
+        "我主要想问",
+    )
+    return any(pattern in normalized for pattern in patterns)
+
+
+def looks_like_store_preference_statement(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    preference_patterns = (
+        "位置远点",
+        "位置远一点",
+        "远点儿",
+        "远一点",
+        "远也没关系",
+        "远点也没关系",
+        "我主要看设计师",
+        "主要想找",
+        "做事认真",
+        "做的漂亮",
+        "样品都差不多",
+    )
+    return any(pattern in normalized for pattern in preference_patterns)
+
+
 def sanitize_contact_push_reply(
     agent: Any,
     latest_user_text: str,
@@ -95,7 +135,7 @@ def sanitize_contact_push_reply(
 ) -> str:
     reply = str(reply_text or "").strip()
     if not reply:
-        return "姐姐，我直接继续跟您说清楚。"
+        return "姐姐，我把这轮重点直接跟您说清楚。"
     normalized_reply = _normalize_text(reply)
     risky_reply_tokens = set(getattr(agent, "_contact_compliance_block_keywords", ()) or ()) | {
         "加您",
@@ -113,9 +153,13 @@ def sanitize_contact_push_reply(
         return "姐姐，刚刚是我没说清楚，我直接把您这轮的问题说清楚。"
 
     if agent._looks_like_direct_contact_request(latest_user_text):
-        return "姐姐，联系方式图我这边已经发过了，您按图里的方式联系就可以哦。"
+        if bool((session_state or {}).get("contact_captured", False)):
+            return "姐姐，电话我这边已经收到了，不用重复发，您有别的问题我直接接着说。"
+        return "姐姐，联系方式图我这边已经发过了，您按图里的方式联系就可以。"
 
-    return "姐姐，我直接继续回答您这轮的问题。"
+    if bool((session_state or {}).get("contact_captured", False)):
+        return "姐姐，电话我这边已经收到了，您这轮想确认什么我直接接着说。"
+    return "姐姐，我按您这轮真正想确认的问题继续说。"
 
 
 def looks_like_contact_added_confirmation(text: str) -> bool:
@@ -178,6 +222,7 @@ def persist_contact_capture_state(
         {
             "contact_captured": True,
             "remote_contact_captured": True,
+            "current_mainline": "business_answer",
             "last_intent": decision.intent,
             "last_reply_goal": decision.reply_goal,
             "last_route_reason": decision.route_reason,

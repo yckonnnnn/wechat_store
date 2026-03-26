@@ -39,6 +39,7 @@ def decide_llm_reply(
     agent.llm_service.set_system_prompt(composed_prompt)
     effective_user_message = user_message_override or latest_user_text
     conversation_state = prompt_meta.get("conversation_state", {}) if isinstance(prompt_meta, dict) else {}
+    contact_captured = bool((session_state or {}).get("contact_captured", False))
     previous_topic = str((session_state or {}).get("last_answer_topic", "") or "")
     previous_facts = dict((session_state or {}).get("last_answer_facts", {}) or {})
     previous_answer_text = str((session_state or {}).get("last_answer_text_normalized", "") or "")
@@ -47,6 +48,26 @@ def decide_llm_reply(
         current_topic = infer_answer_type(agent, latest_user_text)
         if current_topic == "address_general" and str(conversation_state.get("store_confirmed", "") or "").strip() != "未知":
             current_topic = "store_recommendation"
+    if (
+        not user_message_override
+        and contact_captured
+        and str(intent or "") != "contact"
+    ):
+        effective_user_message = (
+            f"用户当前问题：{latest_user_text}\n"
+            "系统已确认收到用户电话。\n"
+            "要求：不要再提电话、微信、联系方式、加好友；只回答用户当前这个问题本身。"
+        )
+    if (
+        not user_message_override
+        and contact_captured
+        and str(intent or "") == "contact"
+    ):
+        effective_user_message = (
+            f"用户当前问题：{latest_user_text}\n"
+            "系统已确认收到用户电话。\n"
+            "要求：承认已经收到电话，不要再推进联系方式或要求补充方式；如果用户还在问业务，就顺手把业务问题一起答了。"
+        )
     if (
         not user_message_override
         and bool(prompt_meta.get("standard_reply_hit", False))
