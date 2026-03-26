@@ -368,8 +368,71 @@ class FollowupRegressionTestCase(unittest.TestCase):
             self.assertNotIn("9：30", second.reply_text)
             self.assertNotIn("下午6:00", second.reply_text)
             self.assertNotIn("下午6：00", second.reply_text)
-            self.assertNotEqual(agent.memory_store.get_session_state("appointment_followup").get("last_answer_topic"), "service_hours")
+            user_hash = agent._hash_user("预约跟进用户")
+            self.assertNotEqual(
+                agent.memory_store.get_session_state("appointment_followup", user_hash=user_hash).get("last_answer_topic"),
+                "service_hours",
+            )
             self.assertLessEqual(llm.calls, 1)
+
+    def test_wig_timeline_question_does_not_misfire_to_service_hours(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = helper._build_agent(temp_dir)
+            agent.set_options(use_knowledge_first=True, knowledge_threshold=0.6, reply_mode="llm_direct")
+
+            decision = agent.decide("wig_timeline", "工期用户", "我是说做一个假发一天时间能做好吗", [])
+
+            self.assertNotEqual(decision.rule_id, "SERVICE_HOURS_PRIORITY")
+            self.assertNotIn("营业时间", decision.reply_text)
+            self.assertNotIn("上午9：30", decision.reply_text)
+
+    def test_time_arrangement_statement_does_not_misfire_to_service_hours(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, _, _ = helper._build_agent(temp_dir)
+            agent.set_options(use_knowledge_first=True, knowledge_threshold=0.6, reply_mode="llm_direct")
+
+            history = [
+                {"role": "user", "content": "怎么加"},
+                {"role": "assistant", "content": "姐姐您看下我刚发的图，按图添加后跟我说一声，我马上接着帮您安排😊"},
+            ]
+            decision = agent.decide(
+                "time_arrangement_not_hours",
+                "安排时间用户",
+                "可以我还有朋友也要去，我联系她们定时间告诉你",
+                history,
+            )
+
+            self.assertNotEqual(decision.rule_id, "SERVICE_HOURS_PRIORITY")
+            self.assertNotIn("营业时间", decision.reply_text)
+            self.assertNotIn("上午9：30", decision.reply_text)
+
+    def test_delivery_time_question_prefers_knowledge_answer(self):
+        helper = rule_engine_tests.RuleEngineTestCase()
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent, _, repository, _ = helper._build_agent(temp_dir)
+            agent.set_options(use_knowledge_first=True, knowledge_threshold=0.6, reply_mode="llm_direct")
+            repository.add(
+                "当天能做好吗？可以当天拿吗？",
+                "姐姐，当天是做不好的哦🥰",
+                intent="delivery_time",
+                tags=["定制", "时间", "当天"],
+            )
+
+            decision = agent.decide(
+                "delivery_time_priority",
+                "工期知识库用户",
+                "当天能做好吗",
+                [],
+            )
+
+            self.assertEqual(decision.rule_id, "DELIVERY_TIME_PRIORITY")
+            self.assertIn("当天", decision.reply_text)
+            self.assertNotIn("营业时间", decision.reply_text)
 
     def test_price_fallback_third_turn_still_guides_to_private_contact(self):
         helper = rule_engine_tests.RuleEngineTestCase()

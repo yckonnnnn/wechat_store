@@ -2009,6 +2009,64 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
                 "姐姐，记得请添加我好友哦，我会发详细定位还有乘车路线以及预约/价格方面事项给到您~❤️",
             )
 
+    def test_stale_followup_skips_nameless_test_log_and_uses_real_user(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserStaleFollowup("超时用户")
+            sessions = SessionManager()
+            agent = DummyAgent(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            conversations_dir = Path(td) / "conversations"
+            conversations_dir.mkdir(parents=True, exist_ok=True)
+
+            nameless_log = conversations_dir / "test_session_002.jsonl"
+            nameless_log.write_text(
+                json.dumps(
+                    {
+                        "timestamp": (datetime.now() - timedelta(minutes=3)).isoformat(),
+                        "session_id": "test_session_002",
+                        "user_id_hash": "test_user_hash",
+                        "event_type": "assistant_reply",
+                        "reply_source": "rule",
+                        "rule_id": "TEST",
+                        "model_name": "",
+                        "payload": {"text": "测试回复"},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            user_hash = processor._build_user_hash("超时用户", "user_timeout")
+            real_log = processor.conversation_logger._session_file("user_timeout", user_name="超时用户")
+            real_log.write_text(
+                json.dumps(
+                    {
+                        "timestamp": (datetime.now() - timedelta(seconds=90)).isoformat(),
+                        "session_id": "user_timeout",
+                        "user_id_hash": user_hash,
+                        "event_type": "assistant_reply",
+                        "reply_source": "rule",
+                        "rule_id": "TEST",
+                        "model_name": "",
+                        "payload": {"text": "上一轮回复", "user_name": "超时用户"},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            candidate, reason = processor._find_stale_followup_candidate()
+
+            self.assertEqual(reason, "")
+            self.assertIsNotNone(candidate)
+            self.assertEqual(candidate["user_hash"], user_hash)
+            self.assertEqual(candidate["user_name"], "超时用户")
+
     def test_stale_followup_sends_text_then_contact_image(self):
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)

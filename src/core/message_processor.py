@@ -524,11 +524,11 @@ class MessageProcessor(QObject):
         self.browser.send_message(reply_text, on_sent)
 
     def _build_stale_followup_media_queue(self, session_id: str, user_name: str) -> List[Dict[str, Any]]:
-        del user_name
         pick_contact_image = getattr(self.agent, "_pick_contact_image_for_session", None)
         if not callable(pick_contact_image):
             return []
-        session_state = dict(self.agent.memory_store.get_session_state(session_id) or {})
+        user_hash = self._build_user_hash(user_name=user_name, session_id=session_id)
+        session_state = dict(self.agent.memory_store.get_session_state(session_id, user_hash=user_hash) or {})
         media_path = str(pick_contact_image(session_state) or "").strip()
         if not media_path:
             return []
@@ -1281,8 +1281,10 @@ class MessageProcessor(QObject):
         blocked_by_log: List[str] = []
         waiting_for_timeout: List[str] = []
         waiting_for_reply_end: List[str] = []
+        invalid_candidates: List[str] = []
         for summary in by_user.values():
-            user_name = str(summary.get("user_name", "") or "").strip() or "未知用户"
+            raw_user_name = str(summary.get("user_name", "") or "").strip()
+            user_name = raw_user_name or "未知用户"
             cooldown_key = str(summary.get("user_hash", "") or user_name)
             skip_until = self._stale_followup_skip_until.get(cooldown_key)
             if isinstance(skip_until, datetime) and now < skip_until:
@@ -1300,7 +1302,8 @@ class MessageProcessor(QObject):
             if now - last_assistant_at < timedelta(seconds=timeout_seconds):
                 waiting_for_timeout.append(user_name)
                 continue
-            if not user_name:
+            if not raw_user_name:
+                invalid_candidates.append(str(summary.get("session_id", "") or user_name))
                 continue
             eligible.append(summary)
 
@@ -1311,6 +1314,8 @@ class MessageProcessor(QObject):
                 return None, f"跳过1分钟结尾话术：距离上次回复不足1分钟（{waiting_for_timeout[0]}）"
             if waiting_for_reply_end:
                 return None, f"跳过1分钟结尾话术：最后一条不是客服回复（{waiting_for_reply_end[0]}）"
+            if invalid_candidates:
+                return None, f"跳过1分钟结尾话术：存在缺少用户名的历史记录（{invalid_candidates[0]}）"
             return None, "当前没有可触发的1分钟结尾话术候选"
 
         eligible.sort(key=lambda item: item.get("last_assistant_at") or now)

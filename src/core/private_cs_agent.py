@@ -1506,7 +1506,7 @@ class CustomerServiceAgent:
 
     def _build_closing_confirmation_reply(self) -> str:
         return self._normalize_reply_text(
-            f"好的姐姐，您加专属客服后，我们为您协调好时间，{STANDARD_BUSINESS_HOURS_REPLY}"
+            "好的姐姐，您加上专属客服后，确定好方便的时间随时告诉我，我这边再帮您接着安排。"
         )
 
     def _normalize_flow_text(self, text: str) -> str:
@@ -2484,6 +2484,68 @@ class CustomerServiceAgent:
             )
         )
 
+    def _looks_like_production_timeline_query(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(text or "")).lower()
+        if not normalized:
+            return False
+        duration_signal = any(
+            token in normalized
+            for token in (
+                "多久",
+                "几天",
+                "多长时间",
+                "周期",
+                "一天",
+                "当天",
+                "时间",
+                "什么时候",
+            )
+        )
+        if not duration_signal:
+            return False
+        production_signal = any(
+            token in normalized
+            for token in (
+                "假发",
+                "做一个",
+                "做假发",
+                "做好",
+                "做完",
+                "做得完",
+                "完成",
+                "制作",
+                "能拿",
+                "拿到",
+            )
+        )
+        return production_signal
+
+    def _looks_like_time_arrangement_statement(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(text or "")).lower()
+        if not normalized:
+            return False
+        if "时间" not in normalized and "几点去" not in normalized:
+            return False
+        patterns = (
+            "定时间",
+            "约时间",
+            "安排时间",
+            "协调时间",
+            "联系她们定时间",
+            "联系他们定时间",
+            "联系她定时间",
+            "联系他定时间",
+            "告诉你",
+            "朋友也要去",
+            "朋友也去",
+            "回头定时间",
+            "晚点定时间",
+            "什么时候去",
+            "几点去",
+            "哪天去",
+        )
+        return any(pattern in normalized for pattern in patterns)
+
     def _looks_like_lifespan_query(self, text: str) -> bool:
         normalized = re.sub(r"\s+", "", str(text or ""))
         if not normalized:
@@ -2507,10 +2569,14 @@ class CustomerServiceAgent:
         if not self._is_service_hours_query_like(text, probe_decision):
             return None
 
+        normalized = re.sub(r"\s+", "", text).lower()
+        direct_service_hours_signal = any(token in normalized for token in ("营业时间", "几点", "到几点", "下班"))
         kb_detail = self.knowledge_service.find_answer_detail(text, threshold=self.knowledge_threshold)
         kb_intent = str(kb_detail.get("intent", "") or "").strip().lower()
         tags = {str(tag).strip() for tag in (kb_detail.get("tags", []) or []) if str(tag).strip()}
         if not (kb_detail.get("matched") and (kb_intent == "service_hours" or "营业时间" in tags)):
+            if not direct_service_hours_signal:
+                return None
             fallback_answer = WEEKEND_CLOSED_REPLY
             return AgentDecision(
                 reply_text=fallback_answer,
@@ -2566,6 +2632,91 @@ class CustomerServiceAgent:
             kb_match_score=float(kb_detail.get("score", 0.0) or 0.0),
             kb_match_question=str(kb_detail.get("question", "") or ""),
             kb_match_mode=f"service_hours_priority_{str(kb_detail.get('mode', '') or 'match')}",
+            kb_item_id=str(kb_detail.get("item_id", "") or ""),
+            kb_variant_total=len(kb_answers),
+            kb_variant_selected_index=selected_index if selected_answer else (-1 if exhausted else 0),
+            kb_variant_fallback_llm=False,
+            kb_confident=True,
+        )
+
+    def _decide_delivery_time_priority_reply(
+        self,
+        latest_user_text: str,
+        route: Dict[str, Any],
+        user_state: Dict[str, Any],
+        user_id_hash: str = "",
+    ) -> Optional[AgentDecision]:
+        del route
+        text = str(latest_user_text or "").strip()
+        if not text or not self._looks_like_production_timeline_query(text):
+            return None
+
+        kb_detail = self.knowledge_service.find_answer_detail(text, threshold=min(self.knowledge_threshold, 0.1))
+        kb_intent = str(kb_detail.get("intent", "") or "").strip().lower()
+        tags = {str(tag).strip() for tag in (kb_detail.get("tags", []) or []) if str(tag).strip()}
+        if not (kb_detail.get("matched") and (kb_intent == "delivery_time" or {"当天", "时间"} & tags)):
+            if not self._looks_like_same_day_duration_query(text):
+                return None
+            answer = self._normalize_reply_text("姐姐，当天是做不好的，我们是私人定制，需要时间制作。")
+            self._remember_selected_kb_answer(
+                user_state=user_state,
+                user_id_hash=user_id_hash,
+                answer_text=answer,
+            )
+            return AgentDecision(
+                reply_text=answer,
+                intent="general",
+                route_reason="delivery_time_priority_fallback",
+                reply_goal="解答",
+                media_plan="none",
+                reply_source="knowledge",
+                rule_id="DELIVERY_TIME_PRIORITY",
+                rule_applied=True,
+                kb_match_score=0.0,
+                kb_match_question="",
+                kb_match_mode="delivery_time_priority_fallback",
+                kb_item_id="",
+                kb_variant_total=0,
+                kb_variant_selected_index=-1,
+                kb_variant_fallback_llm=False,
+                kb_confident=True,
+            )
+
+        kb_answer = str(kb_detail.get("answer", "") or "").strip()
+        kb_answers = [
+            str(x).strip()
+            for x in (kb_detail.get("answers", []) or [])
+            if str(x).strip()
+        ]
+        if kb_answer and kb_answer not in kb_answers:
+            kb_answers.append(kb_answer)
+        answer = kb_answers[0] if kb_answers else kb_answer
+        if not answer:
+            return None
+
+        selected_answer, selected_index, exhausted = self._select_kb_variant_answer(
+            answers=kb_answers,
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+        )
+        answer = selected_answer or answer
+        self._remember_selected_kb_answer(
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+            answer_text=answer,
+        )
+        return AgentDecision(
+            reply_text=answer,
+            intent="general",
+            route_reason="delivery_time_priority",
+            reply_goal="解答",
+            media_plan="none",
+            reply_source="knowledge",
+            rule_id="DELIVERY_TIME_PRIORITY",
+            rule_applied=True,
+            kb_match_score=float(kb_detail.get("score", 0.0) or 0.0),
+            kb_match_question=str(kb_detail.get("question", "") or ""),
+            kb_match_mode=f"delivery_time_priority_{str(kb_detail.get('mode', '') or 'match')}",
             kb_item_id=str(kb_detail.get("item_id", "") or ""),
             kb_variant_total=len(kb_answers),
             kb_variant_selected_index=selected_index if selected_answer else (-1 if exhausted else 0),
@@ -2963,6 +3114,15 @@ class CustomerServiceAgent:
         )
         if price_priority_decision is not None:
             return price_priority_decision
+
+        delivery_time_priority_decision = self._decide_delivery_time_priority_reply(
+            latest_user_text=text,
+            route=route,
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+        )
+        if delivery_time_priority_decision is not None:
+            return delivery_time_priority_decision
 
         lifespan_priority_decision = self._decide_lifespan_priority_reply(
             latest_user_text=text,
@@ -4284,6 +4444,10 @@ class CustomerServiceAgent:
             return True
         normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
         direct_service_hours_signal = any(token in normalized for token in ("营业时间", "几点", "到几点", "下班"))
+        if self._looks_like_production_timeline_query(latest_user_text) and not direct_service_hours_signal:
+            return False
+        if self._looks_like_time_arrangement_statement(latest_user_text) and not direct_service_hours_signal:
+            return False
         generic_time_signal = "时间" in normalized
         has_weekday_signal = any(token in normalized for token in ("周一", "周二", "周三", "周四", "周五", "周几"))
         travel_time_signal = self._looks_like_travel_schedule_statement(latest_user_text)

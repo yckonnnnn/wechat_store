@@ -30,7 +30,7 @@ MEDIA_FAILURE_STEP_MAP = {
 
 
 class _SessionStoreProtocol(Protocol):
-    def get_existing_session_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+    def get_existing_session_state(self, session_id: str, user_hash: str = "") -> Optional[Dict[str, Any]]:
         """Read an existing session snapshot if the store has one."""
 
 
@@ -224,11 +224,12 @@ def build_session_id(
         return f"chat_{hash_id(key)}"
 
     user_key = f"user_{hash_id(user_name)}"
+    user_hash = hash_id(user_name) if str(user_name or "").strip() else ""
     fingerprint = str(chat_session_fingerprint or "").strip()
     if not fingerprint:
         return user_key
 
-    existing = memory_store.get_existing_session_state(user_key)
+    existing = memory_store.get_existing_session_state(user_key, user_hash=user_hash)
     existing_fp = (existing or {}).get("session_fingerprint", "") if isinstance(existing, dict) else ""
     if not existing_fp or existing_fp == fingerprint:
         return user_key
