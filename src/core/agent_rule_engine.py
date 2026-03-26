@@ -147,9 +147,11 @@ def build_address_text_after_image_decision(
 ) -> Optional[AgentDecision]:
     normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
     explicit_revisit = any(token in normalized for token in ("位置图", "再发", "看图"))
+    explicit_missing_media = bool(getattr(agent, "_looks_like_missing_media_request", lambda _text: False)(latest_user_text))
     if (
         intent != "address"
         and not explicit_revisit
+        and not explicit_missing_media
         and not agent._is_precise_address_followup(latest_user_text)
         and not agent.knowledge_service.is_address_query(latest_user_text)
         and not agent.knowledge_service.is_shanghai_route_alias_address_candidate(latest_user_text)
@@ -183,11 +185,15 @@ def build_address_text_after_image_decision(
         len(normalized) <= 4
         and any(token in normalized for token in ("在哪", "哪儿", "位置"))
     )
-    reply_text = (
-        "姐姐，我再给您发一下位置图，您看图里圈圈的位置会更直观哦。🌹"
-        if resend_image
-        else _const(agent, "ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK", "")
-    )
+    if explicit_missing_media:
+        reply_text = _const(agent, "MEDIA_DELIVERY_RETRY_FALLBACK", "")
+        resend_image = False
+    else:
+        reply_text = (
+            "姐姐，我再给您发一下位置图，您看图里标注的位置会更直观哦。🌹"
+            if resend_image
+            else _const(agent, "ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK", "")
+        )
 
     return AgentDecision(
         reply_text=reply_text,
@@ -264,12 +270,24 @@ def build_contact_followup_decision(
     intent: str,
     session_state: Dict[str, Any],
 ) -> Optional[AgentDecision]:
-    if intent != "contact":
+    explicit_missing_media = bool(getattr(agent, "_looks_like_missing_media_request", lambda _text: False)(latest_user_text))
+    if intent != "contact" and not explicit_missing_media:
         return None
     if int(session_state.get("contact_image_sent_count", 0) or 0) < 1:
         return None
     if looks_like_phone_submission(agent, latest_user_text):
         return None
+    if explicit_missing_media:
+        return AgentDecision(
+            reply_text=_const(agent, "MEDIA_DELIVERY_RETRY_FALLBACK", ""),
+            intent="contact",
+            route_reason="contact_followup_missing_media",
+            reply_goal="推进购买意图",
+            media_plan="none",
+            reply_source="rule",
+            rule_id="CONTACT_FOLLOWUP_MISSING_MEDIA",
+            rule_applied=True,
+        )
 
     prompt_count = int(session_state.get("contact_followup_prompt_count", 0) or 0)
     session_state["contact_followup_prompt_count"] = prompt_count + 1
@@ -295,13 +313,29 @@ def build_travel_schedule_store_followup_decision(
     if not agent._looks_like_travel_schedule_statement(latest_user_text):
         return None
 
+    route_city = str(route.get("city", "") or "").strip()
     target_store = str(route.get("target_store", "") or "").strip()
     explicit_store = str(agent._infer_store_from_context_text(latest_user_text) or "").strip()
     if explicit_store:
         target_store = explicit_store
+
+    # 当前轮已经明确提到城市，但还没锁定具体门店时，不允许回退到旧会话门店，
+    # 否则“去上海哪个门店比较好”会被历史门店（例如北京）带偏。
+    if (
+        (not target_store or target_store == "unknown")
+        and route_city in {"shanghai", "beijing"}
+    ):
+        return None
+
     if not target_store or target_store == "unknown":
         target_store = str(session_state.get("last_target_store", "") or "").strip()
     if not target_store or target_store == "unknown":
+        return None
+
+    normalized_text = re.sub(r"\s+", "", str(latest_user_text or ""))
+    if "上海" in normalized_text and not target_store.startswith("sh_"):
+        return None
+    if "北京" in normalized_text and target_store != "beijing_chaoyang":
         return None
 
     store = agent.knowledge_service.get_store_display(target_store)
@@ -903,6 +937,18 @@ def decide_general_reply(
     if lifespan_priority_decision is not None:
         return lifespan_priority_decision
 
+    if callable(getattr(agent, "_looks_like_closing_confirmation", None)) and agent._looks_like_closing_confirmation(latest_user_text):
+        return AgentDecision(
+            reply_text=agent._build_closing_confirmation_reply(),
+            intent="general",
+            route_reason=route_reason,
+            reply_goal="承接联系方式",
+            media_plan="none",
+            reply_source="rule",
+            rule_id="CLOSING_CONFIRM_REPLY",
+            rule_applied=True,
+        )
+
     # 【新增】处理状态确认意图
     if intent.startswith("status_confirm_"):
         confirm_type = intent.replace("status_confirm_", "")
@@ -930,6 +976,17 @@ def decide_general_reply(
                 )
 
     if intent == "contact":
+        if callable(getattr(agent, "_looks_like_missing_media_request", None)) and agent._looks_like_missing_media_request(latest_user_text):
+            return AgentDecision(
+                reply_text=_const(agent, "MEDIA_DELIVERY_RETRY_FALLBACK", ""),
+                intent="contact",
+                route_reason="contact_followup_missing_media",
+                reply_goal="推进购买意图",
+                media_plan="none",
+                reply_source="rule",
+                rule_id="CONTACT_FOLLOWUP_MISSING_MEDIA",
+                rule_applied=True,
+            )
         if contact_sent:
             prompt_count = int(state.get("contact_followup_prompt_count", 0) or 0)
             state["contact_followup_prompt_count"] = prompt_count + 1

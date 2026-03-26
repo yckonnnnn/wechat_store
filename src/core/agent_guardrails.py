@@ -458,7 +458,7 @@ def apply_llm_reply_guardrails(
             store = agent.knowledge_service.get_store_display(store_key)
             store_name = str(store.get("store_name", "") or "门店")
             return finalize(
-                agent._normalize_reply_text(f"姐姐，{store_name}的位置直接看图里圈圈的位置就可以哦"),
+                agent._normalize_reply_text(f"姐姐，{store_name}的位置直接看图里标注的位置就可以哦"),
                 {
                     "closure_type": "store_recommendation",
                     "target_store": store_key,
@@ -473,7 +473,7 @@ def apply_llm_reply_guardrails(
         if store_key:
             store = agent.knowledge_service.get_store_display(store_key)
             store_name = str(store.get("store_name", "") or "门店")
-            return finalize(agent._normalize_reply_text(f"姐姐，{store_name}的位置直接看图里圈圈的位置就可以哦"))
+            return finalize(agent._normalize_reply_text(f"姐姐，{store_name}的位置直接看图里标注的位置就可以哦"))
         if agent._reply_contains_unsupported_address_detail(reply):
             return finalize(agent._render_guardrail_reply(agent._address_fact_fallback))
         return finalize(agent._render_guardrail_reply(agent._address_fact_fallback))

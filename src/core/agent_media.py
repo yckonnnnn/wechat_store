@@ -312,7 +312,7 @@ def judge_post_reply_media(
         known_store = str(reply_store or route.get("target_store", "") or session_state.get("last_target_store", "") or "")
         current_turn_action = str(session_state.get("current_turn_action", "") or "")
         conversation_stage = str(session_state.get("conversation_stage", "") or "")
-        mentions_position_image = any(token in normalized_reply for token in ("位置图", "按图", "看图", "圈圈位置")) or any(
+        mentions_position_image = any(token in normalized_reply for token in ("位置图", "按图", "看图", "标注位置")) or any(
             token in normalized_latest for token in ("位置图", "再发", "看图", "在哪", "哪儿")
         )
         if (

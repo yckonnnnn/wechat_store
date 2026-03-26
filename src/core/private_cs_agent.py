@@ -147,6 +147,8 @@ USER_PHONE_SUBMITTED_REPLY = "收到啦姐姐，我稍后加您好友，具体�
 CONTACT_ALREADY_ADDED_REPLY = "好的姐姐，我这边看到了，咱们就按刚才的方式接着聊，我来给您详细介绍❤️"
 CONTACT_ALREADY_CAPTURED_REPLY = "收到啦姐姐，您之前留的方式我这边已经记下了，不用重复发，我会尽快联系您详细介绍❤️"
 WEEKEND_CLOSED_REPLY = STANDARD_BUSINESS_HOURS_REPLY
+MEDIA_DELIVERY_RETRY_FALLBACK = "姐姐，可能因为网络延迟没有发成功，您留个方式☎️，我来加您好友给你安排详细的专属客服。"
+VISIT_TIME_CONFIRM_REPLY = "姐姐，时间应该可以的，但要跟技术老师协调一下，所以您加我为好友，我帮你预约好时间，这样你会更方便❤️。"
 REMOTE_FLOW_ENTRY_REPLY = "姐姐，外地也可以远程定制，您直接看上面的图片加专属客服，我让老师一对一帮您看，合适的话再给您安排。❤️"
 REMOTE_FLOW_FOLLOWUP_REPLY = "姐姐，您加上专属客服后，把大概情况发过去，老师会先帮您看适不适合远程定制，再跟您说后面的安排。❤️"
 REMOTE_FLOW_URGENT_REPLY = "姐姐您别着急，外地这边是可以远程定制的，您直接加上专属客服，我们这边马上接着给您安排。❤️"
@@ -552,8 +554,8 @@ DEFAULT_REPLY_TEMPLATES: Dict[str, Any] = {
     "contact_intro": "姐姐您直接看图片添加后跟我说一声，我这边一对一继续跟进您呀😊",
     "purchase_contact_intro": "姐姐您可以直接看图片添加，会有专门的老师给您介绍～❤️",
     "purchase_contact_remind_only": "姐姐，您直接看上面的图片添加就可以，可以详细给您介绍怎么买～💗",
-    "purchase_contact_remote_remind_only": "姐姐，您可以往上看图片里画圈的位置添加，我让老师一对一跟您远程定制❤️",
-    "strong_intent_after_both_first": "姐姐，您可以直接看上面的图片里画圈圈的位置添加，我让老师跟您预约～💗",
+    "purchase_contact_remote_remind_only": "姐姐，您可以往上看图片里标注的位置添加，我让老师一对一跟您远程定制❤️",
+    "strong_intent_after_both_first": "姐姐，您可以直接看上面的图片里标注的位置添加，我让老师跟您预约～💗",
     "contact_followup_1": "姐姐，您方便的话直接留个☎️给我，我来加您，后面我跟您详细对接😊",
     "contact_followup_2": "姐姐，您直接发个☎️给我就行，我这边加您后继续跟您详细说😊",
     "llm_fallback": "姐姐因咨询较多，您加我联系方式，我直接跟你电话沟通更快～🌹",
@@ -1463,6 +1465,50 @@ class CustomerServiceAgent:
         )
         return any(pattern in normalized for pattern in direct_patterns)
 
+    def _looks_like_missing_media_request(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(text or "")).lower()
+        if not normalized:
+            return False
+        patterns = (
+            "没收到",
+            "没有收到",
+            "刚没收到",
+            "还没收到",
+            "没看见",
+            "没看到",
+            "看不到",
+            "图呢",
+            "图片呢",
+            "位置图呢",
+            "地址图呢",
+            "联系方式图呢",
+            "翻不到",
+            "找不到图",
+            "没发成功",
+        )
+        return any(pattern in normalized for pattern in patterns)
+
+    def _looks_like_closing_confirmation(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(text or "")).lower()
+        if not normalized:
+            return False
+        patterns = (
+            "我先加你们",
+            "我先加",
+            "先加你们",
+            "先加上",
+            "晚点定时间",
+            "晚点联系",
+            "回头定时间",
+            "回头联系",
+        )
+        return any(pattern in normalized for pattern in patterns)
+
+    def _build_closing_confirmation_reply(self) -> str:
+        return self._normalize_reply_text(
+            f"好的姐姐，您加专属客服后，我们为您协调好时间，{STANDARD_BUSINESS_HOURS_REPLY}"
+        )
+
     def _normalize_flow_text(self, text: str) -> str:
         return re.sub(r"\s+", "", str(text or "")).lower()
 
@@ -1662,11 +1708,18 @@ class CustomerServiceAgent:
         normalized = re.sub(r"\s+", "", str(text or "")).lower()
         if not normalized:
             return False
-        has_weekend = any(token in normalized for token in ("周六", "周日", "周末", "星期六", "星期日", "礼拜六", "礼拜天"))
-        if not has_weekend:
+        has_date_or_weekday = any(
+            token in normalized
+            for token in (
+                "周一", "周二", "周三", "周四", "周五", "周六", "周日", "周末", "周几",
+                "星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日", "星期几",
+                "礼拜一", "礼拜二", "礼拜三", "礼拜四", "礼拜五", "礼拜六", "礼拜天", "礼拜几",
+            )
+        ) or bool(re.search(r"\d{1,2}[号日]", normalized))
+        if not has_date_or_weekday:
             return False
         active_topic = str((session_state or {}).get("active_topic", "") or "")
-        has_visit_signal = any(token in normalized for token in ("去", "过去", "到店", "营业", "上班", "开门", "时间", "几点", "预约"))
+        has_visit_signal = any(token in normalized for token in ("去", "过去", "到店", "营业", "上班", "开门", "时间", "几点", "预约", "可以吗", "行吗", "能吗"))
         return has_visit_signal or active_topic in {"service_hours", "appointment", "store_recommendation"}
 
     def _build_weekend_closed_decision(
@@ -1677,7 +1730,7 @@ class CustomerServiceAgent:
         if not self._looks_like_weekend_closed_query(text, session_state=session_state):
             return None
         return AgentDecision(
-            reply_text=WEEKEND_CLOSED_REPLY,
+            reply_text=VISIT_TIME_CONFIRM_REPLY,
             intent="general",
             route_reason="weekend_closed",
             reply_goal="解答",
@@ -2142,6 +2195,10 @@ class CustomerServiceAgent:
         has_explicit_price_signal = any(keyword in normalized for keyword in explicit_price_keywords)
         if not has_explicit_price_signal and re.search(r"价.{0,2}(多|几|贵|位)", normalized):
             has_explicit_price_signal = True
+        if not has_explicit_price_signal and any(
+            keyword in normalized for keyword in ("价各", "价差", "差哪里", "区别在哪", "区别", "有啥不同")
+        ):
+            has_explicit_price_signal = True
         if (
             not has_explicit_price_signal
             and (
@@ -2183,7 +2240,7 @@ class CustomerServiceAgent:
             kb_answers.append(kb_answer)
         normalized = re.sub(r"\s+", "", text).lower()
         is_price_objection = any(token in normalized for token in ("贵", "便宜", "优惠", "折扣", "划算"))
-        if kb_detail.get("matched") and kb_intent == "price":
+        if kb_detail.get("matched") and kb_intent.startswith("price"):
             kb_mode = str(kb_detail.get("mode", "") or "").strip().lower()
             kb_tags = {str(tag).strip() for tag in (kb_detail.get("tags", []) or []) if str(tag).strip()}
             is_price_objection = bool(
@@ -2443,6 +2500,8 @@ class CustomerServiceAgent:
         del route
         text = str(latest_user_text or "").strip()
         if not text:
+            return None
+        if self._looks_like_closing_confirmation(text):
             return None
         probe_decision = AgentDecision(reply_text="", intent="general", route_reason="", reply_goal="", media_plan="none")
         if not self._is_service_hours_query_like(text, probe_decision):
@@ -2711,7 +2770,7 @@ class CustomerServiceAgent:
         if target_store == "beijing_chaoyang" and store_name.endswith("门店"):
             store_name = f"{store_name[:-2]}店"
         if int(state.get("contact_image_sent_count", 0) or 0) <= 0:
-            return f"姐姐，{store_name}这边您看下面的圈圈+我好友（专属客服），我帮您预约到店，好让老师提前安排接待您！❤️"
+            return f"姐姐，{store_name}这边您看下面标注的位置添加我好友（专属客服），我帮您预约到店，好让老师提前安排接待您！❤️"
         return f"姐姐，您加上专属客服后，把方便的时间发我，我这边就帮您安排{store_name}的预约到店，好有老师接待您！❤️"
 
     def _looks_like_process_query(self, text: str) -> bool:
@@ -2882,6 +2941,17 @@ class CustomerServiceAgent:
         text = str(latest_user_text or "").strip()
         if not text:
             return None
+        if self._looks_like_closing_confirmation(text):
+            return AgentDecision(
+                reply_text=self._build_closing_confirmation_reply(),
+                intent="general",
+                route_reason=str(route.get("reason", "unknown") or "unknown"),
+                reply_goal="承接联系方式",
+                media_plan="none",
+                reply_source="rule",
+                rule_id="CLOSING_CONFIRM_REPLY",
+                rule_applied=True,
+            )
 
         price_priority_decision = self._decide_price_priority_reply(
             latest_user_text=text,
