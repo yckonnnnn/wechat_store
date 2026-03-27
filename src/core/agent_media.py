@@ -575,7 +575,23 @@ def enqueue_media_compensation(
     clean_item["pending_media_id"] = pending_id
     clean_item["pending_required"] = True
     clean_item["queued_at"] = datetime.now().isoformat()
+
+    # 按失败原因设置补偿优先级（数值越小越优先）
+    compensation_priority_map = {
+        "verify_timeout": 1,
+        "verified_soft_timeout": 1,
+        "confirm_click_failed": 1,
+        "video_verify_timeout": 1,
+        "unknown_media_failure": 2,
+        "locate_image_button_failed": 2,
+        "native_click_image_button_failed": 2,
+        "missing_media_path": 3,
+    }
+    clean_item["_compensation_priority"] = compensation_priority_map.get(str(failure_code or ""), 2)
+
     pending_items = _upsert_media_item(agent, pending_items, clean_item)
+    # 按补偿优先级排序队列
+    pending_items.sort(key=lambda x: int(x.get("_compensation_priority", 2)))
     remove_planned_required_media(agent, session_state, clean_item)
 
     budget = session_state.get("required_media_retry_budget", {}) or {}

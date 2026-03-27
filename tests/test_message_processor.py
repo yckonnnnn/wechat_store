@@ -1209,7 +1209,8 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
 
             processor._on_chat_data(True, payload, auto_reply=True)
 
-            self.assertEqual(browser.image_send_calls, 2)
+            # 重试次数从 1 增加到 2，所以总调用 = 初始 1 + 重试 2 = 3
+            self.assertEqual(browser.image_send_calls, 3)
             session_id = processor._build_session_id("补偿用户", "", "fp_comp")
             log_path = processor.conversation_logger._session_file(session_id, user_name="补偿用户")
             lines = [json.loads(x) for x in log_path.read_text(encoding="utf-8").splitlines() if x.strip()]

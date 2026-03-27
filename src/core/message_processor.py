@@ -1077,7 +1077,7 @@ class MessageProcessor(QObject):
     def _should_retry_media_send(self, media_type: str, result: Any, retry_count: int) -> bool:
         failure_code = self._extract_failure_code(result)
         if media_type in ("contact_image", "address_image"):
-            if retry_count >= 1:
+            if retry_count >= 2:
                 return False
             return failure_code in {
                 "locate_image_button_failed",
@@ -1086,9 +1086,10 @@ class MessageProcessor(QObject):
                 "confirm_click_after_enter_failed",
                 "verify_timeout",
                 "verified_soft_timeout",
+                "unknown_media_failure",
             }
         if media_type == "delayed_video":
-            if retry_count >= 1:
+            if retry_count >= 2:
                 return False
             return failure_code in {
                 "locate_material_library_failed",
@@ -1098,6 +1099,7 @@ class MessageProcessor(QObject):
                 "drag_video_to_chat_failed",
                 "confirm_click_failed",
                 "video_verify_timeout",
+                "unknown_media_failure",
             }
         return False
 
