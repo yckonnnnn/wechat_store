@@ -445,6 +445,20 @@ class MessageProcessor(QObject):
 
     def _send_stale_followup_message(self, session_id: str, user_name: str, user_hash: str):
         reply_text = str(getattr(self, "_STALE_FOLLOWUP_TEXT", self._STALE_FOLLOWUP_TEXT))
+        if getattr(self, "agent", None) is not None and callable(getattr(self.agent, "_pick_fixed_reply", None)):
+            session_state = self.agent.memory_store.get_session_state(session_id, user_hash=user_hash)
+            reply_text = self.agent._pick_fixed_reply(
+                session_state=session_state,
+                category="stale_followup",
+                replies=getattr(self.agent, "STALE_FOLLOWUP_TEXT_POOL", ()) or (),
+                fallback=reply_text,
+            )
+            self.agent.memory_store.update_session_state(
+                session_id,
+                {"fixed_reply_counters": dict(session_state.get("fixed_reply_counters", {}) or {})},
+                user_hash=user_hash,
+            )
+            self.agent.memory_store.save()
         self._processing_reply = True
         self._mark_active_session(
             session_id=session_id,

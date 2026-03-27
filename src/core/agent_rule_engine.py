@@ -257,13 +257,31 @@ def build_address_text_after_image_decision(
         and any(token in normalized for token in ("在哪", "哪儿", "位置"))
     )
     if explicit_missing_media:
-        reply_text = _const(agent, "MEDIA_DELIVERY_RETRY_FALLBACK", "")
+        reply_text = (
+            agent._pick_fixed_reply(
+                session_state=session_state,
+                category="media_delivery_retry",
+                replies=_const(agent, "MEDIA_DELIVERY_RETRY_FALLBACK_POOL", ()) or (),
+                fallback=_const(agent, "MEDIA_DELIVERY_RETRY_FALLBACK", ""),
+            )
+            if callable(getattr(agent, "_pick_fixed_reply", None))
+            else _const(agent, "MEDIA_DELIVERY_RETRY_FALLBACK", "")
+        )
         resend_image = False
     else:
         reply_text = (
             "姐姐，我再给您发一下位置图，您看图里标注的位置会更直观哦。🌹"
             if resend_image
-            else _const(agent, "ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK", "")
+            else (
+                agent._pick_fixed_reply(
+                    session_state=session_state,
+                    category="address_generic_followup",
+                    replies=_const(agent, "ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK_POOL", ()) or (),
+                    fallback=_const(agent, "ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK", ""),
+                )
+                if callable(getattr(agent, "_pick_fixed_reply", None))
+                else _const(agent, "ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK", "")
+            )
         )
 
     return AgentDecision(
@@ -347,7 +365,16 @@ def build_address_contact_after_text_decision(
         return None
 
     return AgentDecision(
-        reply_text=_const(agent, "ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK", ""),
+        reply_text=(
+            agent._pick_fixed_reply(
+                session_state=session_state,
+                category="address_generic_followup",
+                replies=_const(agent, "ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK_POOL", ()) or (),
+                fallback=_const(agent, "ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK", ""),
+            )
+            if callable(getattr(agent, "_pick_fixed_reply", None))
+            else _const(agent, "ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK", "")
+        ),
         intent="address",
         route_reason=str(route.get("reason", "unknown") or "unknown"),
         reply_goal="解答",
@@ -375,7 +402,16 @@ def build_contact_followup_decision(
         return None
     if explicit_missing_media:
         return AgentDecision(
-            reply_text=_const(agent, "MEDIA_DELIVERY_RETRY_FALLBACK", ""),
+            reply_text=(
+                agent._pick_fixed_reply(
+                    session_state=session_state,
+                    category="media_delivery_retry",
+                    replies=_const(agent, "MEDIA_DELIVERY_RETRY_FALLBACK_POOL", ()) or (),
+                    fallback=_const(agent, "MEDIA_DELIVERY_RETRY_FALLBACK", ""),
+                )
+                if callable(getattr(agent, "_pick_fixed_reply", None))
+                else _const(agent, "MEDIA_DELIVERY_RETRY_FALLBACK", "")
+            ),
             intent="contact",
             route_reason="contact_followup_missing_media",
             reply_goal="推进购买意图",

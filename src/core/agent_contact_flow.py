@@ -133,8 +133,17 @@ def sanitize_contact_push_reply(
     reply_text: str,
     session_state: Optional[Dict[str, Any]] = None,
 ) -> str:
+    session_state = session_state if isinstance(session_state, dict) else {}
     reply = str(reply_text or "").strip()
     if not reply:
+        picker = getattr(agent, "_pick_fixed_reply", None)
+        if callable(picker):
+            return picker(
+                session_state=session_state,
+                category="contact_fact_fallback",
+                replies=getattr(agent, "CONTACT_FACT_FALLBACK_POOL", ()) or (),
+                fallback="姐姐，我把这轮重点直接跟您说清楚。",
+            )
         return "姐姐，我把这轮重点直接跟您说清楚。"
     normalized_reply = _normalize_text(reply)
     risky_reply_tokens = set(getattr(agent, "_contact_compliance_block_keywords", ()) or ()) | {
@@ -153,12 +162,20 @@ def sanitize_contact_push_reply(
         return "姐姐，刚刚是我没说清楚，我直接把您这轮的问题说清楚。"
 
     if agent._looks_like_direct_contact_request(latest_user_text):
-        if bool((session_state or {}).get("contact_captured", False)):
+        if bool(session_state.get("contact_captured", False)):
             return "姐姐，电话我这边已经收到了，不用重复发，您有别的问题我直接接着说。"
         return "姐姐，联系方式图我这边已经发过了，您按图里的方式联系就可以。"
 
-    if bool((session_state or {}).get("contact_captured", False)):
+    if bool(session_state.get("contact_captured", False)):
         return "姐姐，电话我这边已经收到了，您这轮想确认什么我直接接着说。"
+    picker = getattr(agent, "_pick_fixed_reply", None)
+    if callable(picker):
+        return picker(
+            session_state=session_state,
+            category="contact_fact_fallback",
+            replies=getattr(agent, "CONTACT_FACT_FALLBACK_POOL", ()) or (),
+            fallback="姐姐，我按您这轮真正想确认的问题继续说。",
+        )
     return "姐姐，我按您这轮真正想确认的问题继续说。"
 
 
@@ -249,8 +266,17 @@ def build_contact_progress_ack_decision(
         or any("稍后加您好友" in str(item.get("content", "") or "") for item in history if item.get("role") == "assistant")
     )
     if looks_like_contact_added_confirmation(text) and has_contact_context:
+        reply_text = agent.CONTACT_ALREADY_ADDED_REPLY if hasattr(agent, "CONTACT_ALREADY_ADDED_REPLY") else "好的姐姐，我这边看到了，咱们就按刚才的方式接着聊，我来给您详细介绍❤️"
+        picker = getattr(agent, "_pick_fixed_reply", None)
+        if callable(picker):
+            reply_text = picker(
+                session_state=session_state,
+                category="contact_already_added",
+                replies=getattr(agent, "CONTACT_ALREADY_ADDED_REPLY_POOL", ()) or (),
+                fallback=reply_text,
+            )
         return AgentDecision(
-            reply_text=agent.CONTACT_ALREADY_ADDED_REPLY if hasattr(agent, "CONTACT_ALREADY_ADDED_REPLY") else "好的姐姐，我这边看到了，咱们就按刚才的方式接着聊，我来给您详细介绍❤️",
+            reply_text=reply_text,
             intent="contact",
             route_reason="contact_already_added",
             reply_goal="承接联系方式",
@@ -261,8 +287,17 @@ def build_contact_progress_ack_decision(
             reply_mode=agent.reply_mode,
         )
     if looks_like_contact_already_captured(text) and has_contact_context:
+        reply_text = agent.CONTACT_ALREADY_CAPTURED_REPLY if hasattr(agent, "CONTACT_ALREADY_CAPTURED_REPLY") else "收到啦姐姐，您之前留的方式我这边已经记下了，不用重复发，我会尽快联系您详细介绍❤️"
+        picker = getattr(agent, "_pick_fixed_reply", None)
+        if callable(picker):
+            reply_text = picker(
+                session_state=session_state,
+                category="contact_already_captured",
+                replies=getattr(agent, "CONTACT_ALREADY_CAPTURED_REPLY_POOL", ()) or (),
+                fallback=reply_text,
+            )
         return AgentDecision(
-            reply_text=agent.CONTACT_ALREADY_CAPTURED_REPLY if hasattr(agent, "CONTACT_ALREADY_CAPTURED_REPLY") else "收到啦姐姐，您之前留的方式我这边已经记下了，不用重复发，我会尽快联系您详细介绍❤️",
+            reply_text=reply_text,
             intent="contact",
             route_reason="contact_already_captured",
             reply_goal="承接联系方式",

@@ -652,7 +652,7 @@ class KnowledgeService(QObject):
                         }
 
         # 特殊处理：通用价格查询优先级
-        generic_price_keywords = ["假发多少钱", "假发价格", "多少钱", "价位", "价格"]
+        generic_price_keywords = ["假发多少钱", "假发价格", "多少钱", "价位", "价格", "怎么卖", "怎么买", "卖多少钱"]
         specific_style_keywords = ["短款", "短发", "长款", "长发", "盘发", "中长", "齐肩"]
 
         if any(k in query for k in generic_price_keywords):

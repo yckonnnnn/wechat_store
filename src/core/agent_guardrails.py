@@ -140,7 +140,16 @@ def normalize_reply_text(agent: Any, text: str) -> str:
     value = re.sub(r"呢到(?=[。！？!?，,；;]|$)", "呢", value)
 
     if (not contact_captured) and any(k in value for k in agent._contact_compliance_block_keywords):
-        value = "姐姐，我把您这轮想确认的重点继续说清楚"
+        picker = getattr(agent, "_pick_fixed_reply", None)
+        if callable(picker):
+            value = picker(
+                session_state=current_state,
+                category="contact_fact_fallback",
+                replies=getattr(agent, "CONTACT_FACT_FALLBACK_POOL", ()) or (),
+                fallback="姐姐，我把您这轮想确认的重点继续说清楚",
+            )
+        else:
+            value = "姐姐，我把您这轮想确认的重点继续说清楚"
     elif any(k in value for k in agent._shipping_block_keywords):
         value = agent._shipping_block_replacement
         force_default_emoji = True
@@ -415,6 +424,17 @@ def apply_llm_reply_guardrails(
     def finalize(final_reply: str, base_info: Optional[Dict[str, Any]] = None) -> Tuple[str, Dict[str, Any]]:
         return final_reply, build_reply_closure_info(agent, final_reply, base_info or closure_info)
 
+    def pick_fixed(category: str, replies_attr: str, fallback_text: str) -> str:
+        picker = getattr(agent, "_pick_fixed_reply", None)
+        if callable(picker):
+            return picker(
+                session_state=state,
+                category=category,
+                replies=getattr(agent, replies_attr, ()) or (),
+                fallback=fallback_text,
+            )
+        return fallback_text
+
     if is_service_hours_query(text) and not reply_has_correct_service_hours(reply):
         return finalize(agent._render_guardrail_reply(SERVICE_HOURS_SAFE_REPLY))
 
@@ -430,7 +450,16 @@ def apply_llm_reply_guardrails(
             return finalize(agent._render_guardrail_reply(agent._empathy_remote_support_fallback))
         if any(token in text for token in ("外地", "不在上海", "不在北京", "不方便到店", "远程定制", "不能去上海", "不能来上海")):
             return finalize(agent._render_guardrail_reply(agent._remote_support_fact_fallback))
-        return finalize(agent._phone_leak_block_fallback, {"contact_closure_hit": True, "closure_type": "contact"})
+        reply_text = agent._phone_leak_block_fallback
+        picker = getattr(agent, "_pick_fixed_reply", None)
+        if callable(picker):
+            reply_text = picker(
+                session_state=state,
+                category="phone_leak_block",
+                replies=getattr(agent, "PHONE_LEAK_BLOCK_FALLBACK_POOL", ()) or (),
+                fallback=agent._phone_leak_block_fallback,
+            )
+        return finalize(reply_text, {"contact_closure_hit": True, "closure_type": "contact"})
 
     if agent._contains_invalid_ma_teacher_claim(reply):
         if agent._is_ma_teacher_direct_query(text):
@@ -458,7 +487,16 @@ def apply_llm_reply_guardrails(
             return finalize(agent._render_guardrail_reply(agent._empathy_remote_support_fallback))
         if any(token in text for token in ("外地", "不在上海", "不在北京", "不方便到店", "远程定制", "不能去上海", "不能来上海")):
             return finalize(agent._render_guardrail_reply(agent._remote_support_fact_fallback))
-        return finalize(agent._render_guardrail_reply(agent._contact_fact_fallback), {"contact_closure_hit": False, "closure_type": ""})
+        reply_text = agent._contact_fact_fallback
+        picker = getattr(agent, "_pick_fixed_reply", None)
+        if callable(picker):
+            reply_text = picker(
+                session_state=state,
+                category="contact_fact_fallback",
+                replies=getattr(agent, "CONTACT_FACT_FALLBACK_POOL", ()) or (),
+                fallback=agent._contact_fact_fallback,
+            )
+        return finalize(agent._render_guardrail_reply(reply_text), {"contact_closure_hit": False, "closure_type": ""})
 
     if agent._has_price_priority(text):
         if agent._contains_low_price_quote(reply) or agent._contains_invalid_price_channel(reply):
@@ -474,20 +512,20 @@ def apply_llm_reply_guardrails(
                 agent._normalize_reply_text("姐姐，这家门店的位置我给您发图片会更稳妥，您按图看就行"),
                 {"closure_type": "", "target_store": store_key},
             )
-        return finalize(agent._render_guardrail_reply(agent._address_fact_fallback))
+        return finalize(agent._render_guardrail_reply(pick_fixed("address_fact_fallback", "ADDRESS_FACT_FALLBACK_POOL", agent._address_fact_fallback)))
 
     if allow_address_guardrails and explicit_address_delivery_turn and agent._is_address_fact_risk(text, reply, state, history):
         if agent._is_address_unsupported_query(text):
-            return finalize(agent._render_guardrail_reply(agent._address_fact_fallback))
+            return finalize(agent._render_guardrail_reply(pick_fixed("address_fact_fallback", "ADDRESS_FACT_FALLBACK_POOL", agent._address_fact_fallback)))
         store_key = agent._resolve_guardrail_store_key(text, reply, state, history)
         if store_key:
             return finalize(agent._normalize_reply_text("姐姐，这家门店的位置我给您发图片会更稳妥，您按图看就行"))
         if agent._reply_contains_unsupported_address_detail(reply):
-            return finalize(agent._render_guardrail_reply(agent._address_fact_fallback))
-        return finalize(agent._render_guardrail_reply(agent._address_fact_fallback))
+            return finalize(agent._render_guardrail_reply(pick_fixed("address_fact_fallback", "ADDRESS_FACT_FALLBACK_POOL", agent._address_fact_fallback)))
+        return finalize(agent._render_guardrail_reply(pick_fixed("address_fact_fallback", "ADDRESS_FACT_FALLBACK_POOL", agent._address_fact_fallback)))
 
     if allow_address_guardrails and explicit_address_delivery_turn and agent._is_address_unsupported_query(text):
-        return finalize(agent._normalize_reply_text(agent._address_unsupported_fallback))
+        return finalize(agent._normalize_reply_text(pick_fixed("address_unsupported_fallback", "ADDRESS_UNSUPPORTED_FALLBACK_POOL", agent._address_unsupported_fallback)))
     if agent._needs_empathy_remote_support(text) and not agent._reply_has_empathy(reply):
         return finalize(agent._normalize_reply_text(f"姐姐那您先注意休息，身体要紧，{reply.lstrip('姐姐，').lstrip('姐姐').strip()}"))
     return finalize(reply_text)

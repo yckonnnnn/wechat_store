@@ -148,9 +148,24 @@ SHIPPING_BLOCK_KEYWORDS = (
 )
 SHIPPING_BLOCK_REPLACEMENT = "姐姐我们是到店定制哦"
 ADDRESS_UNSUPPORTED_FALLBACK = "姐姐，您要是明确想看哪家门店的位置，我就给您对应发，不会给您绕开。"
+ADDRESS_UNSUPPORTED_FALLBACK_POOL = (
+    "姐姐，您要是已经确定想看哪家门店的位置，直接告诉我门店名，我就给您对应发，不跟您绕。🌹",
+    "姐姐，您要是明确想看哪家店的位置，我就按那家给您发，不会给您绕开。🌹",
+    "姐姐，您只要说清楚想看哪家门店的位置，我就直接按那家给您发，不会兜圈子。🌹",
+)
 MATERIAL_LIBRARY_VIDEO_SENTINEL = "__material_library_video__"
 ADDRESS_FACT_FALLBACK = "姐姐，您这轮如果是想确认推荐逻辑，我就按您的要求继续说明；如果是想看具体位置，我给您对应发。"
+ADDRESS_FACT_FALLBACK_POOL = (
+    "姐姐，您这轮如果是想确认推荐逻辑，我就按您的要求继续说明；如果是想看具体位置，我给您对应发。🌹",
+    "姐姐，您要是想确认我为什么这样推荐，我就继续给您讲清楚；要是想看具体位置，我就给您对应发。🌹",
+    "姐姐，您这轮要是想听推荐理由，我就接着说明；要是想看具体门店位置，我就按对应给您发。🌹",
+)
 ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK = "姐姐，您这轮更想确认推荐逻辑还是具体位置，您说哪个我就接着说哪个。"
+ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK_POOL = (
+    "姐姐，您这轮更想确认推荐逻辑还是具体位置，您说哪个我就接着说哪个。🌹",
+    "姐姐，您现在是更想听我为什么这样推荐，还是想直接看具体位置呀？您说哪个我就接着讲哪个。🌹",
+    "姐姐，您这轮是想确认推荐原因，还是想直接看门店位置？您定一个，我马上按这个继续说。🌹",
+)
 ADDRESS_IMAGE_LIMIT_REPLY_POOL = (
     "姐姐，您可以看上面我给您发的图，因平台限制我这边没法一直重复发送具体地址；如果您没看到或者找不到，您留个电话，我来联系您语音跟您说会更方便一些❤️",
     "姐姐，前面的位置图我已经给您发过啦，平台这边没法反复补发同一张；如果您没看到或者不方便找，您留个电话，我来联系您语音告诉您会更方便❤️",
@@ -159,14 +174,44 @@ ADDRESS_IMAGE_LIMIT_REPLY_POOL = (
 PRICE_FACT_FALLBACK = "姐姐，具体的价格，设计，您可以留个☎️，我来添加您，专门给您详细介绍"
 PRICE_GUARDRAIL_SAFE_REPLY = "姐姐，我们的价格有3000、4000、5000、6000不同档位，具体要根据材质、款式、头围、脸型和需求方案来定。"
 CONTACT_FACT_FALLBACK = "姐姐，我先把您这轮真正想确认的问题说清楚。"
+CONTACT_FACT_FALLBACK_POOL = (
+    "姐姐，我先把您这轮真正想确认的问题说清楚。🌹",
+    "姐姐，我先不绕别的，直接把您这轮最关心的点说清楚。🌹",
+    "姐姐，您这轮重点我明白，我直接按您真正想问的来回答。🌹",
+)
 PHONE_LEAK_BLOCK_FALLBACK = "姐姐，电话我这边不直接展开说，您这轮想确认什么我继续给您讲清楚。"
+PHONE_LEAK_BLOCK_FALLBACK_POOL = (
+    "姐姐，电话我这边不直接展开说，您这轮想确认什么我继续给您讲清楚。🌹",
+    "姐姐，电话这边我先不直接展开，您这轮最想确认哪一点，我接着给您说清楚。🌹",
+    "姐姐，电话这边我先不细说，您现在最想确认什么，我直接按那个给您讲。🌹",
+)
 REMOTE_SUPPORT_FACT_FALLBACK = "姐姐，外地也支持远程定制，不过精准度会比到店稍低一些哦。❤️"
 EMPATHY_REMOTE_SUPPORT_FALLBACK = "姐姐那您先注意休息，身体要紧，不方便来上海的话我们也可以先远程帮您看看。❤️"
 USER_PHONE_SUBMITTED_REPLY = "收到啦姐姐，电话我这边已经记下了，您后面直接说想确认什么就行❤️"
+USER_PHONE_SUBMITTED_REPLY_POOL = (
+    "收到啦姐姐，电话我这边已经记下了，您后面直接说想确认什么就行❤️",
+    "好的姐姐，您的电话我这边已经收到了，您接着说您还想确认什么就可以❤️",
+    "收到啦姐姐，联系方式我这边已经记下了，您后面有想确认的直接说就行❤️",
+)
 CONTACT_ALREADY_ADDED_REPLY = "好的姐姐，我这边看到了，咱们就按刚才的方式接着聊，我来给您详细介绍❤️"
+CONTACT_ALREADY_ADDED_REPLY_POOL = (
+    "好的姐姐，我这边看到了，咱们就按刚才的方式接着聊，我来给您详细介绍❤️",
+    "收到姐姐，刚才那边已经对上了，您接着说您还想了解什么，我继续给您讲❤️",
+    "好的姐姐，我这边已经看到了，咱们就顺着刚才的内容继续聊，我给您接着介绍❤️",
+)
 CONTACT_ALREADY_CAPTURED_REPLY = "收到啦姐姐，您之前留的方式我这边已经记下了，不用重复发，我会尽快联系您详细介绍❤️"
+CONTACT_ALREADY_CAPTURED_REPLY_POOL = (
+    "收到啦姐姐，您之前留的方式我这边已经记下了，不用重复发，我会尽快联系您详细介绍❤️",
+    "姐姐，您前面留的联系方式我这边已经看到了，不用再重复发啦，后面我会尽快联系您详细说❤️",
+    "收到姐姐，您之前留的方式我这边已经记下了，您不用再补发，后面我会尽快联系您详细介绍❤️",
+)
 WEEKEND_CLOSED_REPLY = STANDARD_BUSINESS_HOURS_REPLY
 MEDIA_DELIVERY_RETRY_FALLBACK = "姐姐，刚才可能网络有点延迟，您明确说下是要补发位置图还是联系方式图，我马上给您补。"
+MEDIA_DELIVERY_RETRY_FALLBACK_POOL = (
+    "姐姐，刚才可能网络有点延迟，您明确说下是要补发位置图还是联系方式图，我马上给您补。🌹",
+    "姐姐，刚才可能有点延迟，您直接告诉我是要补位置图还是联系方式图，我这边马上补给您。🌹",
+    "姐姐，可能刚才发送有点慢，您说清楚是要补地址图还是联系方式图，我立刻帮您处理。🌹",
+)
 VISIT_TIME_CONFIRM_REPLY = "姐姐，时间应该可以的，但要跟技术老师协调一下，所以您加我为好友，我帮你预约好时间，这样你会更方便❤️。"
 REMOTE_FLOW_ENTRY_REPLY = "姐姐，外地也可以远程定制，您直接看上面的图片加专属客服，我让老师一对一帮您看，合适的话再给您安排。❤️"
 REMOTE_FLOW_FOLLOWUP_REPLY = "姐姐，您加上专属客服后，把大概情况发过去，老师会先帮您看适不适合远程定制，再跟您说后面的安排。❤️"
@@ -235,6 +280,11 @@ VISIT_CONTACT_REPLY_POOL = (
     "姐姐，您直接看上面的图片加专属客服就可以，我帮您继续安排预约。🌹",
     "姐姐，您按上面的图片联系专属客服就行，后面我帮您对接预约时间。🌹",
     "姐姐，您直接按图片加专属客服，我这边接着帮您安排到店时间。🌹",
+)
+STALE_FOLLOWUP_TEXT_POOL = (
+    "姐姐，记得请添加我好友哦，我会发详细定位还有乘车路线以及预约/价格方面事项给到您~❤️",
+    "姐姐，您直接按上面的方式加我就可以哦，定位、路线还有预约和价格这些我都能继续发给您❤️",
+    "姐姐，您记得加一下我这边哦，后面定位、路线还有预约价格这些我都继续跟您对接❤️",
 )
 MA_TEACHER_ROLE_FALLBACK = "姐姐，马老师是做短视频拍摄的，暂时不负责做头发、剪头和假发处理哦。🥰"
 MA_TEACHER_DIRECT_QUERY_FALLBACK = "姐姐，马老师是做短视频拍摄的，暂时无法安排🥰"
@@ -432,6 +482,9 @@ PRICE_FACT_QUERY_KEYWORDS = (
     "预算",
     "贵",
     "便宜",
+    "怎么卖",
+    "怎么买",
+    "卖多少钱",
 )
 PRICE_FACT_SPECIFIC_KEYWORDS = (
     "具体价格",
@@ -509,6 +562,9 @@ PRICE_PRIORITY_KEYWORDS = (
     "大概多少",
     "大概多少钱",
     "多少米",
+    "怎么卖",
+    "怎么买",
+    "卖多少钱",
 )
 PRICE_FACT_FOLLOWUP_APPOINTMENT = "我们这边是预约制的，您定好时间我可以帮您安排。"
 PRICE_FACT_FOLLOWUP_STORE_DISTRIBUTION = "门店目前是北京朝阳1家，上海5家（静安、人广、虹口、五角场、徐汇）。"
@@ -731,6 +787,16 @@ class CustomerServiceAgent:
         self._price_guardrail_safe_reply = PRICE_GUARDRAIL_SAFE_REPLY
         self._empathy_remote_support_fallback = EMPATHY_REMOTE_SUPPORT_FALLBACK
         self._remote_support_fact_fallback = REMOTE_SUPPORT_FACT_FALLBACK
+        self.ADDRESS_UNSUPPORTED_FALLBACK_POOL = ADDRESS_UNSUPPORTED_FALLBACK_POOL
+        self.ADDRESS_FACT_FALLBACK_POOL = ADDRESS_FACT_FALLBACK_POOL
+        self.ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK_POOL = ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK_POOL
+        self.CONTACT_FACT_FALLBACK_POOL = CONTACT_FACT_FALLBACK_POOL
+        self.PHONE_LEAK_BLOCK_FALLBACK_POOL = PHONE_LEAK_BLOCK_FALLBACK_POOL
+        self.USER_PHONE_SUBMITTED_REPLY_POOL = USER_PHONE_SUBMITTED_REPLY_POOL
+        self.CONTACT_ALREADY_ADDED_REPLY_POOL = CONTACT_ALREADY_ADDED_REPLY_POOL
+        self.CONTACT_ALREADY_CAPTURED_REPLY_POOL = CONTACT_ALREADY_CAPTURED_REPLY_POOL
+        self.MEDIA_DELIVERY_RETRY_FALLBACK_POOL = MEDIA_DELIVERY_RETRY_FALLBACK_POOL
+        self.STALE_FOLLOWUP_TEXT_POOL = STALE_FOLLOWUP_TEXT_POOL
         self._phone_leak_block_fallback = PHONE_LEAK_BLOCK_FALLBACK
         self._contact_fact_fallback = CONTACT_FACT_FALLBACK
         self._address_fact_fallback = ADDRESS_FACT_FALLBACK
@@ -927,7 +993,12 @@ class CustomerServiceAgent:
         text = self.knowledge_service.normalize_user_text(raw_text).strip()
         if self._looks_like_phone_submission(text):
             decision = AgentDecision(
-                reply_text=USER_PHONE_SUBMITTED_REPLY,
+                reply_text=self._pick_fixed_reply(
+                    session_state=session_state,
+                    category="user_phone_submitted",
+                    replies=USER_PHONE_SUBMITTED_REPLY_POOL,
+                    fallback=USER_PHONE_SUBMITTED_REPLY,
+                ),
                 intent="contact",
                 route_reason="user_phone_submitted",
                 reply_goal="承接联系方式",
@@ -1438,10 +1509,20 @@ class CustomerServiceAgent:
                 "last_reply_goal": decision.reply_goal,
                 "last_detected_region": detected_region or session_state.get("last_detected_region", ""),
                 "last_target_store": persisted_store or session_state.get("last_target_store", ""),
-                "last_geo_route_reason": route.get("reason", "unknown") if (target_store != "unknown" or detected_region) else session_state.get("last_geo_route_reason", "unknown"),
+                "last_geo_route_reason": session_state.get(
+                    "last_geo_route_reason",
+                    route.get("reason", "unknown") if (target_store != "unknown" or detected_region) else "unknown",
+                ),
                 "last_geo_updated_at": now if (target_store != "unknown" or detected_region) else session_state.get("last_geo_updated_at", ""),
+                "geo_followup_round": int(session_state.get("geo_followup_round", 0) or 0),
+                "geo_choice_offered": bool(session_state.get("geo_choice_offered", False)),
+                "geo_followup_exhausted": bool(session_state.get("geo_followup_exhausted", False)),
+                "last_geo_pending": bool(session_state.get("last_geo_pending", False)),
                 "knowledge_reply_count": next_knowledge_reply_count,
                 "price_priority_reply_count": next_price_priority_reply_count,
+                "remote_reply_counters": dict(session_state.get("remote_reply_counters", {}) or {}),
+                "visit_reply_counters": dict(session_state.get("visit_reply_counters", {}) or {}),
+                "fixed_reply_counters": dict(session_state.get("fixed_reply_counters", {}) or {}),
                 "address_info_shared": bool(session_state.get("address_info_shared", False) or self._reply_shares_address_info(decision.reply_text)),
                 "last_answer_topic": current_answer_topic,
                 "last_answer_facts": current_answer_facts,
@@ -1734,6 +1815,24 @@ class CustomerServiceAgent:
         index = int(counters.get(category, 0) or 0) % len(pool)
         counters[category] = int(counters.get(category, 0) or 0) + 1
         session_state["visit_reply_counters"] = counters
+        return pool[index]
+
+    def _pick_fixed_reply(
+        self,
+        *,
+        session_state: Optional[Dict[str, Any]],
+        category: str,
+        replies: Tuple[str, ...],
+        fallback: str = "",
+    ) -> str:
+        pool = [str(item).strip() for item in (replies or ()) if str(item).strip()]
+        if not pool:
+            return str(fallback or "").strip()
+        state = session_state if isinstance(session_state, dict) else {}
+        counters = dict(state.get("fixed_reply_counters", {}) or {})
+        index = int(counters.get(category, 0) or 0) % len(pool)
+        counters[category] = int(counters.get(category, 0) or 0) + 1
+        state["fixed_reply_counters"] = counters
         return pool[index]
 
     def _is_remote_flow_active(self, session_state: Optional[Dict[str, Any]] = None) -> bool:
@@ -2362,7 +2461,7 @@ class CustomerServiceAgent:
             return False
         if any(keyword in normalized for keyword in ADDRESS_PRIORITY_OVER_PRICE_KEYWORDS):
             return False
-        if any(keyword in normalized for keyword in ("邮寄", "快递", "寄吗", "寄快递", "能买吗", "怎么买", "购买")):
+        if any(keyword in normalized for keyword in ("邮寄", "快递", "寄吗", "寄快递", "能买吗", "购买")):
             return False
         explicit_price_keywords = (
             "多少钱",
@@ -2543,7 +2642,7 @@ class CustomerServiceAgent:
             followups.append(PRICE_FACT_FOLLOWUP_APPOINTMENT)
         if any(token in normalized for token in ("材质", "区别", "为什么", "怎么定", "怎么算", "档次", "等级", "效果", "款式")):
             followups.append(PRICE_FACT_FOLLOWUP_PRICING_BASIS)
-        if any(token in normalized for token in ("定制", "流程", "怎么做", "怎么弄")):
+        if any(token in normalized for token in ("定制", "流程", "怎么做", "怎么弄", "怎么买")):
             followups.append(PRICE_FACT_FOLLOWUP_PROCESS)
 
         unique_followups: List[str] = []
