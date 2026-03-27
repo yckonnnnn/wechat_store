@@ -151,6 +151,11 @@ ADDRESS_UNSUPPORTED_FALLBACK = "姐姐，您要是明确想看哪家门店的位
 MATERIAL_LIBRARY_VIDEO_SENTINEL = "__material_library_video__"
 ADDRESS_FACT_FALLBACK = "姐姐，您这轮如果是想确认推荐逻辑，我就按您的要求继续说明；如果是想看具体位置，我给您对应发。"
 ADDRESS_GENERIC_FOLLOWUP_CONTACT_FALLBACK = "姐姐，您这轮更想确认推荐逻辑还是具体位置，您说哪个我就接着说哪个。"
+ADDRESS_IMAGE_LIMIT_REPLY_POOL = (
+    "姐姐，您可以看上面我给您发的图，因平台限制我这边没法一直重复发送具体地址；如果您没看到或者找不到，您留个电话，我来联系您语音跟您说会更方便一些❤️",
+    "姐姐，前面的位置图我已经给您发过啦，平台这边没法反复补发同一张；如果您没看到或者不方便找，您留个电话，我来联系您语音告诉您会更方便❤️",
+    "姐姐，上面的地址图您可以先看一下哦，平台限制下我这边不能一直重复发同一张；要是您还是没看到或者找不到，您留个电话，我来联系您语音沟通会更方便❤️",
+)
 PRICE_FACT_FALLBACK = "姐姐，具体的价格，设计，您可以留个☎️，我来添加您，专门给您详细介绍"
 PRICE_GUARDRAIL_SAFE_REPLY = "姐姐，我们的价格有3000、4000、5000、6000不同档位，具体要根据材质、款式、头围、脸型和需求方案来定。"
 CONTACT_FACT_FALLBACK = "姐姐，我先把您这轮真正想确认的问题说清楚。"
@@ -168,6 +173,69 @@ REMOTE_FLOW_FOLLOWUP_REPLY = "姐姐，您加上专属客服后，把大概情�
 REMOTE_FLOW_URGENT_REPLY = "姐姐您别着急，外地这边是可以远程定制的，您直接加上专属客服，我们这边马上接着给您安排。❤️"
 REMOTE_FLOW_SHIPPING_REPLY = "姐姐，可以远程定制的，合适的话后面也可以给您寄，您先加上专属客服，我们这边先帮您看看情况。❤️"
 REMOTE_FLOW_DIRECT_ADD_REPLY = "好的姐姐，我这就加您❤️"
+REMOTE_FLOW_ENTRY_REPLY_POOL = (
+    "姐姐，外地也可以远程定制，您直接看上面的图片加专属客服，我让老师一对一帮您看，合适的话再给您安排。❤️",
+    "姐姐，不方便到店也没关系，我们可以先按远程定制给您安排，您加上专属客服后，老师会先帮您看具体适不适合。❤️",
+    "姐姐，外地这边也是可以做远程定制的，您先加上专属客服，把大概情况发过去，老师会一对一帮您看。❤️",
+)
+REMOTE_FLOW_CAPABILITY_REPLY_POOL = (
+    "姐姐，外地也是可以远程定制的，您把大概情况发给专属客服，老师会先帮您判断适不适合，再跟您说后面的安排。❤️",
+    "姐姐，可以远程定制的呢，您先加上专属客服，把您的情况发过去，老师会先帮您看方案。❤️",
+    "姐姐，远程定制是可以做的，您加上专属客服后，老师会先了解您的需求，再给您安排下一步。❤️",
+)
+REMOTE_FLOW_MEASUREMENT_REPLY_POOL = (
+    "姐姐，不会量头围也可以的，您加上专属客服后，老师会一步一步教您怎么量，不用担心。🌹",
+    "姐姐，可以的呢，不会量头围没关系，专属客服会教您怎么量，跟着操作就行。🌹",
+    "姐姐，没问题的，不会量头围的话老师会教您，您加上专属客服后按步骤来就可以。🌹",
+)
+REMOTE_FLOW_PROCESS_REPLY_POOL = (
+    "姐姐，如果是远程定制的话，一般是先加专属客服，老师先了解您的需求，再指导您量头围，确认好之后再安排后面的定制。🌹",
+    "姐姐，远程这边通常是先加专属客服，老师先看您的情况，再教您量头围，确认方案后再继续安排。🌹",
+    "姐姐，如果您是外地做远程，一般先联系专属客服，老师会先了解需求和头围这些，再帮您往下安排。🌹",
+)
+REMOTE_FLOW_CONTACT_REPLY_POOL = (
+    "姐姐，您直接看上面的图片加专属客服就可以，老师会继续帮您往下安排。🌹",
+    "姐姐，您按上面的图片加专属客服就行，后面老师会一对一跟您对接。🌹",
+    "姐姐，您直接按上面的图片联系专属客服就可以，老师会继续帮您安排后面的流程。🌹",
+)
+REMOTE_MEASUREMENT_KEYWORDS = (
+    "量头围",
+    "头围",
+    "怎么量",
+    "不会量",
+    "自己量",
+    "测量",
+)
+REMOTE_PROCESS_KEYWORDS = (
+    "流程",
+    "怎么走",
+    "怎么买",
+    "想买",
+    "先到店还是先预约",
+    "先预约还是先到店",
+    "先预约",
+    "先到店",
+)
+VISIT_APPOINTMENT_REPLY_POOL = (
+    "姐姐，我们这边是预约制的呢，您方便告诉我哪天有时间？我帮您安排专属老师给您预留时间🌷",
+    "姐姐，到店这边需要提前预约哦，您把方便的时间告诉我，我帮您先安排好老师。🌷",
+    "姐姐，您来之前提前预约一下就可以，这样老师能提前给您留好时间。🌷",
+)
+VISIT_PROCESS_REPLY_POOL = (
+    "姐姐，如果是到店的话，一般是先预约时间，再到门店让老师一对一看您的情况，这样会更方便。🌹",
+    "姐姐，到店这边通常是先预约，到了门店后老师会先看您的需求，再帮您安排后面的流程。🌹",
+    "姐姐，想来门店的话一般先约时间，到店后老师会先看您的情况，再给您往下安排。🌹",
+)
+VISIT_MEASUREMENT_REPLY_POOL = (
+    "姐姐，到店的话老师会现场帮您量头围的，您不用担心自己不会量。🌹",
+    "姐姐，可以的呢，来门店后老师会直接帮您量头围，您不用自己量。🌹",
+    "姐姐，没问题的，到店以后老师会现场帮您量头围和看脸型，您不用自己准备。🌹",
+)
+VISIT_CONTACT_REPLY_POOL = (
+    "姐姐，您直接看上面的图片加专属客服就可以，我帮您继续安排预约。🌹",
+    "姐姐，您按上面的图片联系专属客服就行，后面我帮您对接预约时间。🌹",
+    "姐姐，您直接按图片加专属客服，我这边接着帮您安排到店时间。🌹",
+)
 MA_TEACHER_ROLE_FALLBACK = "姐姐，马老师是做短视频拍摄的，暂时不负责做头发、剪头和假发处理哦。🥰"
 MA_TEACHER_DIRECT_QUERY_FALLBACK = "姐姐，马老师是做短视频拍摄的，暂时无法安排🥰"
 IMAGE_MEDIA_REPLY_POOL = (
@@ -949,6 +1017,16 @@ class CustomerServiceAgent:
             session_state=session_state,
             conversation_history=visible_history or [],
         )
+        if remote_flow_decision is not None:
+            normalized_raw_text = self.knowledge_service.normalize_user_text(raw_text)
+            normalized_raw_compact = re.sub(r"\s+", "", str(normalized_raw_text or ""))
+            if (
+                self.knowledge_service.is_address_query(raw_text)
+                or self.knowledge_service.is_shanghai_route_alias_address_candidate(raw_text)
+                or self._looks_like_generic_address_opening(raw_text, intent="address")
+                or any(token in normalized_raw_compact for token in ("地址", "位置", "门店", "哪个城市", "什么城市"))
+            ):
+                remote_flow_decision = None
         if decision is None and self.reply_mode == REPLY_MODE_LLM_DIRECT:
             decision = self._decide_llm_direct_seed_reply(
                 latest_user_text=raw_text,
@@ -1572,6 +1650,9 @@ class CustomerServiceAgent:
             "晚点联系",
             "回头定时间",
             "回头联系",
+            "谢谢那天我到上海来",
+            "谢谢到上海来",
+            "到上海来",
         )
         return any(pattern in normalized for pattern in patterns)
 
@@ -1615,6 +1696,46 @@ class CustomerServiceAgent:
             return True
         return any(token in normalized for token in ("微信", "电话", "留个", "加我"))
 
+    def _looks_like_remote_measurement_query(self, text: str) -> bool:
+        normalized = self._normalize_flow_text(text)
+        return bool(normalized) and any(token in normalized for token in REMOTE_MEASUREMENT_KEYWORDS)
+
+    def _looks_like_remote_process_query(self, text: str) -> bool:
+        normalized = self._normalize_flow_text(text)
+        return bool(normalized) and any(token in normalized for token in REMOTE_PROCESS_KEYWORDS)
+
+    def _pick_remote_flow_reply(
+        self,
+        *,
+        session_state: Dict[str, Any],
+        category: str,
+        replies: Tuple[str, ...],
+    ) -> str:
+        pool = [str(item).strip() for item in (replies or ()) if str(item).strip()]
+        if not pool:
+            return REMOTE_FLOW_FOLLOWUP_REPLY
+        counters = dict(session_state.get("remote_reply_counters", {}) or {})
+        index = int(counters.get(category, 0) or 0) % len(pool)
+        counters[category] = int(counters.get(category, 0) or 0) + 1
+        session_state["remote_reply_counters"] = counters
+        return pool[index]
+
+    def _pick_visit_flow_reply(
+        self,
+        *,
+        session_state: Dict[str, Any],
+        category: str,
+        replies: Tuple[str, ...],
+    ) -> str:
+        pool = [str(item).strip() for item in (replies or ()) if str(item).strip()]
+        if not pool:
+            return self._render_template("purchase_contact_intro")
+        counters = dict(session_state.get("visit_reply_counters", {}) or {})
+        index = int(counters.get(category, 0) or 0) % len(pool)
+        counters[category] = int(counters.get(category, 0) or 0) + 1
+        session_state["visit_reply_counters"] = counters
+        return pool[index]
+
     def _is_remote_flow_active(self, session_state: Optional[Dict[str, Any]] = None) -> bool:
         return bool((session_state or {}).get("remote_flow_active", False))
 
@@ -1633,6 +1754,13 @@ class CustomerServiceAgent:
         if not normalized:
             return None
         if bool(session_state.get("contact_captured", False)):
+            return None
+        address_like_remote_break = (
+            self.knowledge_service.is_address_query(text)
+            or self.knowledge_service.is_shanghai_route_alias_address_candidate(text)
+            or any(token in normalized for token in ("地址", "位置", "门店", "在哪", "哪里"))
+        )
+        if self._is_remote_flow_active(session_state) and address_like_remote_break:
             return None
 
         route_reason = str(route.get("reason", "") or "unknown")
@@ -1691,20 +1819,54 @@ class CustomerServiceAgent:
             return None
 
         first_contact = self._is_remote_flow_first_contact(session_state)
+        reply_intent = "purchase"
         if self._looks_like_remote_urgent_query(text):
             reply_text = REMOTE_FLOW_URGENT_REPLY
         elif self._looks_like_direct_contact_request(text):
             reply_text = REMOTE_FLOW_DIRECT_ADD_REPLY
         elif self._looks_like_remote_shipping_query(text):
             reply_text = REMOTE_FLOW_SHIPPING_REPLY
+        elif self._looks_like_remote_measurement_query(text):
+            reply_text = self._pick_remote_flow_reply(
+                session_state=session_state,
+                category="measurement",
+                replies=REMOTE_FLOW_MEASUREMENT_REPLY_POOL,
+            )
+            reply_intent = "general"
+        elif self._looks_like_remote_process_query(text) or self._looks_like_appointment_query(text):
+            reply_text = self._pick_remote_flow_reply(
+                session_state=session_state,
+                category="process",
+                replies=REMOTE_FLOW_PROCESS_REPLY_POOL,
+            )
+        elif self._looks_like_remote_contact_followup(text):
+            reply_text = self._pick_remote_flow_reply(
+                session_state=session_state,
+                category="contact",
+                replies=REMOTE_FLOW_CONTACT_REPLY_POOL,
+            )
+        elif self._looks_like_remote_direct_query(text):
+            reply_text = self._pick_remote_flow_reply(
+                session_state=session_state,
+                category="capability",
+                replies=REMOTE_FLOW_CAPABILITY_REPLY_POOL if not first_contact else REMOTE_FLOW_ENTRY_REPLY_POOL,
+            )
         elif first_contact:
-            reply_text = REMOTE_FLOW_ENTRY_REPLY
+            reply_text = self._pick_remote_flow_reply(
+                session_state=session_state,
+                category="entry",
+                replies=REMOTE_FLOW_ENTRY_REPLY_POOL,
+            )
         else:
-            reply_text = REMOTE_FLOW_FOLLOWUP_REPLY
+            reply_text = self._pick_remote_flow_reply(
+                session_state=session_state,
+                category="capability",
+                replies=REMOTE_FLOW_CAPABILITY_REPLY_POOL,
+            )
 
         return AgentDecision(
             reply_text=reply_text,
-            intent="purchase",
+            intent=reply_intent,
             route_reason="remote_flow_entry" if first_contact else "remote_flow_followup",
             reply_goal="承接联系方式" if first_contact else "推进购买意图",
             media_plan="contact_image" if first_contact else "none",
@@ -2821,6 +2983,24 @@ class CustomerServiceAgent:
             int(state.get("address_image_sent_count", 0) or 0) > 0
             and int(state.get("contact_image_sent_count", 0) or 0) > 0
         )
+        normalized = re.sub(r"\s+", "", str(latest_user_text or ""))
+        if str(route.get("target_store", "") or "").strip() in {"", "unknown"} and any(
+            token in normalized for token in ("先到店还是先预约", "先预约还是先到店", "先预约", "先到店")
+        ):
+            return AgentDecision(
+                reply_text=self._pick_visit_flow_reply(
+                    session_state=state,
+                    category="appointment_process",
+                    replies=VISIT_PROCESS_REPLY_POOL,
+                ),
+                intent="appointment",
+                route_reason=str(route.get("reason", "unknown") or "unknown"),
+                reply_goal="解答",
+                media_plan="none",
+                reply_source="rule",
+                rule_id="VISIT_APPOINTMENT_PROCESS",
+                rule_applied=True,
+            )
         kb_detail = self.knowledge_service.find_answer_detail(
             latest_user_text,
             threshold=self.knowledge_threshold,
@@ -2893,6 +3073,12 @@ class CustomerServiceAgent:
             int(state.get("contact_image_sent_count", 0) or 0) <= 0
             and not bool(state.get("contact_captured", False))
         )
+        if any(token in normalized for token in ("需要预约", "怎么预约", "如何预约", "要预约")):
+            answer = self._pick_visit_flow_reply(
+                session_state=state,
+                category="appointment_intro",
+                replies=VISIT_APPOINTMENT_REPLY_POOL,
+            )
         return AgentDecision(
             reply_text=answer,
             intent="appointment",
@@ -2927,7 +3113,11 @@ class CustomerServiceAgent:
         state = dict(session_state or {})
         route_type = str(route.get("route_type", "") or "").strip()
         target_store = str(route.get("target_store", "") or "").strip()
-        if (not target_store or target_store == "unknown"):
+        refer_current_store = any(
+            token in re.sub(r"\s+", "", text)
+            for token in ("这家", "这个店", "那家", "那个店", "刚才那家", "刚刚那家")
+        )
+        if (not target_store or target_store == "unknown") and refer_current_store:
             target_store = str(state.get("last_target_store", "") or "").strip()
         has_store_context = bool(target_store and target_store != "unknown")
         if route_type != "coverage" and not has_store_context:
@@ -2971,6 +3161,38 @@ class CustomerServiceAgent:
     ) -> Optional[AgentDecision]:
         if not self._looks_like_process_query(latest_user_text):
             return None
+        state = dict(getattr(self, "_current_unified_state", {}) or {})
+        normalized = re.sub(r"\s+", "", str(latest_user_text or ""))
+        if any(token in normalized for token in ("量头围", "头围", "不会量", "怎么量")):
+            return AgentDecision(
+                reply_text=self._pick_visit_flow_reply(
+                    session_state=state,
+                    category="measurement",
+                    replies=VISIT_MEASUREMENT_REPLY_POOL,
+                ),
+                intent="process",
+                route_reason=str(route.get("reason", "unknown") or "unknown"),
+                reply_goal="解答",
+                media_plan="none",
+                reply_source="rule",
+                rule_id="VISIT_MEASUREMENT_PROCESS",
+                rule_applied=True,
+            )
+        if any(token in normalized for token in ("流程", "怎么走", "想买", "先到店还是先预约", "先预约还是先到店", "先预约", "先到店")):
+            return AgentDecision(
+                reply_text=self._pick_visit_flow_reply(
+                    session_state=state,
+                    category="process",
+                    replies=VISIT_PROCESS_REPLY_POOL,
+                ),
+                intent="process",
+                route_reason=str(route.get("reason", "unknown") or "unknown"),
+                reply_goal="解答",
+                media_plan="none",
+                reply_source="rule",
+                rule_id="VISIT_PROCESS_PRIORITY",
+                rule_applied=True,
+            )
 
         kb_detail = self.knowledge_service.find_answer_detail(
             latest_user_text,
@@ -3245,6 +3467,51 @@ class CustomerServiceAgent:
         )
         if service_hours_priority_decision is not None:
             return service_hours_priority_decision
+
+        process_priority_decision = self._decide_process_priority_reply(
+            latest_user_text=text,
+            route=route,
+            user_state=user_state,
+            user_id_hash=user_id_hash,
+        )
+        if process_priority_decision is not None:
+            return process_priority_decision
+
+        route_target_store = str(route.get("target_store", "") or "").strip()
+        route_reason = str(route.get("reason", "unknown") or "unknown")
+        if (
+            intent == "address"
+            and (
+                route_target_store not in {"", "unknown"}
+                or route_reason in {
+                    "unknown",
+                    "need_region",
+                    "need_district",
+                    "need_clarify",
+                    "sh_route_need_clarify",
+                    "shanghai_need_arrival_point",
+                    "shanghai_need_district",
+                    "beijing_all_district",
+                    "jiangzhe_to_sh_renmin",
+                }
+            )
+            and not self._should_block_store_context_inheritance(text)
+        ):
+            rule_decision = self._decide_rule_reply(
+                text=text,
+                intent=intent,
+                route=route,
+                session_state=session_state,
+                conversation_history=conversation_history,
+                user_state=user_state,
+                is_first_turn_global=is_first_turn_global,
+            )
+            rule_id = str(rule_decision.rule_id or "")
+            if (
+                rule_id in {"ADDR_STORE_RECOMMEND", "STORE_RECOMMENDATION", "ADDR_OUT_OF_COVERAGE"}
+                or rule_id.startswith("ADDR_ASK_")
+            ):
+                return rule_decision
 
         if self._looks_like_appointment_query(text):
             appointment_priority_decision = self._decide_appointment_priority_reply(
@@ -4175,14 +4442,20 @@ class CustomerServiceAgent:
         normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
         if not normalized:
             return enriched
+        if self._looks_like_generic_address_opening(latest_user_text, intent="address"):
+            return enriched
+        if any(token in normalized for token in ("我在上海", "我在北京", "上海地址", "北京地址", "哪个城市", "什么城市")):
+            return enriched
 
         asks_address = (
             self.knowledge_service.is_address_query(latest_user_text)
             or self.knowledge_service.is_shanghai_route_alias_address_candidate(latest_user_text)
             or any(token in normalized for token in ("位置图", "位置图片", "看图", "再发我看下", "再发一下", "位置"))
         )
-        asks_appointment = self._looks_like_appointment_query(latest_user_text)
         same_store_confirmation = any(token in normalized for token in ("对吧", "是吧", "就是这家", "还是这家", "最近的"))
+        asks_appointment = self._looks_like_appointment_query(latest_user_text) and any(
+            token in normalized for token in ("这家", "这个店", "那家", "那个店")
+        )
 
         if not (asks_address or asks_appointment or same_store_confirmation):
             return enriched
@@ -4312,6 +4585,7 @@ class CustomerServiceAgent:
             "remote_flow_reason": str(session_state.get("remote_flow_reason", "") or ""),
             "remote_contact_captured": bool(session_state.get("remote_contact_captured", False)),
             "contact_captured": bool(session_state.get("contact_captured", False)),
+            "remote_reply_counters": dict(session_state.get("remote_reply_counters", {}) or {}),
         }
         route_reason = str(getattr(decision, "route_reason", "") or "")
         if route_reason in {"remote_flow_entry", "remote_flow_followup", "out_of_coverage", "not_in_shanghai_remote"}:
@@ -4336,6 +4610,7 @@ class CustomerServiceAgent:
         if not updates["remote_flow_active"]:
             updates["remote_contact_image_sent"] = False
             updates["remote_contact_captured"] = False
+            updates["remote_reply_counters"] = {}
         return updates
 
     def _infer_current_turn_action(

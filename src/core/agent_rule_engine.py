@@ -158,9 +158,24 @@ def build_address_text_after_image_decision(
     intent: str,
     session_state: Dict[str, Any],
 ) -> Optional[AgentDecision]:
-    normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
-    explicit_revisit = any(token in normalized for token in ("位置图", "再发", "看图"))
+    normalized_text = agent.knowledge_service.normalize_user_text(latest_user_text)
+    normalized = re.sub(r"\s+", "", str(normalized_text or "")).lower()
+    same_store_followup = (
+        any(token in normalized for token in ("这家", "这个店", "那家", "那个店", "还是这家", "还是那家", "就这家"))
+        and any(token in normalized for token in ("地址", "位置", "地址给我", "把地址发我", "发我地址"))
+    )
+    explicit_revisit = any(token in normalized for token in ("位置图", "再发", "看图")) or same_store_followup
     explicit_missing_media = bool(getattr(agent, "_looks_like_missing_media_request", lambda _text: False)(latest_user_text))
+    route_reason = str(route.get("reason", "unknown") or "unknown")
+    if (
+        not explicit_revisit
+        and not same_store_followup
+        and not explicit_missing_media
+        and not agent._is_precise_address_followup(latest_user_text)
+        and callable(getattr(agent, "_looks_like_generic_address_opening", None))
+        and agent._looks_like_generic_address_opening(normalized_text, intent="address")
+    ):
+        return None
     if (
         intent != "address"
         and not explicit_revisit
@@ -172,11 +187,28 @@ def build_address_text_after_image_decision(
         return None
     if not should_continue_address_followup(agent, latest_user_text=latest_user_text, session_state=session_state):
         return None
+    if (
+        not explicit_revisit
+        and route_reason in {
+            "unknown",
+            "need_region",
+            "need_district",
+            "need_clarify",
+            "sh_route_need_clarify",
+            "shanghai_need_arrival_point",
+            "shanghai_need_district",
+        }
+    ):
+        return None
 
     target_store = str(route.get("target_store", "") or "")
     if not target_store or target_store == "unknown":
         target_store = str(session_state.get("last_target_store", "") or "")
     if not target_store or target_store == "unknown":
+        return None
+    if "上海" in normalized and not target_store.startswith("sh_"):
+        return None
+    if "北京" in normalized and target_store != "beijing_chaoyang":
         return None
     explicit_store = str(agent._infer_store_from_context_text(latest_user_text) or "").strip()
     if explicit_store and explicit_store != target_store:
@@ -193,6 +225,32 @@ def build_address_text_after_image_decision(
     text_reply_count_by_store = dict(session_state.get("address_text_reply_count_by_store", {}) or {})
     if int(text_reply_count_by_store.get(target_store, 0) or 0) >= 1:
         return None
+
+    sent_count_by_store = dict(session_state.get("address_image_sent_count_by_store", {}) or {})
+    delivery_stage_by_store = dict(session_state.get("address_delivery_stage_by_store", {}) or {})
+    if explicit_revisit and (
+        int(sent_count_by_store.get(target_store, 0) or 0) >= 2
+        or str(delivery_stage_by_store.get(target_store, "") or "") == "delivered_closed"
+    ):
+        pool = [str(item).strip() for item in (_const(agent, "ADDRESS_IMAGE_LIMIT_REPLY_POOL", ()) or ()) if str(item).strip()]
+        if not pool:
+            pool = [
+                "姐姐，前面的位置图我已经发过了，平台这边没法一直重复补发；如果您没看到或者找不到，您留个电话，我来联系您语音跟您说会更方便一些❤️"
+            ]
+        counters = dict(session_state.get("address_limit_reply_counters", {}) or {})
+        index = int(counters.get(target_store, 0) or 0) % len(pool)
+        counters[target_store] = int(counters.get(target_store, 0) or 0) + 1
+        session_state["address_limit_reply_counters"] = counters
+        return AgentDecision(
+            reply_text=pool[index],
+            intent="address",
+            route_reason="address_image_limit_reached",
+            reply_goal="承接联系方式",
+            media_plan="none",
+            reply_source="rule",
+            rule_id="ADDR_IMAGE_LIMIT_REPLY",
+            rule_applied=True,
+        )
 
     resend_image = explicit_revisit or (
         len(normalized) <= 4
@@ -227,8 +285,17 @@ def build_address_contact_after_text_decision(
     intent: str,
     session_state: Dict[str, Any],
 ) -> Optional[AgentDecision]:
-    normalized = re.sub(r"\s+", "", str(latest_user_text or "")).lower()
+    normalized_text = agent.knowledge_service.normalize_user_text(latest_user_text)
+    normalized = re.sub(r"\s+", "", str(normalized_text or "")).lower()
     explicit_revisit = any(token in normalized for token in ("位置图", "再发", "看图"))
+    route_reason = str(route.get("reason", "unknown") or "unknown")
+    if (
+        not explicit_revisit
+        and not agent._is_precise_address_followup(latest_user_text)
+        and callable(getattr(agent, "_looks_like_generic_address_opening", None))
+        and agent._looks_like_generic_address_opening(normalized_text, intent="address")
+    ):
+        return None
     if (
         intent != "address"
         and not explicit_revisit
@@ -239,11 +306,25 @@ def build_address_contact_after_text_decision(
         return None
     if not should_continue_address_followup(agent, latest_user_text=latest_user_text, session_state=session_state):
         return None
+    if route_reason in {
+        "unknown",
+        "need_region",
+        "need_district",
+        "need_clarify",
+        "sh_route_need_clarify",
+        "shanghai_need_arrival_point",
+        "shanghai_need_district",
+    }:
+        return None
 
     target_store = str(route.get("target_store", "") or "")
     if not target_store or target_store == "unknown":
         target_store = str(session_state.get("last_target_store", "") or "")
     if not target_store or target_store == "unknown":
+        return None
+    if "上海" in normalized and not target_store.startswith("sh_"):
+        return None
+    if "北京" in normalized and target_store != "beijing_chaoyang":
         return None
     explicit_store = str(agent._infer_store_from_context_text(latest_user_text) or "").strip()
     if explicit_store and explicit_store != target_store:
@@ -843,14 +924,26 @@ def decide_rule_reply(
         and any(token in normalized_text for token in ("我在", "在北京", "在上海", "北京", "上海", "徐汇", "静安", "虹口", "人民广场", "人广", "五角场"))
         and not any(token in normalized_text for token in ("还是", "对不对", "是不是", "硬推", "按我要求"))
     )
+    allow_store_recommend = (
+        intent == "address"
+        or looks_like_explicit_store_recommendation_request(text)
+        or first_turn_geo_arrival
+        or looks_like_geo_reply(agent, text=text, route=route)
+    )
+    unseen_store_for_address = (
+        target_store != "unknown"
+        and target_store not in {
+            str(store).strip()
+            for store in (state.get("sent_address_stores", []) or [])
+            if str(store).strip()
+        }
+    )
     if (
         target_store != "unknown"
         and intent in {"general", "address"}
-        and not has_any_address_delivery_history(state)
         and (
-            intent == "address"
-            or looks_like_explicit_store_recommendation_request(text)
-            or first_turn_geo_arrival
+            (not has_any_address_delivery_history(state) and allow_store_recommend)
+            or (allow_store_recommend and unseen_store_for_address)
         )
         and not agent_contact_flow.looks_like_store_recommendation_challenge(text)
         and not agent_contact_flow.looks_like_store_preference_statement(text)
