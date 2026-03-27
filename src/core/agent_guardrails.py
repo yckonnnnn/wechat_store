@@ -139,18 +139,7 @@ def normalize_reply_text(agent: Any, text: str) -> str:
     value = re.sub(r"吧到(?=[。！？!?，,；;]|$)", "吧", value)
     value = re.sub(r"呢到(?=[。！？!?，,；;]|$)", "呢", value)
 
-    if (not contact_captured) and any(k in value for k in agent._contact_compliance_block_keywords):
-        picker = getattr(agent, "_pick_fixed_reply", None)
-        if callable(picker):
-            value = picker(
-                session_state=current_state,
-                category="contact_fact_fallback",
-                replies=getattr(agent, "CONTACT_FACT_FALLBACK_POOL", ()) or (),
-                fallback="姐姐，我把您这轮想确认的重点继续说清楚",
-            )
-        else:
-            value = "姐姐，我把您这轮想确认的重点继续说清楚"
-    elif any(k in value for k in agent._shipping_block_keywords):
+    if any(k in value for k in agent._shipping_block_keywords):
         value = agent._shipping_block_replacement
         force_default_emoji = True
 
@@ -328,6 +317,7 @@ def build_reply_closure_info(
     info = empty_reply_closure_info(reply_text=reply_text)
     if isinstance(base_info, dict):
         info.update({k: v for k, v in base_info.items() if v not in (None, "")})
+    suppress_contact_closure_detection = bool(info.get("suppress_contact_closure_detection", False))
 
     precise_hit = detect_precise_address_in_reply(reply_text)
     if precise_hit:
@@ -354,13 +344,18 @@ def build_reply_closure_info(
             info["closure_type"] = str(address_image_promise_hit.get("closure_type", "") or "address_image_promise")
 
     fixed_contact_norms = set(getattr(agent, "_fixed_contact_closure_norms", set()) or set())
-    if fixed_contact_norms and agent._normalize_for_dedupe(reply_text) in fixed_contact_norms:
+    if (
+        not suppress_contact_closure_detection
+        and fixed_contact_norms
+        and agent._normalize_for_dedupe(reply_text) in fixed_contact_norms
+    ):
         info["contact_closure_hit"] = True
         if not info.get("closure_type"):
             info["closure_type"] = "contact"
     normalized_reply = normalize_service_hours_check_text(reply_text)
     if (
-        not info.get("contact_closure_hit")
+        not suppress_contact_closure_detection
+        and not info.get("contact_closure_hit")
         and str(info.get("closure_type", "") or "") not in {"store_recommendation", "address_image_promise", "precise_address"}
         and normalized_reply
         and any(token in normalized_reply for token in ("留个", "留个☎️", "留个方式", "加您", "加你", "加好友", "联系您", "主动跟您介绍", "具体沟通"))
@@ -470,6 +465,20 @@ def apply_llm_reply_guardrails(
         return finalize(agent._ma_teacher_role_fallback)
 
     if agent._is_contact_fact_risk(text, reply):
+        normalized_text = re.sub(r"\s+", "", str(text or "")).lower()
+        explicit_contact_turn = bool(
+            agent._looks_like_direct_contact_request(text)
+            or re.search(r"1[3-9]\d{9}", normalized_text)
+        )
+        if not explicit_contact_turn:
+            return finalize(
+                reply,
+                {
+                    "contact_closure_hit": False,
+                    "closure_type": "",
+                    "suppress_contact_closure_detection": True,
+                },
+            )
         if contact_captured or contact_delivery_stage in {"delivered_once", "delivered_closed"} or current_mainline != "contact_delivery":
             sanitized_reply = agent_contact_flow.sanitize_contact_push_reply(
                 agent,
