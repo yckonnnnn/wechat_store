@@ -132,7 +132,8 @@ class MainWindow(QWidget):
         self.agent.set_options(
             use_knowledge_first=self.agent.use_knowledge_first,
             knowledge_threshold=self.agent.knowledge_threshold,
-            first_reply_video_enabled=bool(self.config_manager.get("agent.first_reply_video_enabled", False)),
+            first_reply_video_enabled=bool(self.config_manager.get("agent.first_reply_video_enabled", True)),
+            reply_mode=str(self.config_manager.get("agent.reply_mode", "llm_direct") or "llm_direct"),
         )
         self.message_processor = None
 
@@ -220,6 +221,7 @@ class MainWindow(QWidget):
             session_manager=self.session_manager,
             agent=self.agent,
         )
+        self.agent.conversation_logger = self.message_processor.conversation_logger
         # 素材页初始化时可能触发配置迁移，启动后立即重载一次媒体索引确保 Agent 与配置一致。
         self.message_processor.reload_media_config()
         self._load_remote_control_settings()
@@ -335,6 +337,7 @@ class MainWindow(QWidget):
             use_knowledge_first=use_kb,
             knowledge_threshold=threshold,
             first_reply_video_enabled=first_reply_video_enabled,
+            reply_mode=str(self.config_manager.get("agent.reply_mode", self.agent.reply_mode) or self.agent.reply_mode),
         )
         self.config_manager.set("agent.first_reply_video_enabled", bool(first_reply_video_enabled))
         self.config_manager.save()

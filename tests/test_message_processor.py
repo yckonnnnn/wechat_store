@@ -9,8 +9,91 @@ from PySide6.QtCore import QCoreApplication, QEventLoop, QObject, Signal, QTimer
 from src.core.message_processor import MessageProcessor
 from src.core.private_cs_agent import AgentDecision, CustomerServiceAgent
 from src.core.session_manager import SessionManager
+from src.data.knowledge_repository import KnowledgeRepository
 from src.data.memory_store import MemoryStore
 from src.services.conversation_logger import ConversationLogger
+from src.services.knowledge_service import KnowledgeService
+
+
+class DummyLLMService:
+    def set_system_prompt(self, prompt: str):
+        del prompt
+
+    def generate_reply_sync(self, user_message: str, conversation_history=None):
+        del user_message, conversation_history
+        return True, "姐姐我在呢🌹"
+
+    def get_current_model_name(self) -> str:
+        return "DummyLLM"
+
+
+def build_real_agent(
+    temp_dir: Path,
+    *,
+    contact_image_files=None,
+    address_image_files=None,
+    store_targets=None,
+) -> CustomerServiceAgent:
+    contact_image_files = contact_image_files or ["contact.jpg"]
+    address_image_files = address_image_files or ["徐汇地址1.jpg"]
+    store_targets = store_targets or {}
+
+    images_dir = temp_dir / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    for name in contact_image_files:
+        (images_dir / name).write_text("x", encoding="utf-8")
+    for name in address_image_files:
+        (images_dir / name).write_text("x", encoding="utf-8")
+
+    image_categories_path = temp_dir / "image_categories.json"
+    image_categories_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "categories": ["联系方式", "店铺地址"],
+                "images": {
+                    "联系方式": list(contact_image_files),
+                    "店铺地址": list(address_image_files),
+                },
+                "store_targets": dict(store_targets),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    reply_templates_path = temp_dir / "reply_templates.json"
+    reply_templates_path.write_text("{}", encoding="utf-8")
+    media_whitelist_path = temp_dir / "media_whitelist.json"
+    media_whitelist_path.write_text(json.dumps({"version": 1, "session_ids": []}, ensure_ascii=False), encoding="utf-8")
+    system_prompt = temp_dir / "system_prompt.md"
+    playbook = temp_dir / "playbook.md"
+    system_prompt.write_text("你是客服助手。", encoding="utf-8")
+    playbook.write_text("语气友好。", encoding="utf-8")
+    kb_file = temp_dir / "knowledge.json"
+    kb_file.write_text("[]", encoding="utf-8")
+
+    repository = KnowledgeRepository(kb_file)
+    knowledge_service = KnowledgeService(
+        repository,
+        address_config_path=Path("config") / "address.json",
+        shanghai_route_alias_path=temp_dir / "shanghai_route_aliases.json",
+    )
+    memory_store = MemoryStore(temp_dir / "memory.json")
+
+    agent = CustomerServiceAgent(
+        knowledge_service=knowledge_service,
+        llm_service=DummyLLMService(),
+        memory_store=memory_store,
+        images_dir=images_dir,
+        image_categories_path=image_categories_path,
+        system_prompt_doc_path=system_prompt,
+        playbook_doc_path=playbook,
+        reply_templates_path=reply_templates_path,
+        media_whitelist_path=media_whitelist_path,
+        conversation_log_dir=temp_dir / "conversations",
+    )
+    return agent
 
 
 class DummyBrowser(QObject):
@@ -81,6 +164,71 @@ class DummyBrowserFlow(QObject):
         callback(True, {"ok": True})
 
 
+class DummyBrowserImageNeverStarts(QObject):
+    page_loaded = Signal(bool)
+    url_changed = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.image_send_calls = 0
+
+    def find_and_click_first_unread(self, callback):
+        del callback
+
+    def find_and_click_unread_by_usernames(self, user_names, callback):
+        del user_names, callback
+
+    def grab_chat_data(self, callback):
+        del callback
+
+    def send_message(self, text, callback):
+        del text
+        callback(True, {"ok": True})
+
+    def send_image(self, media_path, callback):
+        del media_path, callback
+        self.image_send_calls += 1
+
+    def send_video_from_material_library(self, callback):
+        del callback
+
+
+class DummyBrowserImageSequence(QObject):
+    page_loaded = Signal(bool)
+    url_changed = Signal(str)
+
+    def __init__(self, image_results):
+        super().__init__()
+        self.image_results = list(image_results)
+        self.image_send_calls = 0
+        self.sent_image_paths = []
+
+    def find_and_click_first_unread(self, callback):
+        del callback
+
+    def find_and_click_unread_by_usernames(self, user_names, callback):
+        del user_names, callback
+
+    def grab_chat_data(self, callback):
+        del callback
+
+    def send_message(self, text, callback):
+        del text
+        callback(True, {"ok": True})
+
+    def send_image(self, media_path, callback):
+        self.image_send_calls += 1
+        self.sent_image_paths.append(media_path)
+        payload = self.image_results.pop(0) if self.image_results else {"ok": True}
+        if isinstance(payload, dict) and payload.get("ok") is True:
+            callback(True, payload)
+            return
+        callback(False, payload)
+
+    def send_video_from_material_library(self, callback):
+        callback(True, {"ok": True})
+
+
 class DummyBrowserStaleFollowup(QObject):
     page_loaded = Signal(bool)
     url_changed = Signal(str)
@@ -113,6 +261,48 @@ class DummyBrowserStaleFollowup(QObject):
 
     def send_message(self, text, callback):
         self.sent_messages.append(text)
+        callback(True, {"ok": True})
+
+    def send_image(self, media_path, callback):
+        del media_path
+        callback(True, {"ok": True})
+
+    def send_video_from_material_library(self, callback):
+        callback(True, {"ok": True})
+
+
+class DummyBrowserNoUnreadButCurrentChat(QObject):
+    page_loaded = Signal(bool)
+    url_changed = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.grab_calls = 0
+
+    def find_and_click_first_unread(self, callback):
+        callback(True, {"found": False, "clicked": False})
+
+    def find_and_click_unread_by_usernames(self, user_names, callback):
+        del user_names
+        callback(True, {"found": False, "clicked": False})
+
+    def grab_chat_data(self, callback):
+        self.grab_calls += 1
+        callback(
+            True,
+            {
+                "user_name": "当前会话用户",
+                "chat_session_key": "",
+                "chat_session_fingerprint": "fp_current_chat_probe",
+                "messages": [
+                    {"text": "姐姐您好", "is_user": False},
+                    {"text": "你们营业时间是？", "is_user": True},
+                ],
+            },
+        )
+
+    def send_message(self, text, callback):
+        del text
         callback(True, {"ok": True})
 
     def send_image(self, media_path, callback):
@@ -626,6 +816,44 @@ class DummyBrowserVideoDragRetry(QObject):
 
 
 class MessageProcessorSessionIdTestCase(unittest.TestCase):
+    def _make_real_agent_decision(
+        self,
+        agent: CustomerServiceAgent,
+        session_id: str,
+        user_name: str,
+        *,
+        media_plan: str,
+        route: dict,
+        latest_user_text: str = "怎么预约？",
+        intent: str = "purchase",
+        reply_text: str = "姐姐我马上帮您安排～🌹",
+    ) -> AgentDecision:
+        user_hash = agent._hash_user(user_name)
+        session_state = agent.memory_store.get_session_state(session_id, user_hash=user_hash)
+        user_state = agent.memory_store.get_user_state(user_hash)
+        media_items, skip_reason = agent._plan_media_items(
+            session_id=session_id,
+            text=latest_user_text,
+            intent=intent,
+            route=route,
+            route_reason=str(route.get("reason", "") or "unknown"),
+            media_plan=media_plan,
+            session_state=session_state,
+            user_state=user_state,
+            force_contact_image=(media_plan == "contact_image"),
+        )
+        return AgentDecision(
+            reply_text=reply_text,
+            intent=intent,
+            route_reason=str(route.get("reason", "") or "unknown"),
+            reply_goal="推进",
+            media_plan=media_plan if media_items else "none",
+            media_items=media_items,
+            reply_source="rule",
+            rule_id="TEST_DECISION",
+            media_skip_reason=skip_reason,
+        )
+
     def test_contact_request_phrases_detect_as_contact_intent(self):
         agent = CustomerServiceAgent.__new__(CustomerServiceAgent)
         agent.knowledge_service = DummyKnowledgeServiceNoMatch()
@@ -981,13 +1209,262 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
 
             processor._on_chat_data(True, payload, auto_reply=True)
 
-            self.assertEqual(browser.image_send_calls, 2)
+            # 重试次数从 1 增加到 2，所以总调用 = 初始 1 + 重试 2 = 3
+            self.assertEqual(browser.image_send_calls, 3)
             session_id = processor._build_session_id("补偿用户", "", "fp_comp")
             log_path = processor.conversation_logger._session_file(session_id, user_name="补偿用户")
             lines = [json.loads(x) for x in log_path.read_text(encoding="utf-8").splitlines() if x.strip()]
             self.assertTrue(any(x.get("event_type") == "contact_image_send_pending_compensation" for x in lines))
             result_payloads = [x.get("payload", {}) for x in lines if x.get("event_type") == "media_result"]
             self.assertTrue(any(bool(p.get("compensation_enqueued")) for p in result_payloads))
+
+    def test_planned_required_media_is_persisted_before_image_send(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent = build_real_agent(temp_dir)
+            browser = DummyBrowserImageNeverStarts()
+            sessions = SessionManager()
+            processor = MessageProcessor(browser, sessions, agent)
+            processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
+            processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
+            processor.conversation_logger = ConversationLogger(temp_dir / "conversations")
+            processor._detect_user_first_turn_global = lambda user_hash: False
+
+            route = {"target_store": "sh_xuhui", "reason": "sh_district_map:徐汇", "detected_region": "徐汇"}
+            decision = self._make_real_agent_decision(
+                agent,
+                session_id="user_planned_media",
+                user_name="计划用户",
+                media_plan="contact_image",
+                route=route,
+            )
+            agent.decide = lambda *args, **kwargs: decision
+
+            payload = {
+                "user_name": "计划用户",
+                "chat_session_key": "",
+                "chat_session_method": "fallback",
+                "chat_session_fingerprint": "fp_planned_media",
+                "messages": [
+                    {"text": "历史客服", "is_user": False},
+                    {"text": "怎么预约？", "is_user": True},
+                ],
+            }
+
+            processor._on_chat_data(True, payload, auto_reply=True)
+
+            session_id = processor._build_session_id("计划用户", "", "fp_planned_media")
+            session_state = agent.memory_store.get_session_state(session_id, user_hash=agent._hash_user("计划用户"))
+            self.assertEqual(browser.image_send_calls, 1)
+            self.assertTrue(session_state.get("planned_required_media"))
+            self.assertEqual(session_state["planned_required_media"][0].get("type"), "contact_image")
+            self.assertFalse(session_state.get("pending_required_media"))
+
+    def test_address_image_failure_retries_next_round_with_new_store_image(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent = build_real_agent(
+                temp_dir,
+                address_image_files=["徐汇地址1.jpg", "徐汇地址2.jpg"],
+                store_targets={"徐汇地址1.jpg": "sh_xuhui", "徐汇地址2.jpg": "sh_xuhui"},
+            )
+            browser = DummyBrowserImageSequence(
+                [
+                    {
+                        "error": "上传失败",
+                        "step": "upload_failed",
+                        "failure_code": "upload_failed",
+                    },
+                    {"ok": True},
+                ]
+            )
+            sessions = SessionManager()
+            processor = MessageProcessor(browser, sessions, agent)
+            processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
+            processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
+            processor.conversation_logger = ConversationLogger(temp_dir / "conversations")
+            processor._detect_user_first_turn_global = lambda user_hash: False
+
+            first_decision = self._make_real_agent_decision(
+                agent,
+                session_id="user_addr_retry",
+                user_name="地址补发用户",
+                media_plan="address_image",
+                route={"target_store": "sh_xuhui", "reason": "sh_district_map:徐汇", "detected_region": "徐汇"},
+                latest_user_text="我在徐汇",
+                intent="address",
+            )
+            second_decision = AgentDecision(
+                reply_text="姐姐我继续帮您看着呢🌹",
+                intent="general",
+                route_reason="unknown",
+                reply_goal="解答",
+                media_plan="none",
+                media_items=[],
+                reply_source="rule",
+                rule_id="TEST_EMPTY",
+            )
+            decisions = [first_decision, second_decision]
+            agent.decide = lambda *args, **kwargs: decisions.pop(0)
+
+            first_payload = {
+                "user_name": "地址补发用户",
+                "chat_session_key": "",
+                "chat_session_method": "fallback",
+                "chat_session_fingerprint": "fp_addr_retry",
+                "messages": [
+                    {"text": "历史客服", "is_user": False},
+                    {"text": "我在徐汇", "is_user": True},
+                ],
+            }
+            processor._on_chat_data(True, first_payload, auto_reply=True)
+
+            session_id = processor._build_session_id("地址补发用户", "", "fp_addr_retry")
+            session_state = agent.memory_store.get_session_state(session_id, user_hash=agent._hash_user("地址补发用户"))
+            self.assertTrue(session_state.get("pending_required_media"))
+
+            second_payload = {
+                "user_name": "地址补发用户",
+                "chat_session_key": "",
+                "chat_session_method": "fallback",
+                "chat_session_fingerprint": "fp_addr_retry",
+                "messages": [
+                    {"text": "历史客服", "is_user": False},
+                    {"text": "还有别的图吗", "is_user": True},
+                ],
+            }
+            processor._on_chat_data(True, second_payload, auto_reply=True)
+
+            self.assertEqual(browser.image_send_calls, 2)
+            self.assertNotEqual(browser.sent_image_paths[0], browser.sent_image_paths[1])
+            session_state = agent.memory_store.get_session_state(session_id, user_hash=agent._hash_user("地址补发用户"))
+            self.assertFalse(session_state.get("pending_required_media"))
+            self.assertFalse(session_state.get("planned_required_media"))
+
+    def test_contact_image_failure_retries_next_round_with_new_contact_image(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent = build_real_agent(
+                temp_dir,
+                contact_image_files=["contact1.jpg", "contact2.jpg"],
+            )
+            browser = DummyBrowserImageSequence(
+                [
+                    {
+                        "error": "上传失败",
+                        "step": "upload_failed",
+                        "failure_code": "upload_failed",
+                    },
+                    {"ok": True},
+                ]
+            )
+            sessions = SessionManager()
+            processor = MessageProcessor(browser, sessions, agent)
+            processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
+            processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
+            processor.conversation_logger = ConversationLogger(temp_dir / "conversations")
+            processor._detect_user_first_turn_global = lambda user_hash: False
+
+            first_decision = self._make_real_agent_decision(
+                agent,
+                session_id="user_contact_retry",
+                user_name="联系补发用户",
+                media_plan="contact_image",
+                route={"target_store": "sh_xuhui", "reason": "sh_district_map:徐汇", "detected_region": "徐汇"},
+            )
+            second_decision = AgentDecision(
+                reply_text="姐姐我继续帮您看着呢🌹",
+                intent="general",
+                route_reason="unknown",
+                reply_goal="解答",
+                media_plan="none",
+                media_items=[],
+                reply_source="rule",
+                rule_id="TEST_EMPTY",
+            )
+            decisions = [first_decision, second_decision]
+            agent.decide = lambda *args, **kwargs: decisions.pop(0)
+
+            payload = {
+                "user_name": "联系补发用户",
+                "chat_session_key": "",
+                "chat_session_method": "fallback",
+                "chat_session_fingerprint": "fp_contact_retry",
+                "messages": [
+                    {"text": "历史客服", "is_user": False},
+                    {"text": "怎么预约？", "is_user": True},
+                ],
+            }
+            processor._on_chat_data(True, payload, auto_reply=True)
+            payload_retry = dict(payload)
+            payload_retry["messages"] = [
+                {"text": "历史客服", "is_user": False},
+                {"text": "我再确认一下怎么预约", "is_user": True},
+            ]
+            processor._on_chat_data(True, payload_retry, auto_reply=True)
+
+            self.assertEqual(browser.image_send_calls, 2)
+            self.assertNotEqual(browser.sent_image_paths[0], browser.sent_image_paths[1])
+
+    def test_unattempted_planned_media_is_replayed_next_round(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent = build_real_agent(temp_dir)
+            browser = DummyBrowserImageNeverStarts()
+            sessions = SessionManager()
+            processor = MessageProcessor(browser, sessions, agent)
+            processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
+            processor._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
+            processor.conversation_logger = ConversationLogger(temp_dir / "conversations")
+            processor._detect_user_first_turn_global = lambda user_hash: False
+
+            first_decision = self._make_real_agent_decision(
+                agent,
+                session_id="user_replay_planned",
+                user_name="计划补发用户",
+                media_plan="contact_image",
+                route={"target_store": "sh_xuhui", "reason": "sh_district_map:徐汇", "detected_region": "徐汇"},
+            )
+            second_decision = AgentDecision(
+                reply_text="姐姐我继续帮您看着呢🌹",
+                intent="general",
+                route_reason="unknown",
+                reply_goal="解答",
+                media_plan="none",
+                media_items=[],
+                reply_source="rule",
+                rule_id="TEST_EMPTY",
+            )
+            decisions = [first_decision, second_decision]
+            agent.decide = lambda *args, **kwargs: decisions.pop(0)
+
+            payload = {
+                "user_name": "计划补发用户",
+                "chat_session_key": "",
+                "chat_session_method": "fallback",
+                "chat_session_fingerprint": "fp_replay_planned",
+                "messages": [
+                    {"text": "历史客服", "is_user": False},
+                    {"text": "怎么预约？", "is_user": True},
+                ],
+            }
+            processor._on_chat_data(True, payload, auto_reply=True)
+
+            session_id = processor._build_session_id("计划补发用户", "", "fp_replay_planned")
+            session_state = agent.memory_store.get_session_state(session_id, user_hash=agent._hash_user("计划补发用户"))
+            self.assertTrue(session_state.get("planned_required_media"))
+
+            browser2 = DummyBrowserFlow()
+            processor2 = MessageProcessor(browser2, sessions, agent)
+            processor2._MEDIA_SEND_AFTER_TEXT_DELAY_MS = 0
+            processor2._VIDEO_SEND_AFTER_TEXT_EXTRA_DELAY_MS = 0
+            processor2.conversation_logger = ConversationLogger(temp_dir / "conversations")
+            processor2._detect_user_first_turn_global = lambda user_hash: False
+            agent.decide = lambda *args, **kwargs: second_decision
+
+            processor2._on_chat_data(True, payload, auto_reply=True)
+            session_state = agent.memory_store.get_session_state(session_id, user_hash=agent._hash_user("计划补发用户"))
+            self.assertFalse(session_state.get("planned_required_media"))
 
     def test_remote_control_stop_and_start_from_whitelist_user(self):
         class DummyBrowserRemote(QObject):
@@ -1392,6 +1869,32 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
 
             self.assertIn(3000, scheduled)
 
+    def test_no_unread_probes_current_chat_and_processes_new_message(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserNoUnreadButCurrentChat()
+            sessions = SessionManager()
+            agent = DummyAgent(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            captured = []
+            stale_called = []
+
+            def fake_on_chat_data(success, result, auto_reply):
+                captured.append((success, auto_reply, result))
+                processor._reset_cycle()
+
+            processor._on_chat_data = fake_on_chat_data
+            processor._check_stale_replied_sessions = lambda: stale_called.append(True)
+            processor._check_unread_and_enter()
+
+            self.assertEqual(browser.grab_calls, 1)
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0][0], True)
+            self.assertEqual(captured[0][1], True)
+            self.assertFalse(stale_called)
+
     def test_stale_followup_candidate_ignores_memory_flag_and_uses_log_only(self):
         with tempfile.TemporaryDirectory() as td:
             memory_store = MemoryStore(Path(td) / "memory.json")
@@ -1473,6 +1976,180 @@ class MessageProcessorSessionIdTestCase(unittest.TestCase):
 
             self.assertIsNone(candidate)
             self.assertIn("日志中已存在发送记录", reason)
+
+    def test_stale_followup_uses_one_minute_threshold_and_new_text(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserStaleFollowup("超时用户")
+            sessions = SessionManager()
+            agent = DummyAgent(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            user_hash = processor._build_user_hash("超时用户", "user_timeout")
+            log_path = processor.conversation_logger._session_file("user_timeout", user_name="超时用户")
+            record = {
+                "timestamp": (datetime.now() - timedelta(seconds=90)).isoformat(),
+                "session_id": "user_timeout",
+                "user_id_hash": user_hash,
+                "event_type": "assistant_reply",
+                "reply_source": "rule",
+                "rule_id": "TEST",
+                "model_name": "",
+                "payload": {"text": "上一轮回复", "user_name": "超时用户"},
+            }
+            log_path.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+
+            candidate, reason = processor._find_stale_followup_candidate()
+
+            self.assertIsNotNone(candidate)
+            self.assertEqual(reason, "")
+            self.assertEqual(processor._STALE_FOLLOWUP_AFTER_SECONDS, 60)
+            self.assertEqual(
+                processor._STALE_FOLLOWUP_TEXT,
+                "姐姐，记得请添加我好友哦，我会发详细定位还有乘车路线以及预约/价格方面事项给到您~❤️",
+            )
+
+    def test_stale_followup_skips_nameless_test_log_and_uses_real_user(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserStaleFollowup("超时用户")
+            sessions = SessionManager()
+            agent = DummyAgent(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            conversations_dir = Path(td) / "conversations"
+            conversations_dir.mkdir(parents=True, exist_ok=True)
+
+            nameless_log = conversations_dir / "test_session_002.jsonl"
+            nameless_log.write_text(
+                json.dumps(
+                    {
+                        "timestamp": (datetime.now() - timedelta(minutes=3)).isoformat(),
+                        "session_id": "test_session_002",
+                        "user_id_hash": "test_user_hash",
+                        "event_type": "assistant_reply",
+                        "reply_source": "rule",
+                        "rule_id": "TEST",
+                        "model_name": "",
+                        "payload": {"text": "测试回复"},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            user_hash = processor._build_user_hash("超时用户", "user_timeout")
+            real_log = processor.conversation_logger._session_file("user_timeout", user_name="超时用户")
+            real_log.write_text(
+                json.dumps(
+                    {
+                        "timestamp": (datetime.now() - timedelta(seconds=90)).isoformat(),
+                        "session_id": "user_timeout",
+                        "user_id_hash": user_hash,
+                        "event_type": "assistant_reply",
+                        "reply_source": "rule",
+                        "rule_id": "TEST",
+                        "model_name": "",
+                        "payload": {"text": "上一轮回复", "user_name": "超时用户"},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            candidate, reason = processor._find_stale_followup_candidate()
+
+            self.assertEqual(reason, "")
+            self.assertIsNotNone(candidate)
+            self.assertEqual(candidate["user_hash"], user_hash)
+            self.assertEqual(candidate["user_name"], "超时用户")
+
+    def test_stale_followup_sends_text_then_contact_image(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent = build_real_agent(temp_dir, contact_image_files=["contact.jpg"])
+            browser = DummyBrowserFirstTurnSequence()
+            sessions = SessionManager()
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(temp_dir / "conversations")
+            original_single_shot = QTimer.singleShot
+
+            def fake_single_shot(delay_ms, callback):
+                del delay_ms
+                callback()
+
+            QTimer.singleShot = staticmethod(fake_single_shot)
+            try:
+                processor._send_stale_followup_message(
+                    session_id="stale_followup_media",
+                    user_name="超时用户",
+                    user_hash=processor._build_user_hash("超时用户", "stale_followup_media"),
+                )
+            finally:
+                QTimer.singleShot = original_single_shot
+
+            self.assertEqual(browser.sequence, ["text", "image"])
+
+    def test_stale_followup_waits_before_contact_image(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            agent = build_real_agent(temp_dir, contact_image_files=["contact.jpg"])
+            browser = DummyBrowserFirstTurnSequence()
+            sessions = SessionManager()
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(temp_dir / "conversations")
+
+            scheduled = []
+            original_single_shot = QTimer.singleShot
+
+            def fake_single_shot(delay_ms, callback):
+                scheduled.append(delay_ms)
+                callback()
+
+            QTimer.singleShot = staticmethod(fake_single_shot)
+            try:
+                processor._send_stale_followup_message(
+                    session_id="stale_followup_media_delay",
+                    user_name="超时用户",
+                    user_hash=processor._build_user_hash("超时用户", "stale_followup_media_delay"),
+                )
+            finally:
+                QTimer.singleShot = original_single_shot
+
+            self.assertIn(processor._MEDIA_SEND_AFTER_TEXT_DELAY_MS, scheduled)
+
+    def test_stale_followup_not_found_enters_retry_cooldown(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory_store = MemoryStore(Path(td) / "memory.json")
+            browser = DummyBrowserStaleFollowup("别的用户")
+            sessions = SessionManager()
+            agent = DummyAgent(memory_store)
+            processor = MessageProcessor(browser, sessions, agent)
+            processor.conversation_logger = ConversationLogger(Path(td) / "conversations")
+
+            user_hash = processor._build_user_hash("超时用户", "user_timeout")
+            log_path = processor.conversation_logger._session_file("user_timeout", user_name="超时用户")
+            record = {
+                "timestamp": (datetime.now() - timedelta(seconds=90)).isoformat(),
+                "session_id": "user_timeout",
+                "user_id_hash": user_hash,
+                "event_type": "assistant_reply",
+                "reply_source": "rule",
+                "rule_id": "TEST",
+                "model_name": "",
+                "payload": {"text": "上一轮回复", "user_name": "超时用户"},
+            }
+            log_path.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+
+            processor._check_stale_replied_sessions()
+            candidate, _ = processor._find_stale_followup_candidate()
+
+            self.assertIsNone(candidate)
+            self.assertIn(user_hash, processor._stale_followup_skip_until)
 
 
 if __name__ == "__main__":

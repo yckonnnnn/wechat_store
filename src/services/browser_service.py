@@ -172,6 +172,149 @@ class BrowserService(QObject):
         except Exception:
             return
 
+    def _is_expected_new_visual_media(
+        self,
+        baseline: Dict[str, Any],
+        visual: Dict[str, Any],
+        expected_type: str,
+    ) -> bool:
+        """仅在检测到新的目标类型媒体时才视为视觉确认成功。"""
+        if not visual.get("found"):
+            return False
+        if str(visual.get("type", "") or "") != str(expected_type or ""):
+            return False
+
+        try:
+            base_media = int(baseline.get("kf_media_count", -1))
+            curr_media = int(visual.get("kf_media_count", -1))
+            if base_media >= 0 and curr_media > base_media:
+                return True
+        except Exception:
+            pass
+
+        try:
+            base_total = int(baseline.get("kf_total_count", -1))
+            curr_total = int(visual.get("kf_total_count", -1))
+            if base_total >= 0 and curr_total > base_total and bool(visual.get("last_is_expected_media", False)):
+                return True
+        except Exception:
+            pass
+
+        return False
+
+    def _verify_media_visually(
+        self,
+        expected_type: str,
+        baseline: Dict[str, Any],
+        callback: Callable[[bool, Dict], None],
+    ) -> None:
+        """通过 DOM 内容视觉确认是否出现了新的目标类型媒体。"""
+        script = r"""
+        (function() {
+            function isVisible(el) {
+                if (!el) return false;
+                var style = window.getComputedStyle(el);
+                if (!style) return false;
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                var rect = el.getBoundingClientRect();
+                if (!rect || rect.width < 5 || rect.height < 5) return false;
+                return true;
+            }
+            function findMedia(item) {
+                if (!item) return null;
+                var imgNodes = Array.from(item.querySelectorAll('img')).filter(function(node) {
+                    var src = String((node.getAttribute && node.getAttribute('src')) || '').toLowerCase();
+                    var cls = String(node.className || '').toLowerCase();
+                    var token = src + ' ' + cls;
+                    if (token.indexOf('avatar') !== -1 || token.indexOf('head') !== -1 || token.indexOf('profile') !== -1) {
+                        return false;
+                    }
+                    return node.offsetWidth > 72 && node.offsetHeight > 60;
+                });
+                if (imgNodes.length) {
+                    return {
+                        type: 'image',
+                        src: String(imgNodes[0].src || '').slice(0, 100),
+                        width: imgNodes[0].offsetWidth,
+                        height: imgNodes[0].offsetHeight
+                    };
+                }
+                var videoNodes = Array.from(item.querySelectorAll('video')).filter(function(node) {
+                    return node.offsetWidth > 144 && node.offsetHeight > 80;
+                });
+                if (videoNodes.length) {
+                    return {
+                        type: 'video',
+                        src: videoNodes[0].src ? String(videoNodes[0].src).slice(0, 100) : 'embedded',
+                        width: videoNodes[0].offsetWidth,
+                        height: videoNodes[0].offsetHeight
+                    };
+                }
+                return null;
+            }
+
+            var chatScrollView = document.getElementById('chat-scroll-view') || document.querySelector('.chat-scroll-view');
+            if (!chatScrollView) {
+                return JSON.stringify({ found: false, reason: 'chat_scroll_not_found' });
+            }
+
+            var items = Array.from(chatScrollView.querySelectorAll('.message-item')).filter(isVisible);
+            var kfItems = items.filter(function(item) {
+                return (item.className || '').indexOf('justify-end') !== -1;
+            });
+            if (!kfItems.length) {
+                return JSON.stringify({ found: false, reason: 'no_kf_messages' });
+            }
+
+            var kfMediaCount = 0;
+            for (var i = 0; i < kfItems.length; i++) {
+                if (findMedia(kfItems[i])) {
+                    kfMediaCount += 1;
+                }
+            }
+
+            var last = kfItems[kfItems.length - 1];
+            var media = findMedia(last);
+            if (!media) {
+                return JSON.stringify({
+                    found: false,
+                    reason: 'no_media_in_last_message',
+                    kf_total_count: kfItems.length,
+                    kf_media_count: kfMediaCount
+                });
+            }
+
+            if (media.type === 'image') {
+                return JSON.stringify({
+                    found: true,
+                    type: media.type,
+                    src: media.src,
+                    width: media.width,
+                    height: media.height,
+                    kf_total_count: kfItems.length,
+                    kf_media_count: kfMediaCount,
+                    last_is_expected_media: true
+                });
+            }
+            return JSON.stringify({
+                found: true,
+                type: media.type,
+                src: media.src,
+                width: media.width,
+                height: media.height,
+                kf_total_count: kfItems.length,
+                kf_media_count: kfMediaCount,
+                last_is_expected_media: true
+            });
+        })()
+        """
+
+        def on_result(success: bool, result: Any) -> None:
+            data = self._parse_js_payload(result) if success else {}
+            callback(self._is_expected_new_visual_media(baseline, data, expected_type), data)
+
+        self.run_javascript(script, on_result)
+
     def _native_left_click(self, x: float, y: float) -> tuple[bool, str]:
         """在 WebView 内发送原生左键点击。"""
         try:
@@ -2214,8 +2357,17 @@ class BrowserService(QObject):
                     ),
                 )
                 return
-            # 让文件选择与弹层渲染完成后再确认发送（此前 1000ms 容易错过确认窗口）。
-            QTimer.singleShot(500, confirm_with_enter)
+
+            # 延迟采集基线：点击图片按钮后、确认发送前重新采集，避免多轮对话场景下基线失效
+            def on_delayed_baseline(success, result):
+                if state["done"]:
+                    return
+                new_baseline = self._parse_js_payload(result) if success else {}
+                if new_baseline.get("found"):
+                    state["baseline"] = new_baseline
+                QTimer.singleShot(400, confirm_with_enter)
+
+            QTimer.singleShot(100, lambda: self._get_chat_media_signature(on_delayed_baseline))
 
         def poll_delivery():
             if state["done"]:
@@ -2231,24 +2383,42 @@ class BrowserService(QObject):
                 if not pending_visible and not dialog_visible:
                     state["dialog_closed"] = True
 
-                if (
-                    self._media_send_confirmed(state.get("baseline", {}), signature)
-                    and not pending_visible
-                    and not dialog_visible
-                    and state.get("dialog_closed", False)
-                ):
-                    finish(
-                        True,
-                        {
-                            "success": True,
-                            "step": "verified",
-                            "triggerMethod": state.get("trigger_method", "unknown"),
-                            "verifyAttempts": state["verify_attempt"],
-                            "sendMethod": "native_click_enter_with_delivery_check",
-                            "signature": signature,
-                        },
-                    )
-                    return
+                # 增强日志：每次轮询输出详细状态
+                self._emit_media_debug(
+                    f"[poll_delivery] attempt={state['verify_attempt']}, "
+                    f"baseline_kf_media={state.get('baseline', {}).get('kf_media_count', 'N/A')}, "
+                    f"current_kf_media={signature.get('kf_media_count', 'N/A')}, "
+                    f"pending={pending_visible}, dialog={dialog_visible}, "
+                    f"dialog_closed={state.get('dialog_closed', False)}, "
+                    f"confirm_clicked={state.get('confirm_clicked', False)}",
+                    media_type="image",
+                    level="debug",
+                    step="poll_delivery",
+                )
+
+                # 放宽验证条件：签名变化 + (dialog已关闭 OR 无可见弹窗)
+                dialog_state_ok = (
+                    state.get("dialog_closed", False)
+                    or (not pending_visible and not dialog_visible)
+                )
+                if self._media_send_confirmed(state.get("baseline", {}), signature) and dialog_state_ok:
+                    # 连续确认计数防抖动
+                    state["confirm_count"] = state.get("confirm_count", 0) + 1
+                    if state["confirm_count"] >= 2:
+                        finish(
+                            True,
+                            {
+                                "success": True,
+                                "step": "verified",
+                                "triggerMethod": state.get("trigger_method", "unknown"),
+                                "verifyAttempts": state["verify_attempt"],
+                                "sendMethod": "native_click_enter_with_delivery_check",
+                                "signature": signature,
+                            },
+                        )
+                        return
+                else:
+                    state["confirm_count"] = 0
 
                 if pending_visible and not state["confirm_clicked"]:
                     state["confirm_clicked"] = True
@@ -2289,60 +2459,95 @@ class BrowserService(QObject):
                     self._find_media_send_button(on_find_confirm_btn)
                     return
 
+                # 视觉确认回退：最后 5 次尝试时，增加 DOM 视觉确认
+                if state["verify_attempt"] >= max_verify_attempts - 5 and not state.get("visual_verified"):
+                    def on_visual_check(found: bool, visual: Dict) -> None:
+                        if state["done"]:
+                            return
+                        if found:
+                            state["visual_verified"] = True
+                            finish(
+                                True,
+                                {
+                                    "success": True,
+                                    "step": "visual_verified",
+                                    "triggerMethod": state.get("trigger_method", "unknown"),
+                                    "verifyAttempts": state["verify_attempt"],
+                                    "sendMethod": "native_click_enter_with_delivery_check",
+                                    "visual": visual,
+                                },
+                            )
+                            return
+                        # 视觉未确认，继续正常超时流程
+                        _handle_image_timeout(signature, pending_visible, dialog_visible)
+
+                    if state["verify_attempt"] >= max_verify_attempts:
+                        self._verify_media_visually("image", state.get("baseline", {}), on_visual_check)
+                        return
+
                 if state["verify_attempt"] >= max_verify_attempts:
-                    # 首次超时且没看到可确认状态：自动重试一次点击图片按钮，降低偶发点击丢失带来的失败率。
-                    if (
-                        not state.get("retriggered", False)
-                        and not state.get("confirm_clicked", False)
-                        and not pending_visible
-                        and not dialog_visible
-                    ):
-                        state["retriggered"] = True
-                        state["verify_attempt"] = 0
-                        state["enter_attempt"] = 0
-                        state["dialog_closed"] = False
-                        state["enter_error"] = ""
-                        QTimer.singleShot(280, trigger_pick_and_confirm)
-                        return
+                    _handle_image_timeout(signature, pending_visible, dialog_visible)
+                    return
 
-                    # 如果确认后签名未变化，交给上层补偿，不在浏览器层判定为成功。
-                    if (
-                        state.get("confirm_clicked", False)
-                        and state.get("saw_pending_or_dialog", False)
-                        and not pending_visible
-                        and not dialog_visible
-                        and state.get("dialog_closed", False)
-                    ):
-                        finish(
-                            False,
-                            build_failure_payload(
-                                "确认发送后签名未变化，转入补偿队列",
-                                "verified_soft_timeout",
-                                detail="signature_not_changed_after_confirm",
-                                triggerMethod=state.get("trigger_method", "unknown"),
-                                verifyAttempts=state["verify_attempt"],
-                                sendMethod="native_click_enter_with_delivery_check",
-                                signature=signature,
-                            ),
-                        )
-                        return
+                # 动态轮询频率：前 5 次高频 150ms，中间 350ms，后期 600ms
+                attempt = state["verify_attempt"]
+                poll_delay = 150 if attempt <= 5 else (350 if attempt <= 15 else 600)
+                QTimer.singleShot(poll_delay, poll_delivery)
 
+            def _handle_image_timeout(signature: Dict, pending_visible: bool, dialog_visible: bool) -> None:
+                if state["done"]:
+                    return
+                # 首次超时且没看到可确认状态：自动重试一次点击图片按钮，降低偶发点击丢失带来的失败率。
+                if (
+                    not state.get("retriggered", False)
+                    and not state.get("confirm_clicked", False)
+                    and not pending_visible
+                    and not dialog_visible
+                ):
+                    state["retriggered"] = True
+                    state["verify_attempt"] = 0
+                    state["enter_attempt"] = 0
+                    state["dialog_closed"] = False
+                    state["enter_error"] = ""
+                    state["confirm_count"] = 0
+                    QTimer.singleShot(280, trigger_pick_and_confirm)
+                    return
+
+                # 如果确认后签名未变化，交给上层补偿，不在浏览器层判定为成功。
+                if (
+                    state.get("confirm_clicked", False)
+                    and state.get("saw_pending_or_dialog", False)
+                    and not pending_visible
+                    and not dialog_visible
+                    and state.get("dialog_closed", False)
+                ):
                     finish(
                         False,
                         build_failure_payload(
-                            "图片未检测到实际发送结果",
-                            "verify_timeout",
+                            "确认发送后签名未变化，转入补偿队列",
+                            "verified_soft_timeout",
+                            detail="signature_not_changed_after_confirm",
                             triggerMethod=state.get("trigger_method", "unknown"),
                             verifyAttempts=state["verify_attempt"],
-                            enterAttempts=state.get("enter_attempt", 0),
-                            confirmClicked=bool(state.get("confirm_clicked", False)),
-                            sawPendingOrDialog=bool(state.get("saw_pending_or_dialog", False)),
+                            sendMethod="native_click_enter_with_delivery_check",
                             signature=signature,
                         ),
                     )
                     return
 
-                QTimer.singleShot(350, poll_delivery)
+                finish(
+                    False,
+                    build_failure_payload(
+                        "图片未检测到实际发送结果",
+                        "verify_timeout",
+                        triggerMethod=state.get("trigger_method", "unknown"),
+                        verifyAttempts=state["verify_attempt"],
+                        enterAttempts=state.get("enter_attempt", 0),
+                        confirmClicked=bool(state.get("confirm_clicked", False)),
+                        sawPendingOrDialog=bool(state.get("saw_pending_or_dialog", False)),
+                        signature=signature,
+                    ),
+                )
 
             self._get_chat_media_signature(on_signature_result)
 
@@ -2756,24 +2961,65 @@ class BrowserService(QObject):
                 pending_visible = bool(signature.get("pending_media_send_visible", False))
                 dialog_visible = bool(signature.get("dialog_visible", False))
 
+                # 放宽验证条件：签名变化 + 无可见弹窗即可
                 if (
                     self._media_send_confirmed(state.get("baseline", {}), signature)
                     and not pending_visible
                     and not dialog_visible
                 ):
-                    self._emit_media_debug("视频发送确认成功", level="success", step="verified")
-                    finish(
-                        True,
-                        {
-                            "success": True,
-                            "step": "verified",
-                            "triggerMethod": "material_library_video_drag",
-                            "verifyAttempts": state["verify_attempt"],
-                            "sendMethod": "material_library_drag_first_video",
-                            "signature": signature,
-                        },
-                    )
-                    return
+                    state["confirm_count"] = state.get("confirm_count", 0) + 1
+                    if state["confirm_count"] >= 2:
+                        self._emit_media_debug("视频发送确认成功", level="success", step="verified")
+                        finish(
+                            True,
+                            {
+                                "success": True,
+                                "step": "verified",
+                                "triggerMethod": "material_library_video_drag",
+                                "verifyAttempts": state["verify_attempt"],
+                                "sendMethod": "material_library_drag_first_video",
+                                "signature": signature,
+                            },
+                        )
+                        return
+                else:
+                    state["confirm_count"] = 0
+
+                # 视觉确认回退：最后 5 次尝试时，增加 DOM 视觉确认
+                if state["verify_attempt"] >= max_verify_attempts - 5 and not state.get("visual_verified"):
+                    def on_video_visual_check(found: bool, visual: Dict) -> None:
+                        if state["done"]:
+                            return
+                        if found:
+                            state["visual_verified"] = True
+                            self._emit_media_debug("视频视觉确认成功", level="success", step="visual_verified")
+                            finish(
+                                True,
+                                {
+                                    "success": True,
+                                    "step": "visual_verified",
+                                    "triggerMethod": "material_library_video_drag",
+                                    "verifyAttempts": state["verify_attempt"],
+                                    "sendMethod": "material_library_drag_first_video",
+                                    "visual": visual,
+                                },
+                            )
+                            return
+                        if state["verify_attempt"] >= max_verify_attempts:
+                            finish(
+                                False,
+                                build_failure_payload(
+                                    "视频未检测到实际发送结果",
+                                    "verify_timeout",
+                                    triggerMethod="material_library_video_drag",
+                                    verifyAttempts=state["verify_attempt"],
+                                    signature=signature,
+                                ),
+                            )
+
+                    if state["verify_attempt"] >= max_verify_attempts:
+                        self._verify_media_visually("video", state.get("baseline", {}), on_video_visual_check)
+                        return
 
                 if state["verify_attempt"] >= max_verify_attempts:
                     finish(
@@ -2788,7 +3034,10 @@ class BrowserService(QObject):
                     )
                     return
 
-                QTimer.singleShot(350, poll_delivery)
+                # 动态轮询频率
+                attempt = state["verify_attempt"]
+                poll_delay = 150 if attempt <= 5 else (350 if attempt <= 15 else 600)
+                QTimer.singleShot(poll_delay, poll_delivery)
 
             self._get_chat_media_signature(on_signature_result)
 

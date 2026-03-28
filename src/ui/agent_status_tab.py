@@ -58,7 +58,7 @@ class AgentStatusTab(QWidget):
         row.addWidget(self.use_kb_checkbox)
 
         self.first_reply_video_checkbox = QCheckBox("首轮回复后直接触发视频")
-        self.first_reply_video_checkbox.setChecked(False)
+        self.first_reply_video_checkbox.setChecked(True)
         row.addWidget(self.first_reply_video_checkbox)
 
         row.addWidget(QLabel("知识库阈值"))
@@ -113,6 +113,7 @@ class AgentStatusTab(QWidget):
         use_kb = bool(status.get("use_knowledge_first", True))
         threshold = float(status.get("knowledge_threshold", 0.6))
         first_reply_video_enabled = bool(status.get("first_reply_video_enabled", False))
+        reply_mode = str(status.get("reply_mode", "legacy") or "legacy")
         self.use_kb_checkbox.setChecked(use_kb)
         self.threshold_spin.setValue(threshold)
         self.first_reply_video_checkbox.setChecked(first_reply_video_enabled)
@@ -122,6 +123,8 @@ class AgentStatusTab(QWidget):
                 [
                     f"Prompt: {'已加载' if status.get('system_prompt_loaded') else '缺失'}",
                     f"Playbook: {'已加载' if status.get('playbook_loaded') else '缺失'}",
+                    f"品牌知识: {'已加载' if status.get('brand_knowledge_loaded') else '缺失'}",
+                    f"回复模式: {reply_mode}",
                     f"地址图: {status.get('address_image_count', 0)}",
                     f"联系方式图: {status.get('contact_image_count', 0)}",
                     f"视频: {status.get('video_media_count', 0)}",

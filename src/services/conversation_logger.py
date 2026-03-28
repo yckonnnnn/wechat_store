@@ -9,7 +9,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 
 class ConversationLogger:
@@ -70,3 +70,36 @@ class ConversationLogger:
         text = re.sub(r"\s+", "_", text)
         text = re.sub(r"_+", "_", text).strip("._")
         return text or "未知用户"
+
+    def get_recent_events(self, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """
+        获取指定 session 的最近 N 条事件
+
+        Args:
+            session_id: 会话 ID
+            limit: 返回事件数量限制
+
+        Returns:
+            事件列表，按时间从新到旧排序
+        """
+        events = []
+        files = [str(path) for path in self.root_dir.glob("*.jsonl") if path.is_file()]
+
+        for file_path in files:
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            record = json.loads(line)
+                            if str(record.get("session_id", "") or "") != str(session_id or ""):
+                                continue
+                            events.append(record)
+            except Exception:
+                # 日志读取失败不影响主链路
+                continue
+
+        # 按时间戳排序，从新到旧
+        events.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+
+        return events[:limit]
