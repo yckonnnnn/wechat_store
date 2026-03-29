@@ -19,6 +19,7 @@ from .private_cs_agent import AgentDecision, CustomerServiceAgent
 from .session_manager import SessionManager
 from ..services.browser_service import BrowserService
 from ..services.conversation_logger import ConversationLogger
+from ..utils.emoji_helper import add_random_emoji
 
 
 class MessageProcessor(QObject):
@@ -535,7 +536,13 @@ class MessageProcessor(QObject):
 
             finish_stale_followup()
 
-        self.browser.send_message(reply_text, on_sent)
+        # 添加随机 emoji 到回复文本
+        reply_text_with_emoji = add_random_emoji(
+            reply_text,
+            context="general",
+            gender="male" if "帅哥" in reply_text else "female",
+        )
+        self.browser.send_message(reply_text_with_emoji, on_sent)
 
     def _build_stale_followup_media_queue(self, session_id: str, user_name: str) -> List[Dict[str, Any]]:
         pick_contact_image = getattr(self.agent, "_pick_contact_image_for_session", None)
@@ -932,7 +939,13 @@ class MessageProcessor(QObject):
 
                 self._send_media_queue(session_id, user_name, media_queue, decision=decision, media_summary=media_summary)
 
-            self.browser.send_message(decision.reply_text, on_text_sent)
+            # 添加随机 emoji 到回复文本
+            reply_text_with_emoji = add_random_emoji(
+                decision.reply_text,
+                context=str(getattr(decision, "intent", "general") or "general"),
+                gender="male" if "帅哥" in decision.reply_text else "female",
+            )
+            self.browser.send_message(reply_text_with_emoji, on_text_sent)
 
         if decision.rule_id == "FIRST_TURN_AUTO_REPLY":
             send_text_and_remaining_media([])
@@ -1449,7 +1462,13 @@ class MessageProcessor(QObject):
                 self._emit_log("❌ 远程控制反馈发送失败")
             self._reset_cycle()
 
-        self.browser.send_message(reply_text, on_sent)
+        # 添加随机 emoji 到回复文本
+        reply_text_with_emoji = add_random_emoji(
+            reply_text,
+            context="general",
+            gender="male" if "帅哥" in reply_text else "female",
+        )
+        self.browser.send_message(reply_text_with_emoji, on_sent)
 
     def _log_chat_history(self, user_name: str, messages: List[Dict[str, Any]]):
         self._emit_log(f"📋 聊天记录: {user_name}，共 {len(messages)} 条")
