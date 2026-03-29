@@ -654,7 +654,7 @@ class MessageProcessor(QObject):
             self._remember_processed_marker(marker, latest_user_message)
             return
 
-        history = self._convert_history(messages)
+        history = self._convert_history(messages, latest_user_text_override=latest_user_message)
         self._processing_reply = True
         self._pending_send = {
             "session_id": session_id,
@@ -1189,8 +1189,8 @@ class MessageProcessor(QObject):
             recent_processed_media_markers=self._recent_processed_media_markers,
         )
 
-    def _convert_history(self, messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-        return self._support.convert_history(messages)
+    def _convert_history(self, messages: List[Dict[str, Any]], latest_user_text_override: str = None) -> List[Dict[str, str]]:
+        return self._support.convert_history(messages, latest_user_text_override)
 
     def _mark_active_session(self, session_id: str, user_name: str, stage: str, detail: str = "") -> None:
         stage_text = str(stage or "").strip() or "unknown"

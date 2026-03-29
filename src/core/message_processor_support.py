@@ -194,16 +194,51 @@ def remember_processed_marker(
     return marker, list(recent_processed_media_markers)
 
 
-def convert_history(messages: List[MediaMessage]) -> List[Dict[str, str]]:
-    """Convert the latest conversation slice into the role/content format used by the agent."""
+def convert_history(messages: List[MediaMessage], latest_user_text_override: str = None) -> List[Dict[str, str]]:
+    """Convert the latest conversation slice into the role/content format used by the agent.
+
+    Args:
+        messages: List of messages from JavaScript抓取
+        latest_user_text_override: Optional override for the latest user message text.
+            If provided and differs from messages[-1], ensures consistency between
+            the latest user text and the conversation history.
+
+    Returns:
+        List of {role, content} dicts for LLM consumption.
+    """
     history: List[Dict[str, str]] = []
-    source = messages[:-1] if messages and messages[-1].get("is_user", False) else messages
-    for message in source:
-        text = str(message.get("text") or "").strip()
-        if not text:
-            continue
-        role = "user" if message.get("is_user") else "assistant"
-        history.append({"role": role, "content": text})
+    if not messages:
+        return history
+
+    # Check if we need to sync the latest user message
+    override_text = str(latest_user_text_override or "").strip()
+    last_msg = messages[-1] if messages else None
+    last_msg_is_user = last_msg.get("is_user", False) if last_msg else False
+    last_msg_text = str(last_msg.get("text") or "").strip() if last_msg else ""
+
+    # If override is provided and differs from last message, we need to handle it
+    if override_text and (override_text != last_msg_text or not last_msg_is_user):
+        # The latest user message from JS抓取 may be stale.
+        # We trust the Python-layer latest_user_text and adjust accordingly.
+        # Build history from all messages except the last (which will be replaced).
+        source = messages[:-1] if last_msg_is_user else messages
+        for message in source:
+            text = str(message.get("text") or "").strip()
+            if not text:
+                continue
+            role = "user" if message.get("is_user") else "assistant"
+            history.append({"role": role, "content": text})
+        # Append the override as the latest user message
+        history.append({"role": "user", "content": override_text})
+    else:
+        # Normal case: last message is the latest user message
+        source = messages[:-1] if last_msg_is_user else messages
+        for message in source:
+            text = str(message.get("text") or "").strip()
+            if not text:
+                continue
+            role = "user" if message.get("is_user") else "assistant"
+            history.append({"role": role, "content": text})
     return history
 
 
