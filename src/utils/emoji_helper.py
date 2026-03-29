@@ -75,8 +75,8 @@ def add_random_emoji(text: str, context: str = "general", gender: str = "female"
     # 合并 emoji 池
     combined_pool = list(set(base_pool + context_pool))
 
-    # 随机选择 2-3 个 emoji
-    count = random.randint(2, 3)
+    # 随机选择 1 个 emoji
+    count = 1
     selected = random.sample(combined_pool, min(count, len(combined_pool)))
 
     # 随机打乱顺序
