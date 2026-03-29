@@ -93,6 +93,11 @@ class CustomerServiceAgent:
 
         self.intent_detector = IntentDetector()
 
+        # UI / 脚本兼容：MainWindow 与 chat_simulator 会在构造后立刻读这些属性并调用 set_options
+        self.use_knowledge_first = True
+        self.knowledge_threshold = 0.6
+        self.first_reply_video_enabled = True
+
         self.reload_prompt_docs()
         self.reload_media_library()
 
@@ -181,10 +186,13 @@ class CustomerServiceAgent:
         """
         检索知识库，返回可嵌入 Prompt 的参考文本。
 
-        使用低门槛（0.3）以尽量提供参考，LLM 自行判断是否采用。
+        阈值由 `knowledge_threshold` 控制；关闭「优先知识库」时不检索。
         """
         try:
-            detail = self.knowledge_service.find_answer_detail(query, threshold=0.3)
+            if not self.use_knowledge_first:
+                return ""
+            thr = float(self.knowledge_threshold) if self.knowledge_threshold else 0.3
+            detail = self.knowledge_service.find_answer_detail(query, threshold=max(0.05, min(1.0, thr)))
             if not detail.get("matched"):
                 return ""
             question = str(detail.get("question", "") or "").strip()
@@ -255,6 +263,8 @@ class CustomerServiceAgent:
 
         如果本次 session 已经发过视频（日志中有 media_attempt 记录），则返回空列表。
         """
+        if not self.first_reply_video_enabled:
+            return []
         if not self._video_medias:
             return []
         # 检查本次会话是否已发送过视频
@@ -475,14 +485,20 @@ class CustomerServiceAgent:
         first_reply_video_enabled: Optional[bool] = None,
         reply_mode: Optional[str] = None,
     ) -> None:
-        """UI 配置入口（兼容旧接口，Phase 1 不改变核心逻辑）。"""
+        """UI / 脚本配置入口（与 MainWindow、chat_simulator 对齐）。"""
+        self.use_knowledge_first = bool(use_knowledge_first)
+        self.knowledge_threshold = float(knowledge_threshold)
+        if first_reply_video_enabled is not None:
+            self.first_reply_video_enabled = bool(first_reply_video_enabled)
+        if reply_mode is not None:
+            self.reply_mode = str(reply_mode or self.reply_mode)
 
     def get_status(self) -> Dict[str, Any]:
         """给 UI 的状态快照。"""
         return {
-            "use_knowledge_first": True,
-            "knowledge_threshold": 0.3,
-            "first_reply_video_enabled": True,
+            "use_knowledge_first": bool(self.use_knowledge_first),
+            "knowledge_threshold": float(self.knowledge_threshold),
+            "first_reply_video_enabled": bool(self.first_reply_video_enabled),
             "reply_mode": self.reply_mode,
             "memory_ttl_days": 30,
             "system_prompt_loaded": bool(self._system_prompt_doc_text),
