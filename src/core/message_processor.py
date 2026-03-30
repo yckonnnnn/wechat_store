@@ -654,7 +654,18 @@ class MessageProcessor(QObject):
             self._remember_processed_marker(marker, latest_user_message)
             return
 
-        history = self._convert_history(messages, latest_user_text_override=latest_user_message)
+        # 用 Python 侧累积的干净历史替代前端抓取的全页记录
+        # session.messages 包含本次 session 所有 add_message 的内容（含刚加入的当前用户消息）
+        # 去掉末尾的当前用户消息，与 _convert_history 的语义保持一致（LLMService 会在末尾追加）
+        _session_obj = self.sessions.get_session(session_id)
+        if _session_obj and len(_session_obj.messages) > 1:
+            history = [
+                {"role": "user" if m["is_user"] else "assistant", "content": str(m.get("text") or "").strip()}
+                for m in _session_obj.messages[:-1]
+                if str(m.get("text") or "").strip()
+            ]
+        else:
+            history = []
         self._processing_reply = True
         self._pending_send = {
             "session_id": session_id,
@@ -1633,7 +1644,25 @@ class _DecisionWorker(QThread):
             signature = None
         if signature is None or "session_manager" in signature.parameters:
             decide_kwargs["session_manager"] = self._session_manager
-        return agent.decide(**decide_kwargs)
+        decision = agent.decide(**decide_kwargs)
+
+        # 首轮视频注入：llm_direct 模式下 decide() 不会设置首轮视频，需在此补充
+        if bool(payload.get("is_first_turn_global", False)) and not decision.first_turn_video_items:
+            build_video_items = getattr(agent, "build_first_turn_video_items", None)
+            if callable(build_video_items):
+                try:
+                    video_items = [
+                        dict(x)
+                        for x in (build_video_items(payload["session_id"]) or [])
+                        if isinstance(x, dict)
+                    ]
+                    if video_items:
+                        decision.is_first_turn_global = True
+                        decision.first_turn_video_items = video_items
+                except Exception:
+                    pass
+
+        return decision
 
     def run(self):
         try:

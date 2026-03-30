@@ -8,7 +8,16 @@ LLM-First Prompt 构建器（Phase 1 极简版）
 
 from __future__ import annotations
 
+import re
 from typing import Dict, List
+
+# 单轮对话 = 1 user + 1 assistant；保留最近 10 轮（20 条），避免 LLM 抄旧话术
+_MAX_HISTORY_MESSAGES = 20
+
+# 匹配形如 "14:00"、"昨天 14:00"、"14:00胃不疼" 等时间戳+用户名残留行
+_TIMESTAMP_LINE_RE = re.compile(
+    r"^(?:昨天|今天|星期[一二三四五六日])?\s*\d{1,2}:\d{2}\s*\S{0,15}$"
+)
 
 
 # ── 系统提示词 ──────────────────────────────────────────────────────────────
@@ -83,19 +92,34 @@ def build_system_prompt(kb_context: str = "") -> str:
     )
 
 
+def _clean_chat_content(content: str) -> str:
+    """去除 JS 抓取时混入消息文本的时间戳/用户名残留行。
+
+    微信小店页面的 safeText(item) 会把气泡上方的时间戳和用户名一并抓进来，
+    形如 "14:00胃不疼"、"昨天 13:52"，需在传给 LLM 前过滤掉。
+    """
+    lines = content.split("\n")
+    cleaned = [ln for ln in lines if not _TIMESTAMP_LINE_RE.match(ln.strip())]
+    return "\n".join(cleaned).strip()
+
+
 def build_conversation_messages(
     conversation_history: List[Dict[str, str]],
 ) -> List[Dict[str, str]]:
     """
     对 message_processor 传入的对话历史做安全过滤，返回可直接传给 LLMService 的列表。
 
-    message_processor_support.convert_history() 已经把末尾用户消息去掉了，
-    所以这里只做防御性清洗（过滤空内容、确保 role 合法）。
+    - 过滤空内容、确保 role 合法
+    - 清洗时间戳/用户名残留（JS 抓取副作用）
+    - 限制最近 _MAX_HISTORY_MESSAGES 条，防止历史过长导致 LLM 抄旧话术
     """
     result: List[Dict[str, str]] = []
     for msg in (conversation_history or []):
         role = str(msg.get("role", "") or "").strip()
-        content = str(msg.get("content", "") or "").strip()
+        content = _clean_chat_content(str(msg.get("content", "") or ""))
         if role in {"user", "assistant"} and content:
             result.append({"role": role, "content": content})
+    # 只保留最近 N 条，截断过长历史
+    if len(result) > _MAX_HISTORY_MESSAGES:
+        result = result[-_MAX_HISTORY_MESSAGES:]
     return result

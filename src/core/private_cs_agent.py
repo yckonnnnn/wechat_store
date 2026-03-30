@@ -257,15 +257,18 @@ class CustomerServiceAgent:
             pass
         return summary
 
+    # 无本地视频文件时使用的占位路径，实际发送由 send_video_from_material_library 完成
+    _MATERIAL_LIBRARY_VIDEO_SENTINEL = "__material_library_video__"
+
     def build_first_turn_video_items(self, session_id: str) -> List[Dict[str, Any]]:
         """
         构建首轮视频媒体项。
 
         如果本次 session 已经发过视频（日志中有 media_attempt 记录），则返回空列表。
+        视频路径优先取本地素材；本地无素材时使用占位路径，
+        实际发送由 browser_service.send_video_from_material_library 完成（页面素材库拖拽）。
         """
         if not self.first_reply_video_enabled:
-            return []
-        if not self._video_medias:
             return []
         # 检查本次会话是否已发送过视频
         try:
@@ -288,7 +291,8 @@ class CustomerServiceAgent:
         except Exception:
             pass
 
-        video_path = self._video_medias[0]
+        # 本地有素材文件优先用；否则用哨兵路径，触发页面素材库拖拽
+        video_path = self._video_medias[0] if self._video_medias else self._MATERIAL_LIBRARY_VIDEO_SENTINEL
         return [{
             "type": "delayed_video",
             "path": video_path,
