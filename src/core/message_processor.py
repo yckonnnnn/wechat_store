@@ -95,6 +95,9 @@ class MessageProcessor(QObject):
             "北京店": "beijing_chaoyang",
         }
 
+        # 联系方式图片触发器：已触发过的 session_id 集合（进程内去重，每个会话只发一次）
+        self._contact_trigger_sent_sessions: set[str] = set()
+
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_cycle)
         self._address_interceptor = AddressInterceptor()
@@ -978,43 +981,90 @@ class MessageProcessor(QObject):
             # 3. 日志记录的是原始 decision.reply_text（由上层 decision_snapshot 记录）
             intercept_result = self._address_interceptor.intercept(decision.reply_text)
 
-            if intercept_result.is_intercepted:
-                self._emit_log(
-                    f"🎯 地址拦截器命中：{intercept_result.target_store} " +
-                    f"(原文：'{intercept_result.matches[0].address_text}' → " +
-                    f"'{AddressInterceptor.ADDRESS_PLACEHOLDER}')"
-                )
-                # 替换后的文本
-                reply_text_to_send = intercept_result.processed_text
-                # 触发对应门店的地址图片
-                # 将拦截器的 target_store（如"静安店"）转换为索引 key（如"sh_jingan"）
-                store_key = self._interceptor_store_to_index_key.get(intercept_result.target_store)
-                if store_key:
-                    # 获取 session_state 用于避重
-                    user_hash = self.agent._hash_user(user_name or session_id)
-                    session_state = self.agent.memory_store.get_session_state(session_id, user_hash=user_hash)
-                    # 调用 pick_address_image 选择图片
-                    image_path = self.agent.pick_address_image(store_key, session_state=session_state)
-                    if image_path:
-                        address_media_item = {
-                            "type": "address_image",
-                            "path": image_path,
-                            "trigger_source": "address_interceptor",
-                            "target_store": store_key,
-                        }
-                        # 添加到 planned_media_items 中
-                        planned_media_items.insert(0, address_media_item)
-                        self._emit_log(f"📍 已触发 {intercept_result.target_store} 地址图片发送 ({Path(image_path).name})")
+            try:
+                if intercept_result.is_intercepted:
+                    self._emit_log(
+                        f"🎯 地址拦截器命中：{intercept_result.target_store} " +
+                        f"(原文：'{intercept_result.matches[0].address_text}' → " +
+                        f"'{AddressInterceptor.ADDRESS_PLACEHOLDER}')"
+                    )
+                    # 替换后的文本
+                    reply_text_to_send = intercept_result.processed_text
+                    # 触发对应门店的地址图片
+                    # 将拦截器的 target_store（如"静安店"）转换为索引 key（如"sh_jingan"）
+                    store_key = self._interceptor_store_to_index_key.get(intercept_result.target_store)
+                    if store_key:
+                        # 获取 session_state 用于避重
+                        user_hash = self._build_user_hash(user_name=user_name, session_id=session_id)
+                        session_state = self.agent.memory_store.get_session_state(session_id, user_hash=user_hash)
+                        # 调用 pick_address_image 选择图片
+                        image_path = self.agent.pick_address_image(store_key, session_state=session_state)
+                        if image_path:
+                            address_media_item = {
+                                "type": "address_image",
+                                "path": image_path,
+                                "trigger_source": "address_interceptor",
+                                "target_store": store_key,
+                            }
+                            # 添加到 planned_media_items 中
+                            planned_media_items.insert(0, address_media_item)
+                            self._emit_log(f"📍 已触发 {intercept_result.target_store} 地址图片发送 ({Path(image_path).name})")
+                        else:
+                            self._emit_log(f"⚠️  {intercept_result.target_store} 地址图片库为空，无法发送")
                     else:
-                        self._emit_log(f"⚠️  {intercept_result.target_store} 地址图片库为空，无法发送")
+                        self._emit_log(f"⚠️  未知门店 {intercept_result.target_store}，无法映射到地址图片索引")
                 else:
-                    self._emit_log(f"⚠️  未知门店 {intercept_result.target_store}，无法映射到地址图片索引")
-            else:
-                # 未拦截（0 个地址或多门店地址），使用原始文本
+                    # 未拦截（0 个地址或多门店地址），使用原始文本
+                    reply_text_to_send = decision.reply_text
+                    if intercept_result.match_count > 1:
+                        self._emit_log(f"ℹ️ 多门店地址 ({intercept_result.match_count}个)，保留原文不拦截")
+            except Exception as _intercept_exc:
+                self._emit_log(f"⚠️ 地址拦截器异常，回退到原始文本: {_intercept_exc}")
                 reply_text_to_send = decision.reply_text
-                if intercept_result.match_count > 1:
-                    self._emit_log(f"ℹ️ 多门店地址 ({intercept_result.match_count}个)，保留原文不拦截")
             # ── 地址拦截器结束 ──────────────────────────────────────────────────────
+
+            # ── 联系方式图片触发器 ─────────────────────────────────────────────────
+            # 检测规则：
+            # 1. LLM 输出含"索取联系方式"话术（如"您留个电话"），说明 agent 在要用户联系方式
+            # 2. 用户消息含"远程定制"（明确预约意图，LLM 回复中也会提及）
+            # 触发动作：补发一张联系方式图片，每个 session 只发一次，与 1 分钟兜底逻辑独立
+            _CONTACT_TRIGGER_LLM_PHRASES = (
+                "留个电话", "留下电话", "留下您的电话",
+                "留个联系方式", "留下联系方式", "留下您的联系方式",
+                "留个微信", "留下微信", "方便留个", "方便留下",
+                "您的手机号", "手机号发给我", "手机号给我",
+                "留个号码", "留下号码", "联系到您",
+                "联系方式给我", "联系方式发给我",
+            )
+            _CONTACT_TRIGGER_USER_PHRASES = (
+                "远程定制",
+            )
+            try:
+                if session_id not in self._contact_trigger_sent_sessions:
+                    llm_text = str(decision.reply_text or "")
+                    user_text = str(latest_user_text or "")
+                    contact_triggered = (
+                        any(p in llm_text for p in _CONTACT_TRIGGER_LLM_PHRASES)
+                        or any(p in user_text for p in _CONTACT_TRIGGER_USER_PHRASES)
+                    )
+                    if contact_triggered:
+                        pick_contact_image = getattr(self.agent, "_pick_contact_image_for_session", None)
+                        if callable(pick_contact_image):
+                            _user_hash = self._build_user_hash(user_name=user_name, session_id=session_id)
+                            _session_state = self.agent.memory_store.get_session_state(session_id, user_hash=_user_hash)
+                            contact_image_path = str(pick_contact_image(_session_state) or "").strip()
+                            if contact_image_path:
+                                planned_media_items.append({
+                                    "type": "contact_image",
+                                    "path": contact_image_path,
+                                    "trigger_source": "contact_trigger",
+                                    "route_reason": "llm_contact_ask",
+                                })
+                                self._contact_trigger_sent_sessions.add(session_id)
+                                self._emit_log("📞 联系方式触发器命中，补发联系方式图片（本 session 仅此一次）")
+            except Exception as _contact_exc:
+                self._emit_log(f"⚠️ 联系方式触发器异常，跳过: {_contact_exc}")
+            # ── 联系方式图片触发器结束 ──────────────────────────────────────────────
 
             # 添加随机 emoji 到回复文本
             reply_text_with_emoji = add_random_emoji(

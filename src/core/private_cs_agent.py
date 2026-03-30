@@ -333,10 +333,12 @@ class CustomerServiceAgent:
         extra_media_items: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        文本发送后的媒体队列。Phase 1 只透传 extra_media_items（首轮视频）。
-        planned_media_items 来自规则决策，Phase 1 始终为空。
+        文本发送后的媒体队列。
+        planned_media_items 包含地址拦截器触发的媒体项（address_image）。
+        extra_media_items 包含首轮延迟视频等额外媒体。
         """
-        return [item for item in (extra_media_items or []) if isinstance(item, dict)]
+        all_items = [*(planned_media_items or []), *(extra_media_items or [])]
+        return [item for item in all_items if isinstance(item, dict)]
 
     def judge_post_reply_media(
         self,

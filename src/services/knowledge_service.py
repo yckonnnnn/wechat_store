@@ -431,6 +431,33 @@ class KnowledgeService(QObject):
         polite_guard_reason = ""
         normalized_query = self._normalize_for_kb(query)
 
+        # 特殊处理：用户提到"马老师"，优先匹配马老师相关知识库（字符 Jaccard 对长问题失效）
+        if "马老师" in query:
+            items = self.repository.get_all()
+            ma_items = [item for item in items if "马老师" in (item.question or "")]
+            if ma_items:
+                best_item = None
+                best_score = 0.0
+                for item in ma_items:
+                    score = self._simple_overlap_score(query, item.question)
+                    if score > best_score:
+                        best_score = score
+                        best_item = item
+                if best_item and best_score >= 0.1:
+                    return {
+                        "matched": True,
+                        "answer": best_item.answer,
+                        "answers": list(best_item.answers or ([best_item.answer] if best_item.answer else [])),
+                        "question": best_item.question,
+                        "score": float(best_score),
+                        "mode": "ma_teacher_priority",
+                        "intent": best_item.intent,
+                        "tags": list(best_item.tags or []),
+                        "item_id": str(best_item.id or ""),
+                        "blocked_by_polite_guard": False,
+                        "polite_guard_reason": "",
+                    }
+
         # 特殊处理：如果用户表达"贵"的情绪，优先匹配价格贵相关的知识库
         expensive_keywords = ["贵", "太贵", "也贵", "那么贵", "这么贵", "有点贵"]
         if any(k in query for k in expensive_keywords):
