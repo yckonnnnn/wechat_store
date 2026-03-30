@@ -87,6 +87,18 @@ class CustomerServiceAgent:
         self._contact_images: List[str] = []
         self._video_medias: List[str] = []
 
+        # 地址图片索引（按门店分组）
+        # key: "sh_jingan", "sh_renmin", "sh_hongkou", "sh_wujiaochang", "sh_xuhui", "beijing_chaoyang"
+        # value: List[图片绝对路径]
+        self._address_index: Dict[str, List[str]] = {
+            "beijing_chaoyang": [],
+            "sh_xuhui": [],
+            "sh_jingan": [],
+            "sh_hongkou": [],
+            "sh_wujiaochang": [],
+            "sh_renmin": [],
+        }
+
         # 已加载的 prompt 文本（供 get_status 显示）
         self._system_prompt_doc_text: str = ""
         self._playbook_doc_text: str = ""
@@ -433,7 +445,10 @@ class CustomerServiceAgent:
         return bool(self._system_prompt_doc_text)
 
     def reload_media_library(self) -> None:
-        """重建联系方式图片和视频素材索引。"""
+        """重建地址/联系方式/视频素材索引。"""
+        # 清空地址索引
+        for key in self._address_index:
+            self._address_index[key] = []
         self._contact_images = []
         self._video_medias = []
 
@@ -446,16 +461,19 @@ class CustomerServiceAgent:
             return
 
         images_data = data.get("images", {}) or {}
+        store_targets = data.get("store_targets", {}) or {}
 
         # 联系方式图片
         for raw_name in images_data.get("联系方式", []):
-            path = self.images_dir / Path(raw_name).name
+            filename = Path(raw_name).name
+            path = self.images_dir / filename
             if path.exists():
                 self._contact_images.append(str(path.resolve()))
 
         # 视频素材
         for raw_name in images_data.get("视频素材", []):
-            path = self.images_dir / Path(raw_name).name
+            filename = Path(raw_name).name
+            path = self.images_dir / filename
             if path.exists():
                 self._video_medias.append(str(path.resolve()))
 
@@ -474,6 +492,28 @@ class CustomerServiceAgent:
         # 去重，保留顺序
         if self._video_medias:
             self._video_medias = list(dict.fromkeys(self._video_medias))
+
+        # 地址图片：从店铺地址分类中构建索引
+        for raw_name in images_data.get("店铺地址", []):
+            filename = Path(raw_name).name
+            path = self.images_dir / filename
+            if not path.exists():
+                continue
+
+            full = str(path.resolve())
+            # 优先使用 store_targets 配置
+            target_store = str(store_targets.get(filename, "") or "").strip()
+            if target_store in self._address_index:
+                self._address_index[target_store].append(full)
+                continue
+
+            # 配置未命中时，从文件名推断
+            inferred_store = self._infer_store_from_name(filename)
+            if inferred_store in self._address_index:
+                self._address_index[inferred_store].append(full)
+            else:
+                # 无法识别时，归入人民广场店兜底
+                self._address_index["sh_renmin"].append(full)
 
     def reload_rule_configs(self) -> None:
         """规则配置重载（Phase 1 仅重载知识库地址配置）。"""
@@ -508,12 +548,64 @@ class CustomerServiceAgent:
             "system_prompt_loaded": bool(self._system_prompt_doc_text),
             "playbook_loaded": bool(self._playbook_doc_text),
             "brand_knowledge_loaded": False,
-            "address_image_count": 0,
+            "address_image_count": sum(len(v) for v in self._address_index.values()),
             "contact_image_count": len(self._contact_images),
             "video_media_count": len(self._video_medias),
         }
 
     # ── 内部工具 ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _infer_store_from_name(filename: str) -> str:
+        """从文件名推断门店 key（如"客服陈培静安地址图片 1.jpg" → "sh_jingan"）。"""
+        raw = str(filename or "")
+        if not raw:
+            return ""
+        if "北京" in raw:
+            return "beijing_chaoyang"
+        if "徐汇" in raw or "徐家汇" in raw:
+            return "sh_xuhui"
+        if "静安" in raw:
+            return "sh_jingan"
+        if "虹口" in raw:
+            return "sh_hongkou"
+        if "五角场" in raw or "杨浦" in raw:
+            return "sh_wujiaochang"
+        if any(k in raw for k in ("人广", "人民广场", "黄浦", "黄埔")):
+            return "sh_renmin"
+        return ""
+
+    def pick_address_image(
+        self,
+        target_store: str,
+        session_state: Optional[Dict[str, Any]] = None,
+        exclude_paths: Optional[List[str]] = None,
+    ) -> Optional[str]:
+        """从门店地址图片池中选择一张图片（随机，避开已发送的）。"""
+        pool = self._address_index.get(target_store, [])
+        # 上海门店兜底：如果目标门店没有图片，使用人民广场店的图片
+        if not pool and target_store.startswith("sh_"):
+            pool = self._address_index.get("sh_renmin", [])
+        if not pool:
+            return None
+
+        # 获取已发送的图片路径
+        sent_paths_by_store = dict((session_state or {}).get("address_image_sent_paths_by_store", {}) or {})
+        sent_paths = {
+            str(path).strip()
+            for path in (sent_paths_by_store.get(target_store, []) or [])
+            if str(path).strip()
+        }
+        excluded = {str(path).strip() for path in (exclude_paths or []) if str(path).strip()}
+
+        # 优先选择未发送且未被排除的图片
+        available = [path for path in pool if path not in sent_paths and path not in excluded]
+        if not available and excluded:
+            # 如果所有图片都被排除，则忽略排除列表，只避开已发送的
+            available = [path for path in pool if path not in sent_paths]
+        if not available:
+            return None
+        return random.choice(available)
 
     @staticmethod
     def _read_text(path: Optional[Path]) -> str:

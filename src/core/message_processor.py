@@ -19,6 +19,7 @@ from .private_cs_agent import AgentDecision, CustomerServiceAgent
 from .session_manager import SessionManager
 from ..services.browser_service import BrowserService
 from ..services.conversation_logger import ConversationLogger
+from ..services.address_interceptor import AddressInterceptor, AddressInterceptResult
 from ..utils.emoji_helper import add_random_emoji
 
 
@@ -74,8 +75,29 @@ class MessageProcessor(QObject):
         self._stale_followup_skip_until: Dict[str, datetime] = {}
         self._active_session_context: Optional[Dict[str, str]] = None
 
+        # 门店名称 → 地址图片文件名关键词映射（用于从文件名中匹配）
+        self._store_address_keyword_map = {
+            "静安店": "静安",
+            "人民广场店": "人广",
+            "虹口店": "虹口",
+            "五角场店": "五角场",
+            "徐汇店": "徐汇",
+            "北京店": "北京",
+        }
+
+        # 拦截器目标门店 → 地址图片索引 key 映射
+        self._interceptor_store_to_index_key = {
+            "静安店": "sh_jingan",
+            "人民广场店": "sh_renmin",
+            "虹口店": "sh_hongkou",
+            "五角场店": "sh_wujiaochang",
+            "徐汇店": "sh_xuhui",
+            "北京店": "beijing_chaoyang",
+        }
+
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_cycle)
+        self._address_interceptor = AddressInterceptor()
         self._media_delivery = MediaSendCoordinator(
             MediaSendHooks(
                 send_image=self.browser.send_image,
@@ -950,11 +972,55 @@ class MessageProcessor(QObject):
 
                 self._send_media_queue(session_id, user_name, media_queue, decision=decision, media_summary=media_summary)
 
+            # ── 地址拦截器：检测单门店地址并替换 ──────────────────────────────────────
+            # 1. 调用拦截器检测 decision.reply_text 是否包含单门店地址
+            # 2. 如果拦截：替换为"地址看图片中的位置"，并触发对应门店的地址图片
+            # 3. 日志记录的是原始 decision.reply_text（由上层 decision_snapshot 记录）
+            intercept_result = self._address_interceptor.intercept(decision.reply_text)
+
+            if intercept_result.is_intercepted:
+                self._emit_log(
+                    f"🎯 地址拦截器命中：{intercept_result.target_store} " +
+                    f"(原文：'{intercept_result.matches[0].address_text}' → " +
+                    f"'{AddressInterceptor.ADDRESS_PLACEHOLDER}')"
+                )
+                # 替换后的文本
+                reply_text_to_send = intercept_result.processed_text
+                # 触发对应门店的地址图片
+                # 将拦截器的 target_store（如"静安店"）转换为索引 key（如"sh_jingan"）
+                store_key = self._interceptor_store_to_index_key.get(intercept_result.target_store)
+                if store_key:
+                    # 获取 session_state 用于避重
+                    user_hash = self.agent._hash_user(user_name or session_id)
+                    session_state = self.agent.memory_store.get_session_state(session_id, user_hash=user_hash)
+                    # 调用 pick_address_image 选择图片
+                    image_path = self.agent.pick_address_image(store_key, session_state=session_state)
+                    if image_path:
+                        address_media_item = {
+                            "type": "address_image",
+                            "path": image_path,
+                            "trigger_source": "address_interceptor",
+                            "target_store": store_key,
+                        }
+                        # 添加到 planned_media_items 中
+                        planned_media_items.insert(0, address_media_item)
+                        self._emit_log(f"📍 已触发 {intercept_result.target_store} 地址图片发送 ({Path(image_path).name})")
+                    else:
+                        self._emit_log(f"⚠️  {intercept_result.target_store} 地址图片库为空，无法发送")
+                else:
+                    self._emit_log(f"⚠️  未知门店 {intercept_result.target_store}，无法映射到地址图片索引")
+            else:
+                # 未拦截（0 个地址或多门店地址），使用原始文本
+                reply_text_to_send = decision.reply_text
+                if intercept_result.match_count > 1:
+                    self._emit_log(f"ℹ️ 多门店地址 ({intercept_result.match_count}个)，保留原文不拦截")
+            # ── 地址拦截器结束 ──────────────────────────────────────────────────────
+
             # 添加随机 emoji 到回复文本
             reply_text_with_emoji = add_random_emoji(
-                decision.reply_text,
+                reply_text_to_send,
                 context=str(getattr(decision, "intent", "general") or "general"),
-                gender="male" if "帅哥" in decision.reply_text else "female",
+                gender="male" if "帅哥" in reply_text_to_send else "female",
             )
             self.browser.send_message(reply_text_with_emoji, on_text_sent)
 
