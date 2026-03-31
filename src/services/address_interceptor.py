@@ -1,16 +1,15 @@
 """
-地址拦截器服务（单门店地址拦截版）
+地址拦截器服务
 
 功能：
 1. 检测 LLM 输出中的具体地址（6 家店的地址）
-2. 仅当恰好匹配到 1 个地址时才拦截替换
-3. 多门店地址（2 个+）不拦截，保留原样
+2. 只要匹配到 1 个及以上地址，全部替换为占位符
+3. 返回所有匹配门店，供调用方决定发几张图
 
 设计原则：
-- 只拦截 6 家店的单门店地址
-- 不干扰 LLM 正常输出（多门店地址、其他内容）
-- JSON 日志记录原始 LLM 输出（由调用方负责）
-- 拦截后触发对应门店的地址图片发送
+- 只拦截 6 家店的已知地址
+- LLM 历史记录原始输出（由调用方负责，不在本模块处理）
+- 拦截后触发对应门店的地址图片发送（1-2 家各发1张，3家+只发第1张）
 """
 
 from __future__ import annotations
@@ -34,21 +33,23 @@ class AddressInterceptResult:
     """地址拦截结果"""
     original_text: str           # 原始 LLM 输出
     processed_text: str          # 替换后的文本（用于发送）
-    is_intercepted: bool         # 是否被拦截（仅当单门店地址时为 True）
+    is_intercepted: bool         # 是否被拦截（match_count >= 1 时为 True）
     match_count: int             # 匹配到的地址数量
     matches: List[AddressMatch]  # 所有匹配详情
     trigger_address_image: bool  # 是否触发地址图片发送
-    target_store: Optional[str]  # 目标门店（拦截时填充）
+    target_store: Optional[str]  # 第一个目标门店（向后兼容）
+    target_stores: List[str]     # 所有匹配门店列表（1-2家发图，3+家仅取第1家）
 
 
 class AddressInterceptor:
     """
-    地址拦截器（6 家店单门店地址拦截）
+    地址拦截器（6 家店全量地址拦截）
 
     拦截规则：
-    1. 仅拦截恰好 1 个门店地址的情况
-    2. 多门店地址（2 个+）不拦截，保留原样
-    3. 只匹配 6 家店的已知地址模式
+    1. 只要匹配到 1 个及以上地址，全部替换
+    2. 1-2 家：各触发 1 张地址图片
+    3. 3 家及以上：替换所有地址，仅触发第 1 家的图片（避免洪水轰炸）
+    4. 只匹配 6 家店的已知地址模式
     """
 
     # 替换话术
@@ -133,36 +134,42 @@ class AddressInterceptor:
 
         match_count = len(matches)
 
-        # 仅当恰好 1 个地址时才拦截
-        if match_count == 1:
-            single_match = matches[0]
-            # 替换该地址为占位符
-            processed_text = (
-                original_text[:single_match.start_pos] +
-                self.ADDRESS_PLACEHOLDER +
-                original_text[single_match.end_pos:]
-            )
-
-            return AddressInterceptResult(
-                original_text=original_text,
-                processed_text=processed_text,
-                is_intercepted=True,
-                match_count=1,
-                matches=matches,
-                trigger_address_image=True,
-                target_store=single_match.store_name,
-            )
-        else:
-            # 0 个或 2 个+ 地址：不拦截
+        if match_count == 0:
             return AddressInterceptResult(
                 original_text=original_text,
                 processed_text=original_text,
                 is_intercepted=False,
-                match_count=match_count,
-                matches=matches,
+                match_count=0,
+                matches=[],
                 trigger_address_image=False,
                 target_store=None,
+                target_stores=[],
             )
+
+        # 1 个及以上：全部替换（从右到左，保证位置不漂移）
+        sorted_desc = sorted(matches, key=lambda m: m.start_pos, reverse=True)
+        processed_text = original_text
+        for m in sorted_desc:
+            processed_text = (
+                processed_text[:m.start_pos] +
+                self.ADDRESS_PLACEHOLDER +
+                processed_text[m.end_pos:]
+            )
+
+        target_stores = [m.store_name for m in matches]
+
+        # 3 家及以上：调用方只对第 1 家发图（避免洪水轰炸）
+        # 图片发送张数的决策在 message_processor 中按 target_stores 长度控制
+        return AddressInterceptResult(
+            original_text=original_text,
+            processed_text=processed_text,
+            is_intercepted=True,
+            match_count=match_count,
+            matches=matches,
+            trigger_address_image=True,
+            target_store=matches[0].store_name,   # 向后兼容
+            target_stores=target_stores,
+        )
 
     def _deduplicate_matches(
         self,
@@ -208,21 +215,16 @@ class AddressInterceptor:
         merged_matches.sort(key=lambda m: m.start_pos)
         return merged_matches
 
-    def has_single_store_address(self, text: str) -> bool:
-        """
-        快速检测是否包含恰好 1 个门店地址
-
-        Args:
-            text: 待检测文本
-
-        Returns:
-            True 表示包含恰好 1 个门店地址
-        """
+    def has_address(self, text: str) -> bool:
+        """快速检测是否包含至少 1 个门店地址"""
         if not text:
             return False
-
         result = self.intercept(text)
         return result.is_intercepted
+
+    def has_single_store_address(self, text: str) -> bool:
+        """向后兼容保留，等同于 has_address（只要含地址就返回 True）"""
+        return self.has_address(text)
 
     def reload_patterns(self):
         """重新编译模式（配置更新时调用）"""

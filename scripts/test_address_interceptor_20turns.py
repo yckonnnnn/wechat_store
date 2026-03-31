@@ -117,19 +117,14 @@ def run_20_turns_test():
 
         # 打印拦截结果
         if result.is_intercepted:
-            print(f"\n✅ 拦截状态：已拦截")
-            print(f"🎯 目标门店：{result.target_store}")
-            print(f"📍 匹配地址：{result.matches[0].address_text}")
+            stores_str = "、".join(result.target_stores)
+            img_stores = result.target_stores[:2] if result.match_count <= 2 else result.target_stores[:1]
+            print(f"\n✅ 拦截状态：已拦截 ({result.match_count} 家门店：{stores_str})")
+            print(f"🎯 触发图片门店：{img_stores}")
             print(f"📤 发送文本：{result.processed_text}")
-            print(f"📷 触发地址图片：✅ 是 ({result.target_store})")
+            print(f"📷 触发地址图片：✅ 是")
             stats["intercepted"] += 1
             stats["image_triggered"] += 1
-        elif result.match_count > 1:
-            print(f"\n❌ 拦截状态：未拦截 (多门店地址 {result.match_count}个)")
-            print(f"📤 发送文本：{result.processed_text}")
-            print(f"📷 触发地址图片：❌ 否 (多门店不触发)")
-            stats["not_intercepted"] += 1
-            stats["multi_store"] += 1
         elif result.match_count == 0:
             print(f"\n❌ 拦截状态：未拦截 (无地址)")
             print(f"📤 发送文本：{result.processed_text}")
@@ -159,9 +154,9 @@ def run_20_turns_test():
     print("✅ 验证结果")
     print(f"{'='*80}")
 
-    # 预期：单门店地址应该拦截并触发图片
-    expected_intercepted = sum(1 for s, _ in test_plan if s.startswith("单店"))
-    expected_not_intercepted = sum(1 for s, _ in test_plan if s.startswith("多店") or s.startswith("无地址"))
+    # 新规则：单店 + 多店都拦截，只有无地址才不拦截
+    expected_intercepted = sum(1 for s, _ in test_plan if not s.startswith("无地址"))
+    expected_not_intercepted = sum(1 for s, _ in test_plan if s.startswith("无地址"))
 
     if stats["intercepted"] == expected_intercepted:
         print(f"✅ 拦截次数正确：{stats['intercepted']} (预期：{expected_intercepted})")

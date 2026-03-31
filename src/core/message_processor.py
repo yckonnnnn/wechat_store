@@ -587,6 +587,101 @@ class MessageProcessor(QObject):
             }
         ]
 
+    # ── 地址图片重发（"图在哪儿"处理） ────────────────────────────────────────
+
+    _ADDRESS_IMAGE_RETRY_PHRASES = (
+        "图在哪", "图片呢", "图在哪儿", "图呢", "没看到图", "没收到图",
+        "图片没收到", "没看见图", "图发了吗", "地址图呢", "图片在哪",
+        "图片发了吗", "没有图", "没看到地址图", "发图", "地址图片呢",
+    )
+    _ADDRESS_IMAGE_RETRY_REPLY = "姐姐稍等，我再给您发一次地址图～"
+
+    def _should_retry_address_image(self, user_text: str, session_id: str, user_hash: str) -> bool:
+        """判断是否应跳过 LLM 直接重发地址图。"""
+        text = str(user_text or "").strip()
+        if not any(phrase in text for phrase in self._ADDRESS_IMAGE_RETRY_PHRASES):
+            return False
+        session_state = self.agent.memory_store.get_session_state(session_id, user_hash=user_hash)
+        last_store = str(session_state.get("last_intercepted_store", "") or "").strip()
+        return bool(last_store)
+
+    def _handle_address_image_retry(
+        self,
+        session_id: str,
+        user_name: str,
+        user_hash: str,
+        marker: str,
+        latest_user_message: str,
+    ) -> None:
+        """跳过 LLM，发固定话术 + 重发上次拦截门店的地址图。"""
+        session_state = self.agent.memory_store.get_session_state(session_id, user_hash=user_hash)
+        last_store_name = str(session_state.get("last_intercepted_store", "") or "").strip()
+        store_key = self._interceptor_store_to_index_key.get(last_store_name)
+        reply_text = self._ADDRESS_IMAGE_RETRY_REPLY
+        self._emit_log(f"🔁 地址图重发触发：门店={last_store_name}，跳过 LLM")
+
+        self._processing_reply = True
+        self._remember_processed_marker(marker, latest_user_message)
+
+        def on_retry_sent(success, result):
+            del result
+            if not success:
+                self._emit_log("❌ 地址图重发文本发送失败")
+                self._reset_cycle()
+                return
+
+            self.sessions.get_or_create_session(session_id=session_id, user_name=user_name)
+            self.sessions.add_message(session_id, reply_text, is_user=False, user_name=user_name)
+            self.sessions.record_reply(session_id)
+            self.reply_sent.emit(session_id, reply_text)
+            self._emit_log(f"✅ 地址图重发话术已发送: {reply_text}")
+            self._append_training_event(
+                session_id=session_id,
+                user_id_hash=user_hash,
+                event_type="address_image_retry",
+                user_name=user_name,
+                payload={"text": reply_text, "store": last_store_name, "trigger": latest_user_message},
+            )
+
+            media_queue: List[Dict[str, Any]] = []
+            if store_key:
+                image_path = self.agent.pick_address_image(store_key, session_state=session_state)
+                if image_path:
+                    media_queue.append({
+                        "type": "address_image",
+                        "path": image_path,
+                        "trigger_source": "address_image_retry",
+                        "target_store": store_key,
+                    })
+                    self._emit_log(f"📍 重发地址图：{Path(image_path).name}")
+                else:
+                    self._emit_log(f"⚠️  {last_store_name} 图片库为空，无法重发")
+            else:
+                self._emit_log(f"⚠️  重发失败，未知门店：{last_store_name}")
+
+            if media_queue:
+                delay_ms = int(getattr(self, "_MEDIA_SEND_AFTER_TEXT_DELAY_MS", 900) or 0)
+                media_summary = {"sent_types": [], "failed_types": [], "sent_details": [], "failed_details": []}
+                send_media = lambda: self._send_media_queue(
+                    session_id=session_id,
+                    user_name=user_name,
+                    media_queue=media_queue,
+                    decision=None,
+                    media_summary=media_summary,
+                    on_complete=self._reset_cycle,
+                )
+                if delay_ms > 0:
+                    QTimer.singleShot(delay_ms, send_media)
+                else:
+                    send_media()
+            else:
+                self._reset_cycle()
+
+        reply_with_emoji = add_random_emoji(reply_text, context="general", gender="female")
+        self.browser.send_message(reply_with_emoji, on_retry_sent)
+
+    # ── 地址图片重发结束 ──────────────────────────────────────────────────────
+
     def _on_chat_data(self, success: bool, result: Any, auto_reply: bool):
         if not success:
             self._emit_log("❌ 抓取聊天记录失败")
@@ -691,6 +786,13 @@ class MessageProcessor(QObject):
             ]
         else:
             history = []
+        # ── 地址图片重发检测（跳过 LLM） ────────────────────────────────────────
+        # 用户反馈未收到地址图时（"图在哪儿"等），直接重发，不调用 LLM
+        if self._should_retry_address_image(latest_user_message, session_id, user_hash):
+            self._handle_address_image_retry(session_id, user_name, user_hash, marker, latest_user_message)
+            return
+        # ── 地址图片重发检测结束 ──────────────────────────────────────────────
+
         self._processing_reply = True
         self._pending_send = {
             "session_id": session_id,
@@ -983,41 +1085,53 @@ class MessageProcessor(QObject):
 
             try:
                 if intercept_result.is_intercepted:
+                    store_names_str = "、".join(intercept_result.target_stores)
                     self._emit_log(
-                        f"🎯 地址拦截器命中：{intercept_result.target_store} " +
-                        f"(原文：'{intercept_result.matches[0].address_text}' → " +
-                        f"'{AddressInterceptor.ADDRESS_PLACEHOLDER}')"
+                        f"🎯 地址拦截器命中 {intercept_result.match_count} 家门店：{store_names_str}"
                     )
-                    # 替换后的文本
                     reply_text_to_send = intercept_result.processed_text
-                    # 触发对应门店的地址图片
-                    # 将拦截器的 target_store（如"静安店"）转换为索引 key（如"sh_jingan"）
-                    store_key = self._interceptor_store_to_index_key.get(intercept_result.target_store)
-                    if store_key:
-                        # 获取 session_state 用于避重
-                        user_hash = self._build_user_hash(user_name=user_name, session_id=session_id)
-                        session_state = self.agent.memory_store.get_session_state(session_id, user_hash=user_hash)
-                        # 调用 pick_address_image 选择图片
-                        image_path = self.agent.pick_address_image(store_key, session_state=session_state)
-                        if image_path:
-                            address_media_item = {
-                                "type": "address_image",
-                                "path": image_path,
-                                "trigger_source": "address_interceptor",
-                                "target_store": store_key,
-                            }
-                            # 添加到 planned_media_items 中
-                            planned_media_items.insert(0, address_media_item)
-                            self._emit_log(f"📍 已触发 {intercept_result.target_store} 地址图片发送 ({Path(image_path).name})")
+
+                    # 获取 session_state 用于图片避重 + 记录 last_intercepted_store
+                    _intercept_user_hash = self._build_user_hash(user_name=user_name, session_id=session_id)
+                    session_state = self.agent.memory_store.get_session_state(session_id, user_hash=_intercept_user_hash)
+
+                    # 记录第一家门店，供"图在哪儿"重发时使用
+                    self.agent.memory_store.update_session_field(
+                        session_id,
+                        _intercept_user_hash,
+                        "last_intercepted_store",
+                        intercept_result.target_store or "",
+                    )
+
+                    # 决定触发哪些门店的图片：1-2 家各发 1 张，3 家及以上只发第 1 家
+                    stores_to_send = (
+                        intercept_result.target_stores[:2]
+                        if intercept_result.match_count <= 2
+                        else intercept_result.target_stores[:1]
+                    )
+                    for store_name in stores_to_send:
+                        store_key = self._interceptor_store_to_index_key.get(store_name)
+                        if store_key:
+                            image_path = self.agent.pick_address_image(store_key, session_state=session_state)
+                            if image_path:
+                                planned_media_items.insert(0, {
+                                    "type": "address_image",
+                                    "path": image_path,
+                                    "trigger_source": "address_interceptor",
+                                    "target_store": store_key,
+                                })
+                                self._emit_log(f"📍 触发 {store_name} 地址图片 ({Path(image_path).name})")
+                            else:
+                                self._emit_log(f"⚠️  {store_name} 地址图片库为空")
                         else:
-                            self._emit_log(f"⚠️  {intercept_result.target_store} 地址图片库为空，无法发送")
-                    else:
-                        self._emit_log(f"⚠️  未知门店 {intercept_result.target_store}，无法映射到地址图片索引")
+                            self._emit_log(f"⚠️  未知门店 {store_name}，无法映射地址图片索引")
+
+                    if intercept_result.match_count > 2:
+                        self._emit_log(
+                            f"ℹ️  {intercept_result.match_count} 家门店地址，仅触发第 1 家图片（{intercept_result.target_stores[0]}）"
+                        )
                 else:
-                    # 未拦截（0 个地址或多门店地址），使用原始文本
                     reply_text_to_send = decision.reply_text
-                    if intercept_result.match_count > 1:
-                        self._emit_log(f"ℹ️ 多门店地址 ({intercept_result.match_count}个)，保留原文不拦截")
             except Exception as _intercept_exc:
                 self._emit_log(f"⚠️ 地址拦截器异常，回退到原始文本: {_intercept_exc}")
                 reply_text_to_send = decision.reply_text

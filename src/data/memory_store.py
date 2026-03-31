@@ -263,6 +263,7 @@ class MemoryStore:
             "last_intent": "general",
             "last_reply_goal": "解答",
             "current_mainline": "business_answer",
+            "last_intercepted_store": "",
         }
 
     def _default_user_state(self, user_hash: str) -> Dict[str, Any]:
@@ -460,6 +461,7 @@ class MemoryStore:
         state.setdefault("last_intent", "general")
         state.setdefault("last_reply_goal", "解答")
         state.setdefault("current_mainline", "business_answer")
+        state.setdefault("last_intercepted_store", "")
         if not isinstance(state.get("sent_address_stores"), list):
             state["sent_address_stores"] = []
         if not isinstance(state.get("address_image_last_sent_at_by_store"), dict):
