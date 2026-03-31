@@ -31,7 +31,9 @@ PLACEHOLDER = interceptor.ADDRESS_PLACEHOLDER
 
 test_scenarios = [
     # ── 单门店地址场景 (1-5 轮) ───────────────────────────────────────────
-    (1, "你们店在哪里？", "姐姐，静安店在愚园路 172 号环球世界大厦 A 座，欢迎来体验。", "intercept_1"),
+    # 第 1 轮：用户未说位置 → LLM 应先反问城市，不直接给地址
+    (1, "你们店在哪里？", "姐姐，我们在北京和上海有线下店，您在哪个城市？我给您推荐离您最近的那家～", "no_address"),
+    # 第 2-5 轮：用户明确问某一家店 → 直接回答该店地址（拦截 + 发图）
     (2, "人民广场店具体地址是？", "人民广场店在汉口路 650 号亚洲大厦，地铁 1 号线人民广场站直达。", "intercept_1"),
     (3, "虹口店怎么走？", "虹口店在花园路 16 号嘉和国际大厦东楼，靠近虹口足球场。", "intercept_1"),
     (4, "五角场有店吗？", "五角场店在政通路 177 号万达广场 E 栋 C 座，欢迎您来。", "intercept_1"),
@@ -254,6 +256,7 @@ def run_stress_test():
         "5 门店拦截 (5 家)": [r for r in results if "拦截 5 家" in r.get("expected", "")],
         "无地址不拦截": [r for r in results if r.get("expected") == "不拦截"],
         "图在哪儿重发": [r for r in results if "图在哪儿重发" in r.get("expected", "")],
+        "未知位置反问": [r for r in results if r.get("round") == 1],  # 第 1 轮特殊场景
     }
 
     for cat_name, cat_results in categories.items():
