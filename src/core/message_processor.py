@@ -1137,6 +1137,44 @@ class MessageProcessor(QObject):
                 reply_text_to_send = decision.reply_text
             # ── 地址拦截器结束 ──────────────────────────────────────────────────────
 
+            # ── 地址图重发意图检测（LLM 说"重新发地址图"时触发已记录门店图片） ──────────
+            # 场景：用户说"没看到"（未含"图"），关键词快捷路径不匹配 → 走 LLM
+            # LLM 正确输出"我重新发一下徐汇店的地址图"，但 media_plan=none 且拦截器不命中
+            # 本块检测 LLM 回复中是否表达重发地址图意图，若是则从 last_intercepted_store 触发
+            _ADDRESS_RESEND_LLM_PHRASES = ("重新发", "再发一次", "再发一下", "再给您发", "再发给您")
+            _ADDRESS_IMAGE_LLM_INDICATORS = ("地址图", "位置图", "门店图", "地址看图")
+            try:
+                if not intercept_result.is_intercepted:
+                    _resend_llm_text = str(decision.reply_text or "")
+                    _is_resend_intent = (
+                        any(p in _resend_llm_text for p in _ADDRESS_RESEND_LLM_PHRASES)
+                        and any(p in _resend_llm_text for p in _ADDRESS_IMAGE_LLM_INDICATORS)
+                    )
+                    if _is_resend_intent:
+                        _resend_user_hash = self._build_user_hash(user_name=user_name, session_id=session_id)
+                        _resend_session_state = self.agent.memory_store.get_session_state(
+                            session_id, user_hash=_resend_user_hash
+                        )
+                        _last_store = str(_resend_session_state.get("last_intercepted_store", "") or "").strip()
+                        _store_key = self._interceptor_store_to_index_key.get(_last_store)
+                        if _store_key:
+                            _resend_img = self.agent.pick_address_image(_store_key, session_state=_resend_session_state)
+                            if _resend_img:
+                                planned_media_items.insert(0, {
+                                    "type": "address_image",
+                                    "path": _resend_img,
+                                    "trigger_source": "address_resend_intent",
+                                    "target_store": _store_key,
+                                })
+                                self._emit_log(f"🔁 地址重发意图命中（LLM说重新发），触发 {_last_store} 地址图片")
+                            else:
+                                self._emit_log(f"⚠️ 地址重发意图命中，但 {_last_store} 图片库为空")
+                        else:
+                            self._emit_log("⚠️ 地址重发意图命中，但 last_intercepted_store 未记录，无法触发")
+            except Exception as _resend_exc:
+                self._emit_log(f"⚠️ 地址重发意图检测异常，跳过: {_resend_exc}")
+            # ── 地址图重发意图检测结束 ──────────────────────────────────────────────
+
             # ── 联系方式图片触发器 ─────────────────────────────────────────────────
             # 检测规则：
             # 1. LLM 输出含"索取联系方式"话术（如"您留个电话"），说明 agent 在要用户联系方式
