@@ -75,6 +75,10 @@ def format_result(round_num: int, question: str, llm_output: str, result, expect
             "actual": "跳过 LLM，直接重发固定话术",
             "status": "PASS",
             "note": "触发词检测命中，跳过 LLM 调用",
+            "llm_output": "[跳过 LLM]",
+            "processed_text": "姐姐稍等，我再给您发一次地址图～",
+            "image_triggered": False,
+            "image_trigger_note": "由重发逻辑直接触发",
         }
 
     if expected == "no_address":
@@ -85,7 +89,10 @@ def format_result(round_num: int, question: str, llm_output: str, result, expect
             "expected": "不拦截",
             "actual": "不拦截" if not result.is_intercepted else f"拦截 {result.match_count} 家",
             "status": "PASS" if passed else "FAIL",
-            "processed_text": result.processed_text if passed else None,
+            "llm_output": llm_output,
+            "processed_text": result.processed_text,
+            "image_triggered": False,
+            "image_trigger_note": "无地址不触发",
         }
 
     expected_stores = {
@@ -97,17 +104,20 @@ def format_result(round_num: int, question: str, llm_output: str, result, expect
     passed = result.is_intercepted and result.match_count == expected_count
 
     img_stores = result.target_stores[:2] if result.match_count <= 2 else result.target_stores[:1]
-    img_policy = "2 家发 2 张" if result.match_count == 2 else ("1 张 (3+ 家只发第 1 家)" if result.match_count > 2 else "1 张")
+    img_policy = "1 张" if result.match_count == 1 else ("2 张 (各发 1 张)" if result.match_count == 2 else "1 张 (3+ 家只发第 1 家)")
 
     return {
         "round": round_num,
         "question": question,
         "expected": f"拦截 {expected_count} 家",
-        "actual": f"拦截 {result.match_count} 家 ({img_policy})",
+        "actual": f"拦截 {result.match_count} 家",
         "status": "PASS" if passed else "FAIL",
+        "llm_output": llm_output,
+        "processed_text": result.processed_text,
         "target_stores": result.target_stores,
-        "image_trigger_policy": img_policy,
-        "processed_text_preview": result.processed_text[:80] + "..." if len(result.processed_text) > 80 else result.processed_text,
+        "image_triggered": True,
+        "image_stores_to_send": img_stores,
+        "image_trigger_note": img_policy,
         "placeholder_count": result.processed_text.count(PLACEHOLDER),
     }
 
@@ -173,20 +183,65 @@ def run_stress_test():
 
     for res in results:
         status_icon = "✅" if res["status"] == "PASS" else "❌"
-        print(f"\n【第{res['round']}轮】{status_icon}")
-        print(f"  用户问：{res['question']}")
-        print(f"  预期：{res['expected']}")
-        print(f"  实际：{res['actual']}")
+        print(f"\n{'='*75}")
+        print(f"【第{res['round']}轮】{status_icon} {res['question']}")
+        print(f"{'='*75}")
+
+        # LLM 原始输出
+        llm_text = res.get("llm_output", "")
+        if llm_text:
+            print(f"\n🤖 LLM 原始输出:")
+            if len(llm_text) > 70:
+                lines = [llm_text[i:i+70] for i in range(0, len(llm_text), 70)]
+                for i, line in enumerate(lines):
+                    indent = "   " if i > 0 else ""
+                    print(f"{indent}{line}")
+            else:
+                print(f"   {llm_text}")
+        else:
+            print(f"\n🤖 LLM 原始输出：[跳过 LLM，直接重发]")
+
+        # 处理后文本（如果有替换）
+        processed = res.get("processed_text", "")
+        if processed and processed != llm_text:
+            print(f"\n📤 发送给用户 (已替换):")
+            if len(processed) > 70:
+                lines = [processed[i:i+70] for i in range(0, len(processed), 70)]
+                for i, line in enumerate(lines):
+                    indent = "   " if i > 0 else ""
+                    print(f"{indent}{line}")
+            else:
+                print(f"   {processed}")
+
+        # 替换统计
+        if res.get("placeholder_count") is not None and res["placeholder_count"] > 0:
+            print(f"\n🔁 替换统计：{res['placeholder_count']} 处地址 → \"{PLACEHOLDER}\"")
+
+        # 图片触发情况
+        print(f"\n📷 图片触发:")
+        if res.get("image_triggered"):
+            img_stores = res.get("image_stores_to_send", [])
+            img_note = res.get("image_trigger_note", "")
+            print(f"   ✅ 触发地址图片发送")
+            print(f"      目标门店：{img_stores}")
+            print(f"      策略：{img_note}")
+        elif "重发" in str(res.get("actual", "")):
+            # 图在哪儿重发场景
+            store_match = res.get("actual", "")
+            if "[" in store_match and "]" in store_match:
+                store_name = store_match.split("[")[1].split("]")[0]
+            else:
+                store_name = "上次门店"
+            print(f"   ✅ 跳过 LLM，直接重发 [{store_name}] 地址图")
+            print(f"      策略：触发词检测命中，跳过 LLM 调用")
+        else:
+            img_note = res.get("image_trigger_note", "")
+            print(f"   ❌ 未触发图片 ({img_note})")
+
+        # 预期/实际对比
+        print(f"\n📋 验证：预期={res['expected']} | 实际={res['actual']}")
         if res.get("note"):
-            print(f"  说明：{res['note']}")
-        if res.get("target_stores"):
-            print(f"  触发图片门店：{res['target_stores']}")
-        if res.get("image_trigger_policy"):
-            print(f"  图片策略：{res['image_trigger_policy']}")
-        if res.get("placeholder_count") is not None:
-            print(f"  占位符数量：{res['placeholder_count']}")
-        if res.get("processed_text_preview"):
-            print(f"  处理后文本：{res['processed_text_preview']}")
+            print(f"   说明：{res['note']}")
 
     # ── 分类统计 ──────────────────────────────────────────────────────────────
     print("\n" + "=" * 80)
