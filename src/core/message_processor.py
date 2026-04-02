@@ -595,6 +595,8 @@ class MessageProcessor(QObject):
         "图片发了吗", "没有图", "没看到地址图", "发图", "地址图片呢",
     )
     _ADDRESS_IMAGE_RETRY_REPLY = "姐姐稍等，我再给您发一次地址图～"
+    _USER_IMAGE_REPLY = "姐姐，您好，图片中的发型假发一般都在3000～6000这区间，它是根据脸型和头围定制，具体价格您留个电话我来让给专属顾问给您具体介绍❤️"
+    _USER_VIDEO_REPLY = "姐姐，您好，视频中的发型假发一般都在3000～6000这区间，它是根据脸型和头围定制，具体价格您留个电话我来让给专属顾问给您具体介绍❤️"
 
     def _should_retry_address_image(self, user_text: str, session_id: str, user_hash: str) -> bool:
         """判断是否应跳过 LLM 直接重发地址图。"""
@@ -681,6 +683,45 @@ class MessageProcessor(QObject):
         self.browser.send_message(reply_with_emoji, on_retry_sent)
 
     # ── 地址图片重发结束 ──────────────────────────────────────────────────────
+
+    def _handle_user_media_fixed_reply(
+        self,
+        session_id: str,
+        user_name: str,
+        user_hash: str,
+        marker: str,
+        latest_user_message: str,
+    ) -> None:
+        """跳过 LLM，对用户发来的图片/视频回复固定价格介绍话术。"""
+        reply_text = self._USER_IMAGE_REPLY if latest_user_message == "[图片]" else self._USER_VIDEO_REPLY
+        media_kind = "图片" if latest_user_message == "[图片]" else "视频"
+        self._emit_log(f"🖼️ 用户发来{media_kind}，跳过 LLM 发固定话术")
+        self._processing_reply = True
+        self._remember_processed_marker(marker, latest_user_message)
+
+        def on_sent(success, result):
+            del result
+            if not success:
+                self._emit_log(f"❌ 用户{media_kind}固定话术发送失败")
+                self._reset_cycle()
+                return
+            self.sessions.get_or_create_session(session_id=session_id, user_name=user_name)
+            self.sessions.add_message(session_id, reply_text, is_user=False, user_name=user_name)
+            self.sessions.record_reply(session_id)
+            self.reply_sent.emit(session_id, reply_text)
+            self._emit_log(f"✅ 用户{media_kind}固定话术已发送: {reply_text[:60]}")
+            self._append_training_event(
+                session_id=session_id,
+                user_id_hash=user_hash,
+                event_type="user_media_fixed_reply",
+                user_name=user_name,
+                payload={"text": reply_text, "trigger": latest_user_message},
+            )
+            self._reset_cycle()
+
+        self.browser.send_message(reply_text, on_sent)
+
+    # ── 用户发图片/视频固定回复结束 ────────────────────────────────────────────
 
     def _on_chat_data(self, success: bool, result: Any, auto_reply: bool):
         if not success:
@@ -792,6 +833,13 @@ class MessageProcessor(QObject):
             self._handle_address_image_retry(session_id, user_name, user_hash, marker, latest_user_message)
             return
         # ── 地址图片重发检测结束 ──────────────────────────────────────────────
+
+        # ── 用户发图片/视频固定回复（跳过 LLM） ──────────────────────────────
+        # 系统无法识别用户发来的图片/视频内容，直接回复固定价格介绍话术
+        if latest_user_message in {"[图片]", "[视频]"}:
+            self._handle_user_media_fixed_reply(session_id, user_name, user_hash, marker, latest_user_message)
+            return
+        # ── 用户发图片/视频固定回复结束 ────────────────────────────────────────
 
         self._processing_reply = True
         self._pending_send = {

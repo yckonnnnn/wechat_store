@@ -646,6 +646,40 @@ class KnowledgeService(QObject):
                         "polite_guard_reason": "",
                     }
 
+        # 特殊处理：定制周期相关问题（多久/几天/当天）
+        # 字符 Jaccard 在短问题上容易偏低，"假发定制多长时间" vs 长问题 score=0.24 < 0.25 会漏命中
+        delivery_time_keywords = ["多久", "多长时间", "几天", "多少天", "当天能", "几个工作日", "什么时候好", "什么时候能拿", "能做好吗"]
+        if any(k in query for k in delivery_time_keywords):
+            items = self.repository.get_all()
+            delivery_items = [
+                item for item in items
+                if item.intent == "delivery_time"
+                or (any(tag in ["时间", "周期", "当天", "加急"] for tag in (item.tags or []))
+                    and "定制" in (item.tags or []))
+            ]
+            if delivery_items:
+                best_item = None
+                best_score = 0.0
+                for item in delivery_items:
+                    score = self._simple_overlap_score(query, item.question)
+                    if score > best_score:
+                        best_score = score
+                        best_item = item
+                if best_item and best_score >= 0.1:
+                    return {
+                        "matched": True,
+                        "answer": best_item.answer,
+                        "answers": list(best_item.answers or ([best_item.answer] if best_item.answer else [])),
+                        "question": best_item.question,
+                        "score": float(best_score),
+                        "mode": "delivery_time_priority",
+                        "intent": best_item.intent,
+                        "tags": list(best_item.tags or []),
+                        "item_id": str(best_item.id or ""),
+                        "blocked_by_polite_guard": False,
+                        "polite_guard_reason": "",
+                    }
+
         # 特殊处理：季节相关问题（夏天/冬天）
         season_keywords = {"夏天": ["夏天", "热", "闷"], "冬天": ["冬天", "冷", "保暖"]}
         for season, related_words in season_keywords.items():
