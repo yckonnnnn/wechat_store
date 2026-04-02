@@ -4,6 +4,7 @@
 """
 
 import os
+import sys
 import platform
 from pathlib import Path
 
@@ -11,6 +12,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_DIR = PROJECT_ROOT / "config"
 DATA_DIR = PROJECT_ROOT / "data"
+
+# 打包后运行时的工作目录（用于定位用户可修改的业务配置）
+BUNDLE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else PROJECT_ROOT
 
 # 用户数据目录（跨平台支持）
 # Windows: %APPDATA%/Annel AI 客服
@@ -41,9 +45,9 @@ USER_DATA_DIR = get_user_data_dir()
 MODEL_SETTINGS_FILE = USER_DATA_DIR / "model_settings.json"
 AGENT_MEMORY_FILE = USER_DATA_DIR / "agent_memory.json"
 SHANGHAI_ROUTE_ALIAS_FILE = USER_DATA_DIR / "shanghai_route_aliases.json"
-KNOWLEDGE_BASE_FILE = PROJECT_ROOT / "config" / "knowledge_base.json"
-REMOTE_CONTROL_FILE = PROJECT_ROOT / "config" / "remote_control.json"
-ENV_FILE = PROJECT_ROOT / ".env"
+KNOWLEDGE_BASE_FILE = BUNDLE_DIR / "config" / "knowledge_base.json"
+REMOTE_CONTROL_FILE = BUNDLE_DIR / "config" / "remote_control.json"
+ENV_FILE = BUNDLE_DIR / ".env"
 BRAND_KNOWLEDGE_FILE = Path("/Users/yckonnnn/Desktop/Coding/github-project/Aneel内部测试0318/艾耐儿品牌知识库.md")
 
 # 示例配置文件路径（用于首次运行提示）

@@ -32,6 +32,7 @@ from src.utils.constants import (
     ENV_FILE,
     USER_DATA_DIR,
     MODEL_SETTINGS_EXAMPLE,
+    BUNDLE_DIR,
 )
 
 
@@ -54,10 +55,10 @@ def init_user_data_dir():
 
 def init_default_configs():
     """初始化默认配置文件（业务配置）"""
-    config_dir = Path('config')
+    config_dir = BUNDLE_DIR / 'config'
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    images_dir = Path('images')
+    images_dir = BUNDLE_DIR / 'images'
     images_dir.mkdir(parents=True, exist_ok=True)
 
     # 业务配置文件（从打包目录复制到当前目录）

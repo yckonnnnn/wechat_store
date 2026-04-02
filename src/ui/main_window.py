@@ -40,12 +40,12 @@ from ..utils.constants import (
 )
 from .agent_status_tab import AgentStatusTab
 from .browser_tab import BrowserTab
-from .crm_manager_tab import CRMManagerTab
 from .image_management_tab import ImageManagementTab
 from .knowledge_tab import KnowledgeTab
 from .left_panel import LeftPanel
 from .model_config_tab import ModelConfigTab
-from .shanghai_address_mapping_tab import ShanghaiAddressMappingTab
+from .system_prompt_tab import SystemPromptTab
+from ..core.agent_prompt_builder import SYSTEM_PROMPT_BASE
 
 
 class MainWindow(QWidget):
@@ -168,8 +168,7 @@ class MainWindow(QWidget):
             ("model", "模型配置"),
             ("images", "图片与视频管理"),
             ("agent", "Agent策略/状态"),
-            ("crm", "客户信息管理"),
-            ("sh_route_map", "上海地址映射"),
+            ("prompt", "系统提示词"),
         ]
         self.nav_buttons = {}
         for index, (key, label) in enumerate(nav_items):
@@ -206,11 +205,9 @@ class MainWindow(QWidget):
         self.agent_tab = AgentStatusTab()
         self.stack.addWidget(self.agent_tab)
 
-        self.crm_tab = CRMManagerTab()
-        self.stack.addWidget(self.crm_tab)
-
-        self.shanghai_address_mapping_tab = ShanghaiAddressMappingTab(self.knowledge_service)
-        self.stack.addWidget(self.shanghai_address_mapping_tab)
+        self.system_prompt_tab = SystemPromptTab()
+        self.system_prompt_tab.set_content(SYSTEM_PROMPT_BASE)
+        self.stack.addWidget(self.system_prompt_tab)
 
         content_layout.addWidget(self.stack, 1)
         main_layout.addWidget(content, 1)
@@ -253,9 +250,6 @@ class MainWindow(QWidget):
         self.image_management_tab.log_message.connect(self._on_log_message)
         self.image_management_tab.categories_updated.connect(lambda _cats: self.message_processor.reload_media_config())
         self.image_management_tab.categories_updated.connect(lambda _cats: self._refresh_agent_tab_status())
-        self.crm_tab.log_message.connect(self._on_log_message)
-        self.shanghai_address_mapping_tab.log_message.connect(self._on_log_message)
-        self.shanghai_address_mapping_tab.mapping_updated.connect(self._on_shanghai_route_mapping_updated)
 
         self.agent_tab.reload_prompt_clicked.connect(self._on_reload_agent_prompt)
         self.agent_tab.reload_media_clicked.connect(self._on_reload_agent_media)
@@ -327,10 +321,6 @@ class MainWindow(QWidget):
     def _on_reload_agent_media(self):
         self.message_processor.reload_media_config()
         self._refresh_agent_tab_status()
-
-    def _on_shanghai_route_mapping_updated(self):
-        self.knowledge_service.reload_shanghai_route_aliases()
-        self.left_panel.append_log("✅ 上海地址映射已刷新到当前会话")
 
     def _on_agent_options_changed(self, use_kb: bool, threshold: float, first_reply_video_enabled: bool):
         self.agent.set_options(
