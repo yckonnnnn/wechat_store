@@ -23,6 +23,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.core.private_cs_agent import CustomerServiceAgent
+from src.core.message_processor_support import build_user_hash
 from src.data.config_manager import ConfigManager
 from src.data.knowledge_repository import KnowledgeRepository
 from src.data.memory_store import MemoryStore
@@ -185,7 +186,7 @@ def main() -> int:
     )
     history: List[Dict[str, str]] = []
     session_log_file = Path(args.sim_data_dir) / "conversations" / f"{args.session_id}.jsonl"
-    user_hash = agent._hash_user(args.user_name or args.session_id)  # noqa: SLF001
+    user_hash = build_user_hash(args.user_name or args.session_id, args.session_id)
 
     def run_once(user_text: str) -> None:
         text = (user_text or "").strip()
