@@ -712,8 +712,29 @@ class KnowledgeService(QObject):
                             "polite_guard_reason": "",
                         }
 
+        # 特殊处理：购买流程咨询（怎么买/如何购买/在哪买/怎么下单/有没有官网）
+        purchase_keywords = ["怎么买", "如何购买", "在哪买", "怎么下单", "怎么定制", "如何定制", "有没有官网", "有官网吗", "网上能买", "微信能买", "能在网上"]
+        if any(k in query for k in purchase_keywords):
+            items = self.repository.get_all()
+            purchase_items = [item for item in items if item.intent == "purchase_inquiry"]
+            if purchase_items:
+                best_item = purchase_items[0]
+                return {
+                    "matched": True,
+                    "answer": best_item.answer,
+                    "answers": list(best_item.answers or ([best_item.answer] if best_item.answer else [])),
+                    "question": best_item.question,
+                    "score": 0.9,
+                    "mode": "purchase_inquiry_priority",
+                    "intent": best_item.intent,
+                    "tags": list(best_item.tags or []),
+                    "item_id": str(best_item.id or ""),
+                    "blocked_by_polite_guard": False,
+                    "polite_guard_reason": "",
+                }
+
         # 特殊处理：通用价格查询优先级
-        generic_price_keywords = ["假发多少钱", "假发价格", "多少钱", "价位", "价格", "怎么卖", "怎么买", "卖多少钱"]
+        generic_price_keywords = ["假发多少钱", "假发价格", "多少钱", "价位", "价格", "怎么卖", "卖多少钱"]
         specific_style_keywords = ["短款", "短发", "长款", "长发", "盘发", "中长", "齐肩"]
 
         if any(k in query for k in generic_price_keywords):
