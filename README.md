@@ -1,133 +1,109 @@
-# 微信小店自动化客服助手（PySide6 Agent 版）
+<div align="center">
 
-> **当前版本**: v1.8.5 (LLM-first 架构)
-> **最后更新**: 2026-03-29
-> **技术栈**: Python 3.13 + PySide6 + QWebEngine + 大语言模型
+# 💬 微信小店自动化 AI 客服系统
 
-这是一个基于 **PySide6 + QWebEngine** 的微信小店自动化客服系统。系统通过内嵌浏览器加载微信小店客服后台，自动检测未读消息、抓取对话内容、调用大语言模型生成回复并自动发送。
+**LLM-First Agent 架构 · 自动回复 · 智能发图 · 会话记忆 · 多模型热切换**
 
-## 核心功能
+![Python](https://img.shields.io/badge/Python-3.13-3776AB?style=flat&logo=python&logoColor=white)
+![PySide6](https://img.shields.io/badge/PySide6-Qt_WebEngine-41CD52?style=flat&logo=qt&logoColor=white)
+![LLM](https://img.shields.io/badge/LLM-DeepSeek%20%2F%20GPT%20%2F%20Gemini%20%2F%20千问%20%2F%20豆包%20%2F%20Kimi-4285F4)
+![License](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows-lightgrey)
 
-- 🤖 **自动回复**: 识别用户意图，调用 LLM 或知识库生成自然回复
-- 📍 **智能发图**: 根据对话内容自动发送地址图/联系方式图
-- 🧠 **会话记忆**: 跨重启持久化，记住用户已确认的门店、城市、已发媒体
-- 🔀 **多模型支持**: ChatGPT、Gemini、阿里千问、DeepSeek、豆包、Kimi
+</div>
 
-## 核心主链路
+---
+
+一套跑在**桌面端**的微信小店 AI 客服系统：通过 PySide6 + QtWebEngine 内嵌浏览器加载微信小店客服后台，由 Agent 自动扫描未读消息、抓取聊天记录、调用大语言模型（或本地知识库）决策回复，并自动发送文本与媒体素材——把人工客服从重复问答中解放出来，已在一线电商门店场景中实际落地运行。
+
+## ✨ 界面预览
+
+| AI 控制台 · 内嵌微信小店后台 | 知识库管理（110+ 条业务问答） |
+| :---: | :---: |
+| ![main](docs/screenshots/main.png) | ![knowledge](docs/screenshots/knowledge.png) |
+| **多模型配置（Key 全程脱敏）** | **Agent 策略 / 状态** |
+| ![model-config](docs/screenshots/model-config.png) | ![agent-status](docs/screenshots/agent-status.png) |
+
+## 🤖 核心特性
+
+### Agent 自动回复主链路
 
 ```
-自动扫描未读 -> 自动点击进入 -> 抓取聊天记录 -> Agent 决策 -> 发送文本/媒体 -> 记忆持久化
+定时扫描未读（4s 轮询） → 自动点击会话 → 抓取聊天记录
+        → 意图识别 → 知识库命中 / LLM 兜底 → 护栏校验
+        → 自动发送文本 + 智能媒体 → 会话记忆持久化
 ```
 
-## 核心配置文件
+- **LLM-First 决策**：意图识别优先命中本地知识库（RAG），未命中再走 LLM，并经规则护栏约束输出，避免幻觉与违规话术
+- **智能媒体发送**：根据对话内容自动发送门店地址图、联系方式图、延迟加载视频；按用户所在城市**地理路由**推荐对应门店（内置全国省市区映射 + 地址拦截器）
+- **跨重启会话记忆**：按用户哈希持久化会话状态（TTL 30 天），记住已确认的门店 / 城市 / 已发素材，防止重复打扰
+- **营业时间感知**：非营业时间自动切换收尾话术，消息去重防止重复回复
 
-| 文件 | 说明 |
-|------|------|
-| `docs/system_prompt_private_ai_customer_service.md` | 系统提示词 |
-| `docs/private_ai_customer_service_playbook.md` | 客服回复规则 |
-| `config/knowledge_base.json` | 知识库（问答对） |
-| `config/model_settings.json` | 模型配置（API Key 等） |
-| `config/address.json` | 地址图片路径映射 |
-| `data/memory/users/*.json` | 用户记忆（按用户拆分） |
+### 🧠 多模型热切换
 
-## Agent 策略
+统一封装的 LLM 服务层，支持 6 家模型一键切换并带连接测试：
 
-1. **地址问题**: 城市未知时先反问，城市明确后推荐门店 + 发图
-2. **非地址问题**: 优先命中知识库，未命中再调用 LLM
-3. **媒体决策**: 地址图/联系方式图/延迟视频，由 Agent 统一决策
-4. **会话记忆**: 跨重启持久化，TTL 默认 30 天
+| 已适配 | 协议 |
+| --- | --- |
+| DeepSeek / ChatGPT / Kimi | OpenAI 兼容 |
+| Google Gemini | 原生 REST |
+| 阿里千问 | DashScope |
+| 豆包 | 火山方舟（Ark） |
 
-## 快速开始
+### 🛠 工程化配套
 
-### 1. 安装依赖
+- **知识库管理 UI**：可视化维护 110+ 条业务问答（意图 / 标签 / 问题 / 答案），支持批量导入导出
+- **聊天模拟器**：`scripts/chat_simulator.py` 可脱离微信后台离线验证策略命中，配套多轮对话回归测试脚本
+- **pytest 单元测试**：核心决策链路 11 组测试用例
+- **PyInstaller 打包**：支持 Windows / macOS 桌面分发
+- **远程控制开关**：白名单用户可远程启停 Agent
+
+## 🏗 技术架构
+
+| 层级 | 技术 |
+| --- | --- |
+| 桌面框架 | Python 3.13 + PySide6（QtWebEngine 内嵌 Chromium） |
+| 页面控制 | JavaScript 注入 + DOM 抓取（4s 轮询未读） |
+| Agent 决策 | 意图识别 → 知识库命中 → LLM 兜底 → 护栏校验 |
+| LLM 服务 | QThread 异步调用，6 家模型统一适配 |
+| 数据持久化 | JSON 配置 + 会话记忆文件（按用户哈希分片） |
+| 测试 / 打包 | pytest + PyInstaller |
+
+## 🚀 快速开始
 
 ```bash
+# 1. 安装依赖（建议 Python 3.11+）
 pip install -r requirements.txt
-```
 
-### 2. 配置模型
+# 2. 配置模型 API Key（任选一家）
+cp config/model_settings.example.json config/model_settings.json
+# 编辑 model_settings.json，填入 api_key / base_url / model
 
-编辑 `config/model_settings.json`，填入你的 API Key：
-
-```json
-{
-  "selected_model": "deepseek",
-  "models": {
-    "deepseek": {
-      "api_key": "sk-your-api-key-here",
-      "base_url": "https://api.deepseek.com",
-      "model": "deepseek-chat"
-    }
-  }
-}
-```
-
-### 3. 启动应用
-
-```bash
+# 3. 启动应用
 python3 main.py
 ```
 
-### 4. 加载微信小店
-
-在 UI 中输入微信小店客服后台 URL，点击"启动服务"
-
-## 快速调试（不走微信）
+启动后在顶部导航进入「模型配置」填好 Key → 回到「微信小店」页扫码登录客服后台 → 点击「启动 AI」即可接管客服会话。
 
 ```bash
-# 单条消息：只看策略命中和回复
-python3 scripts/chat_simulator.py -m "不同价格有什么区别啊？" --no-llm
+# 离线验证 Agent 决策（无需登录微信）
+python3 scripts/chat_simulator.py -m "你们店在哪里" --no-llm
 
-# 交互模式：连续多轮测试（输入 /exit 退出）
-python3 scripts/chat_simulator.py --no-llm
-```
-
-输出包含：
-- `reply_source` / `intent` / `route_reason` / `rule_id`
-- `media_plan` / `reply_text`
-- 媒体触发摘要：`视频=是/否 | 地址图片=是/否 | 联系方式图片=是/否`
-
-## 运行测试
-
-```bash
-# 单元测试
+# 运行单元测试
 pytest tests/ -v
-
-# 特定测试
-pytest tests/test_system_prompt_builder.py -v
 ```
 
-## UI 页面
+> ⚠️ **使用提示**：本项目仅用于自己店铺的合规客服自动化，请遵守微信小店平台规则；API Key 等敏感配置均通过本地配置文件读取，已通过 `.gitignore` 排除，请勿提交到仓库。
 
-- **微信小店**: 内嵌浏览器，加载客服后台
-- **知识库管理**: 增删改查问答对
-- **模型配置**: 切换 LLM 模型，配置 API Key
-- **图片与视频管理**: 管理地址图/联系方式图
-- **Agent 状态**: 监控会话状态/记忆
+## 🗺 Roadmap
 
-## 架构说明
+- [ ] RAG 向量化检索升级（当前为关键词 + 阈值命中）
+- [ ] 客服会话数据看板（转化漏斗 / 高频问题聚类）
+- [ ] 多店铺多账号并行托管
 
-系统采用分层架构：
+---
 
-```
-表现层 (UI)      -> PySide6 窗口和浏览器
-业务逻辑层 (Core) -> Agent 决策 + 状态管理
-服务层 (Services) -> LLM API + 浏览器控制 + 知识库
-数据层 (Data)    -> 配置文件 + 记忆存储
-```
+<div align="center">
 
-详细文档请查看 [PROJECT_GUIDE.md](PROJECT_GUIDE.md)
+**微信小店自动化 AI 客服系统** · Built with PySide6 & LLM Agent
 
-## 版本历史
-
-| 版本 | 日期 | 关键改动 |
-|------|------|---------|
-| v1.8.5 | 2026-03-29 | 合并 present 分支：高频问法与回归验证增强 |
-| v1.8.5 | 2026-03-27 | 媒体发送校验修复 |
-| v1.8.5 | 2026-03-27 | 回复护栏调整 |
-
-## 说明
-
-- 已移除 Flask 测试架构
-- 已移除旧关键词并行触发链路，统一由 Agent 决策
-- 地址推荐改用 LLM 判断 + Guardrail 约束，不再硬编码城市规则
+</div>
