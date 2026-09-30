@@ -7,7 +7,7 @@
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?style=flat&logo=python&logoColor=white)
 ![PySide6](https://img.shields.io/badge/PySide6-Qt_WebEngine-41CD52?style=flat&logo=qt&logoColor=white)
 ![LLM](https://img.shields.io/badge/LLM-DeepSeek%20%2F%20GPT%20%2F%20Gemini%20%2F%20千问%20%2F%20豆包%20%2F%20Kimi-4285F4)
-![License](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows-lightgrey)
+![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows-lightgrey)
 
 </div>
 
