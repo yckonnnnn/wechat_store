@@ -71,7 +71,7 @@
 ## 🚀 快速开始
 
 ```bash
-# 1. 安装依赖（建议 Python 3.11+）
+# 1. 安装依赖（需要 Python 3.13）
 pip install -r requirements.txt
 
 # 2. 配置模型 API Key（任选一家）
